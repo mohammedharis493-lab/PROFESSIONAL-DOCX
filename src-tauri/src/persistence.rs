@@ -2071,8 +2071,7 @@ pub fn list_recent_documents(
     drop(statement);
     drop(connection);
 
-    let file_instance_ids: Vec<String> =
-        metadata.iter().map(|(id, _, _)| id.clone()).collect();
+    let file_instance_ids: Vec<String> = metadata.iter().map(|(id, _, _)| id.clone()).collect();
     let files = hydrate_search_files(database_path, &file_instance_ids)?;
 
     let mut result = Vec::new();
