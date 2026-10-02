@@ -133,10 +133,7 @@ impl SearchFields {
     }
 }
 
-pub fn sync_search_index(
-    database_path: &Path,
-    state: &SearchState,
-) -> Result<(), SearchError> {
+pub fn sync_search_index(database_path: &Path, state: &SearchState) -> Result<(), SearchError> {
     let _guard = state
         .gate
         .lock()
@@ -147,10 +144,7 @@ pub fn sync_search_index(
     Ok(())
 }
 
-pub fn rebuild_search_index(
-    database_path: &Path,
-    state: &SearchState,
-) -> Result<(), SearchError> {
+pub fn rebuild_search_index(database_path: &Path, state: &SearchState) -> Result<(), SearchError> {
     let _guard = state
         .gate
         .lock()
@@ -198,8 +192,10 @@ pub fn search_documents(
     let query = build_query(&fields, &normalized_query, &query_tokens)?;
     let requested_limit = limit.clamp(1, MAX_SEARCH_RESULTS) as usize;
     let candidate_limit = requested_limit.saturating_mul(3).min(300);
-    let top_docs =
-        searcher.search(&query, &TopDocs::with_limit(candidate_limit).order_by_score())?;
+    let top_docs = searcher.search(
+        &query,
+        &TopDocs::with_limit(candidate_limit).order_by_score(),
+    )?;
 
     let mut scored_ids = Vec::with_capacity(top_docs.len());
 
@@ -321,8 +317,10 @@ fn apply_pending_outbox(database_path: &Path, index: &Index) -> Result<(), Searc
             return Ok(());
         }
 
-        let operation_ids: Vec<String> =
-            batch.iter().map(|record| record.operation_id.clone()).collect();
+        let operation_ids: Vec<String> = batch
+            .iter()
+            .map(|record| record.operation_id.clone())
+            .collect();
 
         let result = apply_outbox_batch(index, &fields, &batch);
         if let Err(error) = result {
@@ -367,10 +365,7 @@ fn apply_outbox_batch(
                 add_payload_document(&mut writer, fields, &payload)?;
             }
             "DELETE" => {
-                writer.delete_term(Term::from_field_text(
-                    fields.document_id,
-                    &record.entity_id,
-                ));
+                writer.delete_term(Term::from_field_text(fields.document_id, &record.entity_id));
             }
             other => {
                 return Err(SearchError::Configuration(format!(
@@ -477,7 +472,11 @@ fn build_query(
         if token.len() >= 2 {
             alternatives.push((
                 Occur::Should,
-                boosted_regex(fields.filename_tokens, &format!("^{}.*", escape_regex(token)), 10.0)?,
+                boosted_regex(
+                    fields.filename_tokens,
+                    &format!("^{}.*", escape_regex(token)),
+                    10.0,
+                )?,
             ));
         }
 
@@ -505,15 +504,16 @@ fn build_query(
             ));
         }
 
-        alternatives.push((
-            Occur::Should,
-            boosted_term(fields.path_tokens, token, 3.0),
-        ));
+        alternatives.push((Occur::Should, boosted_term(fields.path_tokens, token, 3.0)));
 
         if token.len() >= 2 {
             alternatives.push((
                 Occur::Should,
-                boosted_regex(fields.path_tokens, &format!("^{}.*", escape_regex(token)), 2.5)?,
+                boosted_regex(
+                    fields.path_tokens,
+                    &format!("^{}.*", escape_regex(token)),
+                    2.5,
+                )?,
             ));
         }
 
@@ -771,13 +771,8 @@ mod tests {
         ];
 
         for query in cases {
-            let results = search_documents(
-                &test.database_path,
-                &test.search_state,
-                query,
-                10,
-            )
-            .expect("search should succeed");
+            let results = search_documents(&test.database_path, &test.search_state, query, 10)
+                .expect("search should succeed");
 
             assert!(
                 results
@@ -816,9 +811,8 @@ mod tests {
         fs::remove_dir_all(active_index_path(&test.search_state.root))
             .expect("active Tantivy index should be removable");
 
-        let results =
-            search_documents(&test.database_path, &test.search_state, "rcm march", 10)
-                .expect("search should rebuild from SQLite");
+        let results = search_documents(&test.database_path, &test.search_state, "rcm march", 10)
+            .expect("search should rebuild from SQLite");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "RCM March.xlsx");
@@ -841,9 +835,13 @@ mod tests {
         sync_search_index(&test.database_path, &test.search_state)
             .expect("reconciled search index should sync");
 
-        let results =
-            search_documents(&test.database_path, &test.search_state, "bank confirmation", 10)
-                .expect("missing file should remain searchable");
+        let results = search_documents(
+            &test.database_path,
+            &test.search_state,
+            "bank confirmation",
+            10,
+        )
+        .expect("missing file should remain searchable");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].availability_state, "MISSING");
