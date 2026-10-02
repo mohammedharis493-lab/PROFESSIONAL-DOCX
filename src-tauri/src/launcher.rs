@@ -143,7 +143,6 @@ mod tests {
         let source = ResolvedFileSource {
             storage_root_path: root.clone(),
             relative_path: PathBuf::from("missing.pdf"),
-            availability_state: "MISSING".to_string(),
         };
 
         let error =
@@ -171,7 +170,6 @@ mod tests {
         let source = ResolvedFileSource {
             storage_root_path: root,
             relative_path: PathBuf::from("linked.txt"),
-            availability_state: "AVAILABLE".to_string(),
         };
 
         let error = validated_existing_path(&source)
