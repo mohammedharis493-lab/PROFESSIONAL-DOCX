@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use std::{
     error::Error,
     ffi::OsString,
