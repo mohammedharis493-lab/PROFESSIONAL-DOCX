@@ -1649,7 +1649,6 @@ pub(crate) fn path_history_reasons_for_test(
     }
     Ok(reasons)
 }
-
 pub fn list_search_projection_snapshot(
     database_path: &Path,
 ) -> Result<Vec<SearchProjectionRecord>, PersistenceError> {
