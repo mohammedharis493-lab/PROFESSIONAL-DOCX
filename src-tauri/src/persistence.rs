@@ -429,8 +429,8 @@ mod tests {
         initialize_database(&database.path).expect("database initialization should succeed");
 
         {
-            let connection =
-                open_configured_connection(&database.path).expect("configured connection should open");
+            let connection = open_configured_connection(&database.path)
+                .expect("configured connection should open");
             connection
                 .execute_batch("PRAGMA user_version = 999;")
                 .expect("test should be able to set a future user_version");
