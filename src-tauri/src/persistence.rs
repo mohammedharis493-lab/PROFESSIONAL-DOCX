@@ -117,6 +117,21 @@ pub struct IndexedFilePreviewRecord {
     pub modified_unix_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IndexJobCompletion<'a> {
+    pub status: &'a str,
+    pub failure_code: Option<&'a str>,
+    pub failure_message: Option<&'a str>,
+}
+
+#[derive(Debug)]
+struct ExistingIncompleteFile {
+    file_instance_id: String,
+    size_bytes: i64,
+    last_write_time_ms: Option<i64>,
+    creation_time_ms: Option<i64>,
+}
+
 #[derive(Debug)]
 pub enum PersistenceError {
     Io(std::io::Error),
@@ -313,29 +328,6 @@ pub fn get_storage_root(
         )
         .optional()
         .map_err(PersistenceError::from)
-}
-
-pub fn set_storage_root_availability(
-    database_path: &Path,
-    storage_root_id: &str,
-    availability_state: &str,
-) -> Result<(), PersistenceError> {
-    let connection = open_configured_connection(database_path)?;
-    let updated = connection.execute(
-        "UPDATE storage_roots
-         SET availability_state = ?1,
-             updated_at_ms = ?2
-         WHERE storage_root_id = ?3",
-        params![availability_state, now_unix_ms()?, storage_root_id],
-    )?;
-
-    if updated != 1 {
-        return Err(PersistenceError::Configuration(format!(
-            "storage root {storage_root_id} does not exist"
-        )));
-    }
-
-    Ok(())
 }
 
 pub fn recover_interrupted_index_jobs(database_path: &Path) -> Result<u64, PersistenceError> {
@@ -658,11 +650,10 @@ fn persist_file_observation(
     observation: &FileObservation,
     observed_at_ms: i64,
 ) -> Result<(), PersistenceError> {
-    let existing: Option<(String, String, i64, Option<i64>, Option<i64>)> = transaction
+    let existing: Option<ExistingIncompleteFile> = transaction
         .query_row(
             "SELECT
                 fi.file_instance_id,
-                fi.document_id,
                 fi.size_bytes,
                 fi.last_write_time_ms,
                 fi.creation_time_ms
@@ -681,21 +672,20 @@ fn persist_file_observation(
                 &observation.relative_path_native
             ],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
+                Ok(ExistingIncompleteFile {
+                    file_instance_id: row.get(0)?,
+                    size_bytes: row.get(1)?,
+                    last_write_time_ms: row.get(2)?,
+                    creation_time_ms: row.get(3)?,
+                })
             },
         )
         .optional()?;
 
-    if let Some((file_instance_id, _document_id, old_size, old_modified, old_created)) = existing {
-        let same_observation = old_size == u64_to_i64(observation.size_bytes)?
-            && old_modified == observation.last_write_time_ms
-            && old_created == observation.creation_time_ms;
+    if let Some(existing) = existing {
+        let same_observation = existing.size_bytes == u64_to_i64(observation.size_bytes)?
+            && existing.last_write_time_ms == observation.last_write_time_ms
+            && existing.creation_time_ms == observation.creation_time_ms;
 
         if same_observation {
             transaction.execute(
@@ -704,7 +694,11 @@ fn persist_file_observation(
                      last_seen_generation_id = ?2,
                      availability_state = 'AVAILABLE'
                  WHERE file_instance_id = ?3",
-                params![observed_at_ms, scan_generation_id, file_instance_id],
+                params![
+                    observed_at_ms,
+                    scan_generation_id,
+                    existing.file_instance_id
+                ],
             )?;
             return Ok(());
         }
@@ -713,7 +707,7 @@ fn persist_file_observation(
             "UPDATE file_instances
              SET availability_state = 'CHANGED'
              WHERE file_instance_id = ?1",
-            [file_instance_id],
+            [existing.file_instance_id],
         )?;
     }
 
@@ -863,12 +857,10 @@ pub fn finish_index_job(
     index_job_id: &str,
     scan_generation_id: &str,
     storage_root_id: &str,
-    status: &str,
     progress: &IndexProgress,
-    failure_code: Option<&str>,
-    failure_message: Option<&str>,
+    completion: IndexJobCompletion<'_>,
 ) -> Result<(), PersistenceError> {
-    let (authoritative, root_state, phase) = match status {
+    let (authoritative, root_state, phase) = match completion.status {
         "COMPLETE" => (1_i64, "AVAILABLE", "COMPLETE"),
         "PARTIAL" => (0_i64, "DEGRADED", "PARTIAL"),
         "CANCELLED" => (0_i64, "NEEDS_RESCAN", "CANCELLED"),
@@ -900,7 +892,7 @@ pub fn finish_index_job(
              failure_message = ?10
          WHERE index_job_id = ?11",
         params![
-            status,
+            completion.status,
             now,
             phase,
             u64_to_i64(progress.directories_seen)?,
@@ -908,8 +900,8 @@ pub fn finish_index_job(
             u64_to_i64(progress.bytes_seen)?,
             u64_to_i64(progress.files_persisted)?,
             u64_to_i64(progress.errors_count)?,
-            failure_code,
-            failure_message,
+            completion.failure_code,
+            completion.failure_message,
             index_job_id
         ],
     )?;
@@ -924,7 +916,7 @@ pub fn finish_index_job(
              errors_count = ?6
          WHERE scan_generation_id = ?7",
         params![
-            status,
+            completion.status,
             now,
             authoritative,
             u64_to_i64(progress.directories_seen)?,
@@ -969,10 +961,12 @@ pub fn fail_index_job(
         index_job_id,
         scan_generation_id,
         storage_root_id,
-        "FAILED",
         &progress,
-        Some(failure_code),
-        Some(failure_message),
+        IndexJobCompletion {
+            status: "FAILED",
+            failure_code: Some(failure_code),
+            failure_message: Some(failure_message),
+        },
     )
 }
 
