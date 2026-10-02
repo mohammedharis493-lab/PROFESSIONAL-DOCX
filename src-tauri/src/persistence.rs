@@ -2,8 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::{
     error::Error,
-    fmt,
-    fs,
+    fmt, fs,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -103,16 +102,14 @@ fn verify_connection_profile(connection: &Connection) -> Result<(), PersistenceE
         )));
     }
 
-    let synchronous: i64 =
-        connection.query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
+    let synchronous: i64 = connection.query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
     if synchronous != 2 {
         return Err(PersistenceError::Configuration(format!(
             "synchronous mode is {synchronous}, expected FULL (2)"
         )));
     }
 
-    let foreign_keys: i64 =
-        connection.query_row("PRAGMA foreign_keys;", [], |row| row.get(0))?;
+    let foreign_keys: i64 = connection.query_row("PRAGMA foreign_keys;", [], |row| row.get(0))?;
     if foreign_keys != 1 {
         return Err(PersistenceError::Configuration(
             "foreign-key enforcement is not enabled".to_string(),
@@ -132,8 +129,7 @@ fn verify_connection_profile(connection: &Connection) -> Result<(), PersistenceE
 }
 
 fn run_migrations(connection: &mut Connection) -> Result<(), PersistenceError> {
-    let user_version: i64 =
-        connection.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
+    let user_version: i64 = connection.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
 
     if user_version > LATEST_SCHEMA_VERSION {
         return Err(PersistenceError::Migration(format!(
@@ -144,11 +140,9 @@ fn run_migrations(connection: &mut Connection) -> Result<(), PersistenceError> {
     ensure_migration_history_table(connection)?;
 
     let recorded_max_version: Option<i64> = connection
-        .query_row(
-            "SELECT MAX(version) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .optional()?
         .flatten();
 
@@ -234,10 +228,7 @@ fn apply_migration(
         ],
     )?;
 
-    transaction.execute_batch(&format!(
-        "PRAGMA user_version = {};",
-        migration.version
-    ))?;
+    transaction.execute_batch(&format!("PRAGMA user_version = {};", migration.version))?;
     transaction.commit()?;
 
     Ok(())
@@ -265,7 +256,9 @@ fn now_unix_ms() -> Result<i64, PersistenceError> {
         })?;
 
     i64::try_from(duration.as_millis()).map_err(|_| {
-        PersistenceError::Configuration("current timestamp exceeds SQLite INTEGER range".to_string())
+        PersistenceError::Configuration(
+            "current timestamp exceeds SQLite INTEGER range".to_string(),
+        )
     })
 }
 
@@ -413,8 +406,8 @@ mod tests {
         initialize_database(&database.path).expect("database initialization should succeed");
 
         {
-            let connection =
-                open_configured_connection(&database.path).expect("configured connection should open");
+            let connection = open_configured_connection(&database.path)
+                .expect("configured connection should open");
             connection
                 .execute(
                     "UPDATE schema_migrations SET checksum = 'tampered' WHERE version = 1",
@@ -446,6 +439,8 @@ mod tests {
         let error = initialize_database(&database.path)
             .expect_err("future schema versions must be rejected");
 
-        assert!(error.to_string().contains("newer than this application supports"));
+        assert!(error
+            .to_string()
+            .contains("newer than this application supports"));
     }
 }
