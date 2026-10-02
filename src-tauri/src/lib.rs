@@ -1,4 +1,5 @@
 mod indexer;
+mod launcher;
 mod persistence;
 mod search;
 
@@ -352,6 +353,48 @@ async fn search_documents(
 }
 
 #[tauri::command]
+async fn open_file_instance(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
+
+        launcher::open_source(&source).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Open-source task failed to join: {error}"))?
+}
+
+#[tauri::command]
+async fn reveal_file_instance(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
+
+        launcher::reveal_source(&source).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Reveal-source task failed to join: {error}"))?
+}
+
+#[tauri::command]
 async fn rebuild_search_index(
     database: State<'_, persistence::DatabaseState>,
     search_state: State<'_, search::SearchState>,
@@ -406,6 +449,8 @@ pub fn run() {
             cancel_index_job,
             list_indexed_file_preview,
             search_documents,
+            open_file_instance,
+            reveal_file_instance,
             rebuild_search_index
         ])
         .run(tauri::generate_context!())

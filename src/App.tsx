@@ -286,6 +286,24 @@ export default function App() {
     }
   }
 
+  async function openFileInstance(fileInstanceId: string) {
+    setError(null);
+    try {
+      await invoke("open_file_instance", { fileInstanceId });
+    } catch (openError) {
+      setError(String(openError));
+    }
+  }
+
+  async function revealFileInstance(fileInstanceId: string) {
+    setError(null);
+    try {
+      await invoke("reveal_file_instance", { fileInstanceId });
+    } catch (revealError) {
+      setError(String(revealError));
+    }
+  }
+
   const activeIsRunning =
     activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
   const hasQuery = query.trim().length > 0;
@@ -459,6 +477,22 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void openFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void revealFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Location
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -555,6 +589,22 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void openFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void revealFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Location
+                      </button>
                     </div>
                   </div>
                 ))

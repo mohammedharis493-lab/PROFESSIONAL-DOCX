@@ -133,6 +133,13 @@ pub struct SearchProjectionRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResolvedFileSource {
+    pub storage_root_path: PathBuf,
+    pub relative_path: PathBuf,
+    pub availability_state: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct SearchOutboxRecord {
     pub operation_id: String,
     pub entity_id: String,
@@ -1793,6 +1800,65 @@ pub fn record_search_outbox_failure(
 
     transaction.commit()?;
     Ok(())
+}
+
+pub fn resolve_file_instance_source(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<Option<ResolvedFileSource>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    let row: Option<(Vec<u8>, String, Vec<u8>, String, String)> = connection
+        .query_row(
+            "SELECT
+                COALESCE(sr.canonical_native_locator, sr.native_locator),
+                sr.native_locator_encoding,
+                fi.relative_path_native,
+                fi.path_native_encoding,
+                fi.availability_state
+             FROM file_instances fi
+             JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+             WHERE fi.file_instance_id = ?1",
+            [file_instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((root_native, root_encoding, relative_native, relative_encoding, availability_state)) =
+        row
+    else {
+        return Ok(None);
+    };
+
+    let storage_root_path = decode_native_path(&root_native, &root_encoding)?;
+    let relative_path = decode_native_path(&relative_native, &relative_encoding)?;
+
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(PersistenceError::Configuration(
+            "stored file-instance path is not root-relative".to_string(),
+        ));
+    }
+
+    Ok(Some(ResolvedFileSource {
+        storage_root_path,
+        relative_path,
+        availability_state,
+    }))
 }
 
 pub fn hydrate_search_files(
