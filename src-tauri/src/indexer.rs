@@ -15,6 +15,13 @@ use walkdir::WalkDir;
 
 const INDEX_BATCH_SIZE: usize = 500;
 
+struct BatchContext<'a> {
+    database_path: &'a Path,
+    root: &'a StorageRootRecord,
+    index_job_id: &'a str,
+    scan_generation_id: &'a str,
+}
+
 #[derive(Clone, Default)]
 pub struct IndexRuntime {
     running: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -74,6 +81,13 @@ pub fn run_initial_index_job(
         &root.storage_root_id,
     )?;
 
+    let batch_context = BatchContext {
+        database_path: &database_path,
+        root: &root,
+        index_job_id: &index_job_id,
+        scan_generation_id: &scan_generation_id,
+    };
+
     let mut progress = IndexProgress::default();
     let mut file_batch = Vec::with_capacity(INDEX_BATCH_SIZE);
     let mut error_batch = Vec::new();
@@ -92,10 +106,7 @@ pub fn run_initial_index_job(
                 "Approved storage root is no longer a directory.".to_string(),
             ));
             flush_batch(
-                &database_path,
-                &root,
-                &index_job_id,
-                &scan_generation_id,
+                &batch_context,
                 &mut file_batch,
                 &mut error_batch,
                 &mut progress,
@@ -105,10 +116,12 @@ pub fn run_initial_index_job(
                 &index_job_id,
                 &scan_generation_id,
                 &root.storage_root_id,
-                "OFFLINE",
                 &progress,
-                Some("ROOT_NOT_DIRECTORY"),
-                Some("Approved storage root is no longer a directory."),
+                persistence::IndexJobCompletion {
+                    status: "OFFLINE",
+                    failure_code: Some("ROOT_NOT_DIRECTORY"),
+                    failure_message: Some("Approved storage root is no longer a directory."),
+                },
             );
         }
         Err(error) => {
@@ -121,10 +134,7 @@ pub fn run_initial_index_job(
                 format!("Approved storage root is unavailable: {error}"),
             ));
             flush_batch(
-                &database_path,
-                &root,
-                &index_job_id,
-                &scan_generation_id,
+                &batch_context,
                 &mut file_batch,
                 &mut error_batch,
                 &mut progress,
@@ -134,10 +144,12 @@ pub fn run_initial_index_job(
                 &index_job_id,
                 &scan_generation_id,
                 &root.storage_root_id,
-                "OFFLINE",
                 &progress,
-                Some("ROOT_OFFLINE"),
-                Some("Approved storage root could not be accessed."),
+                persistence::IndexJobCompletion {
+                    status: "OFFLINE",
+                    failure_code: Some("ROOT_OFFLINE"),
+                    failure_message: Some("Approved storage root could not be accessed."),
+                },
             );
         }
     }
@@ -145,10 +157,7 @@ pub fn run_initial_index_job(
     for entry_result in WalkDir::new(&root.canonical_path).follow_links(false) {
         if cancellation.load(Ordering::Acquire) {
             flush_batch(
-                &database_path,
-                &root,
-                &index_job_id,
-                &scan_generation_id,
+                &batch_context,
                 &mut file_batch,
                 &mut error_batch,
                 &mut progress,
@@ -159,10 +168,12 @@ pub fn run_initial_index_job(
                 &index_job_id,
                 &scan_generation_id,
                 &root.storage_root_id,
-                "CANCELLED",
                 &progress,
-                Some("USER_CANCELLED"),
-                Some("Indexing was cancelled by the user."),
+                persistence::IndexJobCompletion {
+                    status: "CANCELLED",
+                    failure_code: Some("USER_CANCELLED"),
+                    failure_message: Some("Indexing was cancelled by the user."),
+                },
             );
         }
 
@@ -185,10 +196,7 @@ pub fn run_initial_index_job(
                     error.to_string(),
                 ));
                 maybe_flush(
-                    &database_path,
-                    &root,
-                    &index_job_id,
-                    &scan_generation_id,
+                    &batch_context,
                     &mut file_batch,
                     &mut error_batch,
                     &mut progress,
@@ -201,10 +209,7 @@ pub fn run_initial_index_job(
         if entry.file_type().is_dir() {
             progress.directories_seen = progress.directories_seen.saturating_add(1);
             maybe_flush(
-                &database_path,
-                &root,
-                &index_job_id,
-                &scan_generation_id,
+                &batch_context,
                 &mut file_batch,
                 &mut error_batch,
                 &mut progress,
@@ -223,10 +228,7 @@ pub fn run_initial_index_job(
                 "Symbolic link or reparse-point entry was intentionally not traversed.".to_string(),
             ));
             maybe_flush(
-                &database_path,
-                &root,
-                &index_job_id,
-                &scan_generation_id,
+                &batch_context,
                 &mut file_batch,
                 &mut error_batch,
                 &mut progress,
@@ -254,10 +256,7 @@ pub fn run_initial_index_job(
                     format!("Unable to read file metadata: {error}"),
                 ));
                 maybe_flush(
-                    &database_path,
-                    &root,
-                    &index_job_id,
-                    &scan_generation_id,
+                    &batch_context,
                     &mut file_batch,
                     &mut error_batch,
                     &mut progress,
@@ -280,10 +279,7 @@ pub fn run_initial_index_job(
                     format!("Unable to derive root-relative path: {error}"),
                 ));
                 maybe_flush(
-                    &database_path,
-                    &root,
-                    &index_job_id,
-                    &scan_generation_id,
+                    &batch_context,
                     &mut file_batch,
                     &mut error_batch,
                     &mut progress,
@@ -311,10 +307,7 @@ pub fn run_initial_index_job(
         });
 
         maybe_flush(
-            &database_path,
-            &root,
-            &index_job_id,
-            &scan_generation_id,
+            &batch_context,
             &mut file_batch,
             &mut error_batch,
             &mut progress,
@@ -323,10 +316,7 @@ pub fn run_initial_index_job(
     }
 
     flush_batch(
-        &database_path,
-        &root,
-        &index_job_id,
-        &scan_generation_id,
+        &batch_context,
         &mut file_batch,
         &mut error_batch,
         &mut progress,
@@ -343,18 +333,17 @@ pub fn run_initial_index_job(
         &index_job_id,
         &scan_generation_id,
         &root.storage_root_id,
-        final_status,
         &progress,
-        None,
-        None,
+        persistence::IndexJobCompletion {
+            status: final_status,
+            failure_code: None,
+            failure_message: None,
+        },
     )
 }
 
 fn maybe_flush(
-    database_path: &Path,
-    root: &StorageRootRecord,
-    index_job_id: &str,
-    scan_generation_id: &str,
+    context: &BatchContext<'_>,
     files: &mut Vec<FileObservation>,
     errors: &mut Vec<ScanErrorObservation>,
     progress: &mut IndexProgress,
@@ -364,34 +353,23 @@ fn maybe_flush(
         return Ok(());
     }
 
-    flush_batch(
-        database_path,
-        root,
-        index_job_id,
-        scan_generation_id,
-        files,
-        errors,
-        progress,
-    )?;
+    flush_batch(context, files, errors, progress)?;
     *entries_since_flush = 0;
     Ok(())
 }
 
 fn flush_batch(
-    database_path: &Path,
-    root: &StorageRootRecord,
-    index_job_id: &str,
-    scan_generation_id: &str,
+    context: &BatchContext<'_>,
     files: &mut Vec<FileObservation>,
     errors: &mut Vec<ScanErrorObservation>,
     progress: &mut IndexProgress,
 ) -> Result<(), PersistenceError> {
     if files.is_empty() && errors.is_empty() {
         persistence::persist_index_batch(
-            database_path,
-            index_job_id,
-            scan_generation_id,
-            &root.storage_root_id,
+            context.database_path,
+            context.index_job_id,
+            context.scan_generation_id,
+            &context.root.storage_root_id,
             files,
             errors,
             progress,
@@ -402,10 +380,10 @@ fn flush_batch(
     let persisted_now = files.len() as u64;
 
     persistence::persist_index_batch(
-        database_path,
-        index_job_id,
-        scan_generation_id,
-        &root.storage_root_id,
+        context.database_path,
+        context.index_job_id,
+        context.scan_generation_id,
+        &context.root.storage_root_id,
         files,
         errors,
         progress,
