@@ -466,12 +466,7 @@ pub fn create_initial_index_job(
             files_seen,
             errors_count
          ) VALUES (?1, ?2, ?3, ?4, NULL, 'QUEUED', 0, 0, 0, 0)",
-        params![
-            scan_generation_id,
-            storage_root_id,
-            generation_number,
-            now
-        ],
+        params![scan_generation_id, storage_root_id, generation_number, now],
     )?;
 
     transaction.execute(
@@ -613,9 +608,7 @@ pub fn persist_index_batch(
         )?;
     }
 
-    let files_persisted_target = progress
-        .files_persisted
-        .saturating_add(files.len() as u64);
+    let files_persisted_target = progress.files_persisted.saturating_add(files.len() as u64);
 
     transaction.execute(
         "UPDATE index_jobs
@@ -1102,9 +1095,7 @@ pub fn list_indexed_file_preview(
     limit: u32,
 ) -> Result<Vec<IndexedFilePreviewRecord>, PersistenceError> {
     let root = get_storage_root(database_path, storage_root_id)?.ok_or_else(|| {
-        PersistenceError::Configuration(format!(
-            "storage root {storage_root_id} does not exist"
-        ))
+        PersistenceError::Configuration(format!("storage root {storage_root_id} does not exist"))
     })?;
 
     let connection = open_configured_connection(database_path)?;
@@ -1200,9 +1191,7 @@ pub fn normalize_search_text(value: &str) -> String {
 
 fn u64_to_i64(value: u64) -> Result<i64, PersistenceError> {
     i64::try_from(value).map_err(|_| {
-        PersistenceError::Configuration(format!(
-            "value {value} exceeds SQLite INTEGER range"
-        ))
+        PersistenceError::Configuration(format!("value {value} exceeds SQLite INTEGER range"))
     })
 }
 

@@ -3,8 +3,7 @@ use crate::persistence::{
 };
 use std::{
     collections::HashMap,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -444,7 +443,9 @@ fn scan_error(
         path_native_encoding,
         relative_path_display,
         category: category.to_string(),
-        os_error_code: io_error.and_then(|error| error.raw_os_error()).map(i64::from),
+        os_error_code: io_error
+            .and_then(|error| error.raw_os_error())
+            .map(i64::from),
         message,
     }
 }
@@ -479,8 +480,8 @@ mod tests {
 
     impl TestIndex {
         fn new() -> Self {
-            let directory =
-                std::env::temp_dir().join(format!("professional-docx-index-test-{}", Uuid::new_v4()));
+            let directory = std::env::temp_dir()
+                .join(format!("professional-docx-index-test-{}", Uuid::new_v4()));
             let database_path = directory.join("app-data").join("metadata.sqlite");
             let source_root = directory.join("source");
             fs::create_dir_all(&source_root).expect("test source root should be created");
@@ -573,8 +574,7 @@ mod tests {
     #[test]
     fn pre_cancelled_index_job_finishes_cancelled_without_authoritative_completion() {
         let test = TestIndex::new();
-        fs::write(test.source_root.join("file.txt"), b"data")
-            .expect("test file should be written");
+        fs::write(test.source_root.join("file.txt"), b"data").expect("test file should be written");
 
         let root = test.register_root("root-cancel");
         let job_id = Uuid::new_v4().to_string();
