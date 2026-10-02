@@ -126,12 +126,9 @@ pub struct IndexedFilePreviewRecord {
 pub struct SearchProjectionRecord {
     pub document_id: String,
     pub file_instance_id: String,
-    pub content_version_id: Option<String>,
     pub storage_root_id: String,
     pub display_name: String,
     pub relative_path_display: String,
-    pub size_bytes: u64,
-    pub modified_unix_ms: Option<i64>,
     pub availability_state: String,
 }
 
@@ -1661,18 +1658,9 @@ pub fn list_search_projection_snapshot(
         "SELECT
             d.document_id,
             fi.file_instance_id,
-            (
-                SELECT cv.content_version_id
-                FROM content_versions cv
-                WHERE cv.file_instance_id = fi.file_instance_id
-                ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
-                LIMIT 1
-            ),
             fi.storage_root_id,
             d.display_name,
             fi.relative_path_display,
-            fi.size_bytes,
-            fi.last_write_time_ms,
             fi.availability_state
          FROM file_instances fi
          JOIN documents d ON d.document_id = fi.document_id
@@ -1681,17 +1669,13 @@ pub fn list_search_projection_snapshot(
     )?;
 
     let rows = statement.query_map([], |row| {
-        let size_bytes: i64 = row.get(6)?;
         Ok(SearchProjectionRecord {
             document_id: row.get(0)?,
             file_instance_id: row.get(1)?,
-            content_version_id: row.get(2)?,
-            storage_root_id: row.get(3)?,
-            display_name: row.get(4)?,
-            relative_path_display: row.get(5)?,
-            size_bytes: size_bytes.max(0) as u64,
-            modified_unix_ms: row.get(7)?,
-            availability_state: row.get(8)?,
+            storage_root_id: row.get(2)?,
+            display_name: row.get(3)?,
+            relative_path_display: row.get(4)?,
+            availability_state: row.get(5)?,
         })
     })?;
 
