@@ -16,7 +16,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 1;
+const LATEST_SCHEMA_VERSION: i64 = 2;
 
 struct Migration {
     version: i64,
@@ -24,11 +24,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "document_quick_access",
+        sql: include_str!("../migrations/0002_document_quick_access.sql"),
+    },
+];
 
 #[derive(Debug, Clone)]
 pub struct DatabaseState {
@@ -120,6 +127,19 @@ pub struct IndexedFilePreviewRecord {
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
     pub availability_state: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentDocumentRecord {
+    pub file: IndexedFilePreviewRecord,
+    pub last_opened_at_ms: i64,
+    pub open_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PinnedDocumentRecord {
+    pub file: IndexedFilePreviewRecord,
+    pub pinned_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1939,6 +1959,208 @@ pub fn hydrate_search_files(
     Ok(result)
 }
 
+pub fn record_document_open(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<(), PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let opened_at_ms = now_unix_ms()?;
+
+    let changed = connection.execute(
+        "INSERT INTO recent_document_access (
+            document_id,
+            last_file_instance_id,
+            last_opened_at_ms,
+            open_count
+         )
+         SELECT
+            fi.document_id,
+            fi.file_instance_id,
+            ?1,
+            1
+         FROM file_instances fi
+         WHERE fi.file_instance_id = ?2
+         ON CONFLICT(document_id) DO UPDATE SET
+            last_file_instance_id = excluded.last_file_instance_id,
+            last_opened_at_ms = excluded.last_opened_at_ms,
+            open_count = recent_document_access.open_count + 1",
+        params![opened_at_ms, file_instance_id],
+    )?;
+
+    if changed != 1 {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    }
+
+    Ok(())
+}
+
+pub fn set_document_pin(
+    database_path: &Path,
+    document_id: &str,
+    pinned: bool,
+) -> Result<(), PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    if pinned {
+        let changed = connection.execute(
+            "INSERT INTO document_pins (
+                document_id,
+                pinned_at_ms
+             )
+             SELECT ?1, ?2
+             WHERE EXISTS (
+                SELECT 1
+                FROM documents
+                WHERE document_id = ?1
+                  AND archived_at_ms IS NULL
+             )
+             ON CONFLICT(document_id) DO UPDATE SET
+                pinned_at_ms = excluded.pinned_at_ms",
+            params![document_id, now_unix_ms()?],
+        )?;
+
+        if changed != 1 {
+            return Err(PersistenceError::Configuration(format!(
+                "document {document_id} does not exist"
+            )));
+        }
+    } else {
+        connection.execute(
+            "DELETE FROM document_pins WHERE document_id = ?1",
+            [document_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub fn list_recent_documents(
+    database_path: &Path,
+    limit: u32,
+) -> Result<Vec<RecentDocumentRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let bounded_limit = i64::from(limit.clamp(1, 100));
+
+    let mut statement = connection.prepare(
+        "SELECT
+            recent.last_file_instance_id,
+            recent.last_opened_at_ms,
+            recent.open_count
+         FROM recent_document_access recent
+         JOIN documents d ON d.document_id = recent.document_id
+         WHERE d.archived_at_ms IS NULL
+           AND recent.last_file_instance_id IS NOT NULL
+         ORDER BY recent.last_opened_at_ms DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = statement.query_map([bounded_limit], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    let mut metadata = Vec::new();
+    for row in rows {
+        metadata.push(row?);
+    }
+    drop(statement);
+    drop(connection);
+
+    let file_instance_ids: Vec<String> =
+        metadata.iter().map(|(id, _, _)| id.clone()).collect();
+    let files = hydrate_search_files(database_path, &file_instance_ids)?;
+
+    let mut result = Vec::new();
+    for (file, (_, last_opened_at_ms, open_count)) in files.into_iter().zip(metadata) {
+        let Some(file) = file else {
+            continue;
+        };
+
+        result.push(RecentDocumentRecord {
+            file,
+            last_opened_at_ms,
+            open_count: open_count.max(0) as u64,
+        });
+    }
+
+    Ok(result)
+}
+
+pub fn list_pinned_documents(
+    database_path: &Path,
+    limit: u32,
+) -> Result<Vec<PinnedDocumentRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let bounded_limit = i64::from(limit.clamp(1, 100));
+
+    let mut statement = connection.prepare(
+        "SELECT
+            pins.document_id,
+            pins.pinned_at_ms,
+            (
+                SELECT fi.file_instance_id
+                FROM file_instances fi
+                WHERE fi.document_id = pins.document_id
+                ORDER BY
+                    CASE fi.availability_state
+                        WHEN 'AVAILABLE' THEN 0
+                        WHEN 'CHANGED' THEN 1
+                        WHEN 'UNAVAILABLE' THEN 2
+                        WHEN 'UNKNOWN' THEN 3
+                        WHEN 'MISSING' THEN 4
+                        ELSE 5
+                    END,
+                    fi.last_seen_at_ms DESC
+                LIMIT 1
+            )
+         FROM document_pins pins
+         JOIN documents d ON d.document_id = pins.document_id
+         WHERE d.archived_at_ms IS NULL
+         ORDER BY pins.pinned_at_ms DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = statement.query_map([bounded_limit], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    let mut metadata = Vec::new();
+    for row in rows {
+        let (document_id, pinned_at_ms, file_instance_id) = row?;
+        if let Some(file_instance_id) = file_instance_id {
+            metadata.push((document_id, pinned_at_ms, file_instance_id));
+        }
+    }
+    drop(statement);
+    drop(connection);
+
+    let file_instance_ids: Vec<String> = metadata
+        .iter()
+        .map(|(_, _, file_instance_id)| file_instance_id.clone())
+        .collect();
+    let files = hydrate_search_files(database_path, &file_instance_ids)?;
+
+    let mut result = Vec::new();
+    for (file, (_, pinned_at_ms, _)) in files.into_iter().zip(metadata) {
+        let Some(file) = file else {
+            continue;
+        };
+
+        result.push(PinnedDocumentRecord { file, pinned_at_ms });
+    }
+
+    Ok(result)
+}
+
 pub fn encode_native_path_for_storage(path: &Path) -> (Vec<u8>, String) {
     let (bytes, encoding) = encode_native_path(path);
     (bytes, encoding.to_string())
@@ -2305,7 +2527,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
 
         let table_count: i64 = connection
             .query_row(
@@ -2320,14 +2542,62 @@ mod tests {
                        'file_path_history',
                        'content_versions',
                        'scan_errors',
-                       'search_index_outbox'
+                       'search_index_outbox',
+                       'document_pins',
+                       'recent_document_access'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 9);
+        assert_eq!(table_count, 11);
+    }
+
+    #[test]
+    fn second_migration_upgrades_existing_v1_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+            let first = &MIGRATIONS[0];
+            let checksum = migration_checksum(first.sql);
+            apply_migration(&mut connection, first, &checksum)
+                .expect("initial migration should apply");
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 1);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 2");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 2);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('document_pins', 'recent_document_access')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("quick-access tables should exist");
+        assert_eq!(table_count, 2);
     }
 
     #[test]
