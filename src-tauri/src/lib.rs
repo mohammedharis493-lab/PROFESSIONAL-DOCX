@@ -1,6 +1,8 @@
+mod persistence;
+
 use serde::Serialize;
 use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::UNIX_EPOCH};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -177,6 +179,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(StorageRootRegistry::default())
+        .setup(|app| {
+            let database_path = app
+                .path()
+                .app_data_dir()?
+                .join("data")
+                .join("metadata.sqlite");
+
+            persistence::initialize_database(&database_path)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             choose_and_register_storage_root,
             scan_storage_root
