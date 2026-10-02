@@ -1,13 +1,10 @@
+mod indexer;
 mod persistence;
 
 use serde::Serialize;
-use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
-use walkdir::WalkDir;
-
-const PREVIEW_FILE_LIMIT: usize = 200;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,23 +26,76 @@ impl From<persistence::StorageRootRecord> for ApprovedStorageRootDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FileEntry {
-    name: String,
-    path: String,
-    extension: String,
-    size_bytes: u64,
-    modified_unix_ms: Option<u64>,
+struct IndexJobDto {
+    index_job_id: String,
+    storage_root_id: String,
+    job_type: String,
+    status: String,
+    requested_at_ms: i64,
+    started_at_ms: Option<i64>,
+    completed_at_ms: Option<i64>,
+    cancel_requested_at_ms: Option<i64>,
+    last_heartbeat_at_ms: Option<i64>,
+    current_phase: Option<String>,
+    directories_seen: u64,
+    files_seen: u64,
+    bytes_seen: u64,
+    files_persisted: u64,
+    errors_count: u64,
+    scan_generation_id: Option<String>,
+    failure_code: Option<String>,
+    failure_message: Option<String>,
+}
+
+impl From<persistence::IndexJobRecord> for IndexJobDto {
+    fn from(value: persistence::IndexJobRecord) -> Self {
+        Self {
+            index_job_id: value.index_job_id,
+            storage_root_id: value.storage_root_id,
+            job_type: value.job_type,
+            status: value.status,
+            requested_at_ms: value.requested_at_ms,
+            started_at_ms: value.started_at_ms,
+            completed_at_ms: value.completed_at_ms,
+            cancel_requested_at_ms: value.cancel_requested_at_ms,
+            last_heartbeat_at_ms: value.last_heartbeat_at_ms,
+            current_phase: value.current_phase,
+            directories_seen: value.directories_seen,
+            files_seen: value.files_seen,
+            bytes_seen: value.bytes_seen,
+            files_persisted: value.files_persisted,
+            errors_count: value.errors_count,
+            scan_generation_id: value.scan_generation_id,
+            failure_code: value.failure_code,
+            failure_message: value.failure_message,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FolderScan {
-    storage_root_id: String,
-    root_display_path: String,
-    total_files: u64,
-    total_bytes: u64,
-    skipped_entries: u64,
-    preview_files: Vec<FileEntry>,
+struct IndexedFilePreviewDto {
+    document_id: String,
+    file_instance_id: String,
+    name: String,
+    path: String,
+    extension: String,
+    size_bytes: u64,
+    modified_unix_ms: Option<i64>,
+}
+
+impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
+    fn from(value: persistence::IndexedFilePreviewRecord) -> Self {
+        Self {
+            document_id: value.document_id,
+            file_instance_id: value.file_instance_id,
+            name: value.name,
+            path: value.path,
+            extension: value.extension,
+            size_bytes: value.size_bytes,
+            modified_unix_ms: value.modified_unix_ms,
+        }
+    }
 }
 
 #[tauri::command]
@@ -91,106 +141,142 @@ fn list_storage_roots(
 }
 
 #[tauri::command]
-fn scan_storage_root(
+async fn start_index_job(
     storage_root_id: String,
     database: State<'_, persistence::DatabaseState>,
-) -> Result<FolderScan, String> {
+    runtime: State<'_, indexer::IndexRuntime>,
+) -> Result<IndexJobDto, String> {
     Uuid::parse_str(&storage_root_id)
         .map_err(|_| "Invalid storage-root identifier.".to_string())?;
 
-    let approved = persistence::get_storage_root(database.path(), &storage_root_id)
+    let root = persistence::get_storage_root(database.path(), &storage_root_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Storage root is not approved.".to_string())?;
 
-    match std::fs::metadata(&approved.canonical_path) {
-        Ok(metadata) if metadata.is_dir() => {
-            persistence::set_storage_root_availability(
-                database.path(),
-                &storage_root_id,
-                "AVAILABLE",
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        Ok(_) => {
-            persistence::set_storage_root_availability(
-                database.path(),
-                &storage_root_id,
-                "DEGRADED",
-            )
-            .map_err(|error| error.to_string())?;
-            return Err("Approved storage root is no longer a directory.".to_string());
-        }
+    let index_job_id = Uuid::new_v4().to_string();
+    let scan_generation_id = Uuid::new_v4().to_string();
+    let runtime_handle = runtime.inner().clone();
+    let cancellation = runtime_handle.reserve(&index_job_id)?;
+
+    let job = match persistence::create_initial_index_job(
+        database.path(),
+        &storage_root_id,
+        &index_job_id,
+        &scan_generation_id,
+    ) {
+        Ok(job) => job,
         Err(error) => {
-            persistence::set_storage_root_availability(
-                database.path(),
-                &storage_root_id,
-                "OFFLINE",
+            runtime_handle.finish(&index_job_id);
+            return Err(error.to_string());
+        }
+    };
+
+    let database_path = database.path().to_path_buf();
+    let worker_database_path = database_path.clone();
+    let worker_job_id = index_job_id.clone();
+    let worker_generation_id = scan_generation_id.clone();
+    let worker_root_id = storage_root_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let worker_result = tauri::async_runtime::spawn_blocking(move || {
+            indexer::run_initial_index_job(
+                worker_database_path,
+                root,
+                worker_job_id,
+                worker_generation_id,
+                cancellation,
             )
-            .map_err(|persistence_error| persistence_error.to_string())?;
-            return Err(format!("Approved storage root is unavailable: {error}"));
+            .map_err(|error| error.to_string())
+        })
+        .await;
+
+        match worker_result {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                let _ = persistence::fail_index_job(
+                    &database_path,
+                    &index_job_id,
+                    &scan_generation_id,
+                    &worker_root_id,
+                    "WORKER_FAILED",
+                    &message,
+                );
+            }
+            Err(error) => {
+                let _ = persistence::fail_index_job(
+                    &database_path,
+                    &index_job_id,
+                    &scan_generation_id,
+                    &worker_root_id,
+                    "WORKER_JOIN_FAILED",
+                    &error.to_string(),
+                );
+            }
         }
+
+        runtime_handle.finish(&index_job_id);
+    });
+
+    Ok(job.into())
+}
+
+#[tauri::command]
+fn get_index_job(
+    index_job_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Option<IndexJobDto>, String> {
+    Uuid::parse_str(&index_job_id).map_err(|_| "Invalid indexing-job identifier.".to_string())?;
+
+    persistence::get_index_job(database.path(), &index_job_id)
+        .map(|job| job.map(Into::into))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_latest_index_job_for_root(
+    storage_root_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Option<IndexJobDto>, String> {
+    Uuid::parse_str(&storage_root_id)
+        .map_err(|_| "Invalid storage-root identifier.".to_string())?;
+
+    persistence::get_latest_index_job_for_root(database.path(), &storage_root_id)
+        .map(|job| job.map(Into::into))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn cancel_index_job(
+    index_job_id: String,
+    database: State<'_, persistence::DatabaseState>,
+    runtime: State<'_, indexer::IndexRuntime>,
+) -> Result<Option<IndexJobDto>, String> {
+    Uuid::parse_str(&index_job_id).map_err(|_| "Invalid indexing-job identifier.".to_string())?;
+
+    let persisted = persistence::request_index_job_cancel(database.path(), &index_job_id)
+        .map_err(|error| error.to_string())?;
+
+    if persisted {
+        runtime.cancel(&index_job_id)?;
     }
 
-    let mut total_files = 0_u64;
-    let mut total_bytes = 0_u64;
-    let mut skipped_entries = 0_u64;
-    let mut preview_files = Vec::with_capacity(PREVIEW_FILE_LIMIT);
+    persistence::get_index_job(database.path(), &index_job_id)
+        .map(|job| job.map(Into::into))
+        .map_err(|error| error.to_string())
+}
 
-    for entry_result in WalkDir::new(&approved.canonical_path).follow_links(false) {
-        let entry = match entry_result {
-            Ok(entry) => entry,
-            Err(_) => {
-                skipped_entries += 1;
-                continue;
-            }
-        };
+#[tauri::command]
+fn list_indexed_file_preview(
+    storage_root_id: String,
+    limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<IndexedFilePreviewDto>, String> {
+    Uuid::parse_str(&storage_root_id)
+        .map_err(|_| "Invalid storage-root identifier.".to_string())?;
 
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                skipped_entries += 1;
-                continue;
-            }
-        };
-
-        total_files += 1;
-        total_bytes = total_bytes.saturating_add(metadata.len());
-
-        if preview_files.len() >= PREVIEW_FILE_LIMIT {
-            continue;
-        }
-
-        let path = entry.path();
-        let modified_unix_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis() as u64);
-
-        preview_files.push(FileEntry {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path: path.to_string_lossy().into_owned(),
-            extension: path
-                .extension()
-                .map(|extension| extension.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            size_bytes: metadata.len(),
-            modified_unix_ms,
-        });
-    }
-
-    Ok(FolderScan {
-        storage_root_id: approved.storage_root_id,
-        root_display_path: approved.display_path,
-        total_files,
-        total_bytes,
-        skipped_entries,
-        preview_files,
-    })
+    persistence::list_indexed_file_preview(database.path(), &storage_root_id, limit.unwrap_or(200))
+        .map(|files| files.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -205,13 +291,19 @@ pub fn run() {
                 .join("metadata.sqlite");
 
             persistence::initialize_database(&database_path)?;
+            persistence::recover_interrupted_index_jobs(&database_path)?;
             app.manage(persistence::DatabaseState::new(database_path));
+            app.manage(indexer::IndexRuntime::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             choose_and_register_storage_root,
             list_storage_roots,
-            scan_storage_root
+            start_index_job,
+            get_index_job,
+            get_latest_index_job_for_root,
+            cancel_index_job,
+            list_indexed_file_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running Professional DocX");

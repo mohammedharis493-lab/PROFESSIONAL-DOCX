@@ -502,3 +502,123 @@ input:focus-visible {
     text-align: left;
   }
 }
+
+
+.job-card {
+  max-width: 980px;
+  overflow: hidden;
+  border: 1px solid #dbe2ec;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.job-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #e7ebf1;
+}
+
+.job-card-heading span,
+.job-card-heading strong {
+  display: block;
+}
+
+.job-card-heading span,
+.job-metrics span {
+  color: #738095;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.job-card-heading strong {
+  margin-top: 5px;
+  font-size: 18px;
+}
+
+.job-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.job-metrics > div {
+  min-width: 0;
+  padding: 14px 18px;
+  border-right: 1px solid #e7ebf1;
+}
+
+.job-metrics > div:last-child {
+  border-right: 0;
+}
+
+.job-metrics span,
+.job-metrics strong {
+  display: block;
+}
+
+.job-metrics strong {
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-message {
+  margin: 0;
+  padding: 14px 18px;
+  border-top: 1px solid #e7ebf1;
+  color: #7a2430;
+  font-size: 13px;
+}
+
+.root-select {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.root-select strong,
+.root-select span {
+  display: block;
+}
+
+.root-select strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.root-select span {
+  margin-top: 5px;
+  color: #738095;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 900px) {
+  .job-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .job-metrics > div {
+    border-bottom: 1px solid #e7ebf1;
+  }
+
+  .job-metrics > div:nth-child(even) {
+    border-right: 0;
+  }
+
+  .job-metrics > div:last-child {
+    border-bottom: 0;
+  }
+}

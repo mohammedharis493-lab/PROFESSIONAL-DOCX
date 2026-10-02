@@ -7,7 +7,30 @@ type ApprovedStorageRoot = {
   availabilityState: string;
 };
 
-type FileEntry = {
+type IndexJob = {
+  indexJobId: string;
+  storageRootId: string;
+  jobType: string;
+  status: string;
+  requestedAtMs: number;
+  startedAtMs: number | null;
+  completedAtMs: number | null;
+  cancelRequestedAtMs: number | null;
+  lastHeartbeatAtMs: number | null;
+  currentPhase: string | null;
+  directoriesSeen: number;
+  filesSeen: number;
+  bytesSeen: number;
+  filesPersisted: number;
+  errorsCount: number;
+  scanGenerationId: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+};
+
+type IndexedFile = {
+  documentId: string;
+  fileInstanceId: string;
   name: string;
   path: string;
   extension: string;
@@ -15,14 +38,14 @@ type FileEntry = {
   modifiedUnixMs: number | null;
 };
 
-type FolderScan = {
-  storageRootId: string;
-  rootDisplayPath: string;
-  totalFiles: number;
-  totalBytes: number;
-  skippedEntries: number;
-  previewFiles: FileEntry[];
-};
+const TERMINAL_JOB_STATUSES = new Set([
+  "COMPLETE",
+  "PARTIAL",
+  "CANCELLED",
+  "OFFLINE",
+  "FAILED",
+  "INTERRUPTED",
+]);
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -38,94 +61,178 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
+function jobLabel(job: IndexJob | null | undefined) {
+  if (!job) return "Not indexed";
+  return job.status.replaceAll("_", " ");
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
-  const [approvedRoot, setApprovedRoot] = useState<ApprovedStorageRoot | null>(null);
   const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
-  const [scan, setScan] = useState<FolderScan | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [isLoadingRoots, setIsLoadingRoots] = useState(true);
+  const [selectedRoot, setSelectedRoot] = useState<ApprovedStorageRoot | null>(null);
+  const [latestJobs, setLatestJobs] = useState<Record<string, IndexJob | null>>({});
+  const [activeJob, setActiveJob] = useState<IndexJob | null>(null);
+  const [previewFiles, setPreviewFiles] = useState<IndexedFile[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshRoots();
   }, []);
 
+  useEffect(() => {
+    if (!activeJob || TERMINAL_JOB_STATUSES.has(activeJob.status)) {
+      return;
+    }
+
+    const jobId = activeJob.indexJobId;
+    const timer = window.setInterval(() => {
+      void refreshJob(jobId);
+    }, 700);
+
+    return () => window.clearInterval(timer);
+  }, [activeJob?.indexJobId, activeJob?.status]);
+
   const visibleFiles = useMemo(() => {
-    if (!scan) return [];
     const normalizedQuery = query.trim().toLocaleLowerCase();
 
     if (!normalizedQuery) {
-      return scan.previewFiles.slice(0, 50);
+      return previewFiles.slice(0, 100);
     }
 
-    return scan.previewFiles
+    return previewFiles
       .filter((file) => file.name.toLocaleLowerCase().includes(normalizedQuery))
-      .slice(0, 50);
-  }, [query, scan]);
+      .slice(0, 100);
+  }, [previewFiles, query]);
 
   async function refreshRoots() {
     try {
       const storedRoots = await invoke<ApprovedStorageRoot[]>("list_storage_roots");
       setRoots(storedRoots);
+
+      const jobPairs = await Promise.all(
+        storedRoots.map(async (root) => {
+          const job = await invoke<IndexJob | null>("get_latest_index_job_for_root", {
+            storageRootId: root.storageRootId,
+          });
+          return [root.storageRootId, job] as const;
+        }),
+      );
+
+      setLatestJobs(Object.fromEntries(jobPairs));
     } catch (loadError) {
       setError(String(loadError));
     } finally {
-      setIsLoadingRoots(false);
+      setIsLoading(false);
     }
   }
 
-  async function scanRoot(root: ApprovedStorageRoot) {
+  async function loadPreview(root: ApprovedStorageRoot) {
+    const files = await invoke<IndexedFile[]>("list_indexed_file_preview", {
+      storageRootId: root.storageRootId,
+      limit: 200,
+    });
+    setPreviewFiles(files);
+    setQuery("");
+  }
+
+  async function selectRoot(root: ApprovedStorageRoot) {
     setError(null);
-    setIsScanning(true);
-    setApprovedRoot(root);
+    setSelectedRoot(root);
 
     try {
-      const result = await invoke<FolderScan>("scan_storage_root", {
+      const latest = await invoke<IndexJob | null>("get_latest_index_job_for_root", {
         storageRootId: root.storageRootId,
       });
+      setActiveJob(latest);
+      await loadPreview(root);
+    } catch (selectionError) {
+      setError(String(selectionError));
+    }
+  }
 
-      setScan(result);
-      setQuery("");
-      await refreshRoots();
-    } catch (scanError) {
-      setScan(null);
-      setError(String(scanError));
+  async function refreshJob(indexJobId: string) {
+    try {
+      const job = await invoke<IndexJob | null>("get_index_job", { indexJobId });
+      if (!job) return;
+
+      setActiveJob(job);
+      setLatestJobs((current) => ({
+        ...current,
+        [job.storageRootId]: job,
+      }));
+
+      if (TERMINAL_JOB_STATUSES.has(job.status)) {
+        await refreshRoots();
+        const root = roots.find((item) => item.storageRootId === job.storageRootId);
+        if (root) {
+          await loadPreview(root);
+        }
+      }
+    } catch (jobError) {
+      setError(String(jobError));
+    }
+  }
+
+  async function startIndex(root: ApprovedStorageRoot) {
+    setError(null);
+    setSelectedRoot(root);
+    setPreviewFiles([]);
+    setIsStarting(true);
+
+    try {
+      const job = await invoke<IndexJob>("start_index_job", {
+        storageRootId: root.storageRootId,
+      });
+      setActiveJob(job);
+      setLatestJobs((current) => ({
+        ...current,
+        [root.storageRootId]: job,
+      }));
+    } catch (startError) {
+      setError(String(startError));
       await refreshRoots();
     } finally {
-      setIsScanning(false);
+      setIsStarting(false);
     }
   }
 
   async function chooseFolder() {
     setError(null);
-    setIsScanning(true);
+    setIsStarting(true);
 
     try {
       const root = await invoke<ApprovedStorageRoot | null>(
         "choose_and_register_storage_root",
       );
 
-      if (!root) {
-        return;
-      }
+      if (!root) return;
 
-      const storedRoots = await invoke<ApprovedStorageRoot[]>("list_storage_roots");
-      setRoots(storedRoots);
-      setApprovedRoot(root);
-
-      const result = await invoke<FolderScan>("scan_storage_root", {
-        storageRootId: root.storageRootId,
-      });
-
-      setScan(result);
-      setQuery("");
-    } catch (scanError) {
-      setError(String(scanError));
+      await refreshRoots();
+      await startIndex(root);
+    } catch (chooseError) {
+      setError(String(chooseError));
     } finally {
-      setIsScanning(false);
+      setIsStarting(false);
     }
   }
+
+  async function cancelActiveJob() {
+    if (!activeJob) return;
+
+    try {
+      const job = await invoke<IndexJob | null>("cancel_index_job", {
+        indexJobId: activeJob.indexJobId,
+      });
+      if (job) setActiveJob(job);
+    } catch (cancelError) {
+      setError(String(cancelError));
+    }
+  }
+
+  const activeIsRunning =
+    activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
 
   return (
     <div className="app-shell">
@@ -134,7 +241,7 @@ export default function App() {
           <div className="brand-mark">PD</div>
           <div>
             <strong>Professional DocX</strong>
-            <span>Development foundation</span>
+            <span>Indexing foundation</span>
           </div>
         </div>
 
@@ -160,7 +267,7 @@ export default function App() {
       <main className="main-content">
         <header className="topbar">
           <label className="search-label" htmlFor="universal-search">
-            Filter scanned filenames
+            Filter indexed filename preview
           </label>
           <div className="search-wrap">
             <span aria-hidden="true">⌕</span>
@@ -168,9 +275,9 @@ export default function App() {
               id="universal-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search scanned filenames..."
+              placeholder="Filter indexed filename preview..."
               autoComplete="off"
-              disabled={!scan}
+              disabled={!previewFiles.length}
             />
             <kbd>Ctrl K</kbd>
           </div>
@@ -178,55 +285,76 @@ export default function App() {
             className="primary-button"
             type="button"
             onClick={chooseFolder}
-            disabled={isScanning}
+            disabled={isStarting || activeIsRunning}
           >
-            {isScanning ? "Scanning…" : "Choose folder"}
+            {isStarting ? "Starting…" : "Add folder"}
           </button>
         </header>
 
         <section className="hero">
-          <p className="eyebrow">PERSISTED STORAGE ROOTS</p>
-          <h1>Approved folders now survive restart.</h1>
+          <p className="eyebrow">BACKGROUND INDEXING</p>
+          <h1>Large folder scans no longer block the application.</h1>
           <p className="hero-copy">
-            Professional DocX stores approved roots in its local SQLite database.
-            The UI receives only opaque root IDs; Rust reconstructs the native
-            filesystem path from authoritative database records when a scan starts.
+            Each approved root is indexed as a persistent job and scan generation.
+            File observations are written to SQLite in bounded batches while the UI
+            reads progress from durable job state.
           </p>
 
           {error ? (
             <div className="status-card status-error" role="alert">
               {error}
             </div>
-          ) : scan ? (
-            <div className="scan-summary" aria-live="polite">
-              <div>
-                <span>Approved folder</span>
-                <strong>{scan.rootDisplayPath}</strong>
+          ) : activeJob ? (
+            <div className="job-card" aria-live="polite">
+              <div className="job-card-heading">
+                <div>
+                  <span>INDEX JOB</span>
+                  <strong>{activeJob.status}</strong>
+                </div>
+                {activeIsRunning ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void cancelActiveJob()}
+                    disabled={activeJob.cancelRequestedAtMs !== null}
+                  >
+                    {activeJob.cancelRequestedAtMs ? "Cancelling…" : "Cancel"}
+                  </button>
+                ) : null}
               </div>
-              <div>
-                <span>Files found</span>
-                <strong>{scan.totalFiles.toLocaleString()}</strong>
+              <div className="job-metrics">
+                <div>
+                  <span>Phase</span>
+                  <strong>{activeJob.currentPhase ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>Files seen</span>
+                  <strong>{activeJob.filesSeen.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Persisted</span>
+                  <strong>{activeJob.filesPersisted.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Source size</span>
+                  <strong>{formatBytes(activeJob.bytesSeen)}</strong>
+                </div>
+                <div>
+                  <span>Errors</span>
+                  <strong>{activeJob.errorsCount.toLocaleString()}</strong>
+                </div>
               </div>
-              <div>
-                <span>Source size</span>
-                <strong>{formatBytes(scan.totalBytes)}</strong>
-              </div>
-              <div>
-                <span>Skipped</span>
-                <strong>{scan.skippedEntries.toLocaleString()}</strong>
-              </div>
-            </div>
-          ) : approvedRoot ? (
-            <div className="status-card">
-              Approved root selected: {approvedRoot.displayPath}
+              {activeJob.failureMessage ? (
+                <p className="job-message">{activeJob.failureMessage}</p>
+              ) : null}
             </div>
           ) : (
             <div className="status-card">
-              {isLoadingRoots
+              {isLoading
                 ? "Loading approved storage roots…"
                 : roots.length
-                  ? `${roots.length} approved storage root${roots.length === 1 ? "" : "s"} restored from SQLite.`
-                  : "No approved storage root has been registered yet."}
+                  ? `${roots.length} approved storage root${roots.length === 1 ? "" : "s"} ready.`
+                  : "Add a folder to create the first persistent background index job."}
             </div>
           )}
         </section>
@@ -236,52 +364,70 @@ export default function App() {
             <div className="results-heading">
               <div>
                 <p className="eyebrow">APPROVED ROOTS</p>
-                <h2>Stored in Professional DocX</h2>
+                <h2>Index sources</h2>
               </div>
-              <span>These records are restored after application restart.</span>
+              <span>Only one filesystem index job runs at a time in this foundation build.</span>
             </div>
 
             <div className="root-list">
-              {roots.map((root) => (
-                <div className="root-row" key={root.storageRootId}>
-                  <div className="root-main">
-                    <strong>{root.displayPath}</strong>
-                    <span>{root.availabilityState}</span>
+              {roots.map((root) => {
+                const latest = latestJobs[root.storageRootId];
+                const completed = latest?.status === "COMPLETE";
+                const running =
+                  latest !== null &&
+                  latest !== undefined &&
+                  !TERMINAL_JOB_STATUSES.has(latest.status);
+
+                return (
+                  <div className="root-row" key={root.storageRootId}>
+                    <button
+                      className="root-select"
+                      type="button"
+                      onClick={() => void selectRoot(root)}
+                    >
+                      <strong>{root.displayPath}</strong>
+                      <span>
+                        {root.availabilityState} · {jobLabel(latest)}
+                      </span>
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => void startIndex(root)}
+                      disabled={isStarting || activeIsRunning || completed || running}
+                    >
+                      {completed ? "Indexed" : running ? "Indexing…" : "Index"}
+                    </button>
                   </div>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => void scanRoot(root)}
-                    disabled={isScanning}
-                  >
-                    Scan
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         ) : null}
 
-        {scan ? (
-          <section className="results-panel" aria-label="Scanned file preview">
+        {selectedRoot ? (
+          <section className="results-panel" aria-label="Indexed file preview">
             <div className="results-heading">
               <div>
-                <p className="eyebrow">FILE PREVIEW</p>
+                <p className="eyebrow">SQLITE FILE PREVIEW</p>
                 <h2>
                   {query
                     ? `${visibleFiles.length} preview match${visibleFiles.length === 1 ? "" : "es"}`
-                    : "First 50 files"}
+                    : previewFiles.length
+                      ? `First ${previewFiles.length} indexed files`
+                      : "No persisted files yet"}
                 </h2>
               </div>
               <span>
-                Source files remain at their original approved location.
+                This is a SQLite preview. Tantivy-backed universal search comes after
+                the indexing/reconciliation foundation.
               </span>
             </div>
 
             <div className="file-list">
               {visibleFiles.length ? (
                 visibleFiles.map((file) => (
-                  <div className="file-row" key={file.path}>
+                  <div className="file-row" key={file.fileInstanceId}>
                     <div className="file-icon" aria-hidden="true">
                       {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
                     </div>
@@ -294,35 +440,29 @@ export default function App() {
                 ))
               ) : (
                 <div className="empty-result">
-                  No preview filename contains “{query}”.
+                  {activeIsRunning
+                    ? "The background worker is persisting files in batches."
+                    : "No indexed file preview is available for this root."}
                 </div>
               )}
             </div>
-
-            {scan.totalFiles > scan.previewFiles.length ? (
-              <p className="preview-note">
-                This screen intentionally shows only the first{" "}
-                {scan.previewFiles.length.toLocaleString()} files from the scan.
-                Full indexing is added with the background indexing-job step.
-              </p>
-            ) : null}
           </section>
         ) : (
-          <section className="quick-grid" aria-label="Foundation principles">
+          <section className="quick-grid" aria-label="Indexing principles">
             <article>
               <span>01</span>
-              <h2>Persistent approval</h2>
-              <p>Approved roots are restored from SQLite after restart.</p>
+              <h2>Persistent jobs</h2>
+              <p>Job and generation status survive application crashes.</p>
             </article>
             <article>
               <span>02</span>
-              <h2>ID-based access</h2>
-              <p>The UI still cannot grant access using arbitrary path strings.</p>
+              <h2>Bounded batches</h2>
+              <p>File observations are committed in batches instead of one giant scan.</p>
             </article>
             <article>
               <span>03</span>
-              <h2>Native path fidelity</h2>
-              <p>Rust stores native path bytes separately from display text.</p>
+              <h2>Safe cancellation</h2>
+              <p>Cancelled or interrupted scans never become authoritative generations.</p>
             </article>
           </section>
         )}
