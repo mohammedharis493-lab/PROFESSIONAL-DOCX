@@ -92,3 +92,24 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+
+  rust-lockfile:
+    name: Generate Rust lockfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+
+      - name: Upload lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-lockfile
+          path: src-tauri/Cargo.lock
+          if-no-files-found: error
