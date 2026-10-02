@@ -44,6 +44,17 @@ type SearchResult = IndexedFile & {
   score: number;
 };
 
+type RecentDocument = IndexedFile & {
+  lastOpenedAtMs: number;
+  openCount: number;
+};
+
+type PinnedDocument = IndexedFile & {
+  pinnedAtMs: number;
+};
+
+type ViewMode = "home" | "recent" | "pinned";
+
 const TERMINAL_JOB_STATUSES = new Set([
   "COMPLETE",
   "PARTIAL",
@@ -84,6 +95,9 @@ export default function App() {
   const [activeJob, setActiveJob] = useState<IndexJob | null>(null);
   const [previewFiles, setPreviewFiles] = useState<IndexedFile[]>([]);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
+  const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDocument[]>([]);
+  const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
@@ -94,6 +108,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshRoots();
+    void refreshQuickAccess();
   }, []);
 
   useEffect(() => {
@@ -185,6 +200,19 @@ export default function App() {
       setError(String(loadError));
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function refreshQuickAccess() {
+    try {
+      const [recents, pins] = await Promise.all([
+        invoke<RecentDocument[]>("list_recent_documents", { limit: 20 }),
+        invoke<PinnedDocument[]>("list_pinned_documents", { limit: 50 }),
+      ]);
+      setRecentDocuments(recents);
+      setPinnedDocuments(pins);
+    } catch (quickAccessError) {
+      setError(String(quickAccessError));
     }
   }
 
@@ -294,6 +322,7 @@ export default function App() {
     setError(null);
     try {
       await invoke("open_file_instance", { fileInstanceId });
+      await refreshQuickAccess();
     } catch (openError) {
       setError(String(openError));
     }
@@ -306,6 +335,22 @@ export default function App() {
     } catch (revealError) {
       setError(String(revealError));
     }
+  }
+
+  async function toggleDocumentPin(documentId: string, pinned: boolean) {
+    setError(null);
+    try {
+      await invoke("set_document_pin", { documentId, pinned });
+      await refreshQuickAccess();
+    } catch (pinError) {
+      setError(String(pinError));
+    }
+  }
+
+  function showView(mode: ViewMode) {
+    setQuery("");
+    setSelectedRoot(null);
+    setViewMode(mode);
   }
 
   function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -343,6 +388,9 @@ export default function App() {
   const activeIsRunning =
     activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
   const hasQuery = query.trim().length > 0;
+  const pinnedDocumentIds = new Set(
+    pinnedDocuments.map((document) => document.documentId),
+  );
 
   return (
     <div className="app-shell">
@@ -356,7 +404,11 @@ export default function App() {
         </div>
 
         <nav className="nav-list">
-          <button className="nav-item nav-item-active" type="button">
+          <button
+            className={`nav-item${viewMode === "home" && !selectedRoot ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("home")}
+          >
             Home
           </button>
           <button className="nav-item" type="button" disabled>
@@ -365,11 +417,19 @@ export default function App() {
           <button className="nav-item" type="button" disabled>
             Engagements
           </button>
-          <button className="nav-item" type="button" disabled>
-            Recent
+          <button
+            className={`nav-item${viewMode === "recent" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("recent")}
+          >
+            Recent <span className="nav-count">{recentDocuments.length}</span>
           </button>
-          <button className="nav-item" type="button" disabled>
-            Pinned
+          <button
+            className={`nav-item${viewMode === "pinned" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("pinned")}
+          >
+            Pinned <span className="nav-count">{pinnedDocuments.length}</span>
           </button>
         </nav>
       </aside>
@@ -543,6 +603,19 @@ export default function App() {
                       >
                         Location
                       </button>
+                      <button
+                        className={`file-action${pinnedDocumentIds.has(file.documentId) ? " file-action-pinned" : ""}`}
+                        type="button"
+                        aria-pressed={pinnedDocumentIds.has(file.documentId)}
+                        onClick={() =>
+                          void toggleDocumentPin(
+                            file.documentId,
+                            !pinnedDocumentIds.has(file.documentId),
+                          )
+                        }
+                      >
+                        {pinnedDocumentIds.has(file.documentId) ? "Unpin" : "Pin"}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -554,6 +627,116 @@ export default function App() {
                   : "No indexed document matched this search."}
               </div>
             )}
+          </section>
+        ) : null}
+
+        {!hasQuery && !selectedRoot && viewMode === "recent" ? (
+          <section className="results-panel quick-access-panel" aria-label="Recent documents">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">RECENT</p>
+                <h2>Recently opened documents</h2>
+              </div>
+              <span>Successful opens appear here automatically, newest first.</span>
+            </div>
+            <div className="file-list">
+              {recentDocuments.length ? (
+                recentDocuments.map((file) => (
+                  <div className="file-row" key={file.fileInstanceId}>
+                    <div className="file-icon" aria-hidden="true">
+                      {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
+                    </div>
+                    <div className="file-main">
+                      <strong>{file.name}</strong>
+                      <span>{file.path}</span>
+                      <span className="match-source">
+                        Opened {file.openCount} time{file.openCount === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="file-meta">
+                      <span className={stateClass(file.availabilityState)}>
+                        {file.availabilityState}
+                      </span>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void openFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className={`file-action${pinnedDocumentIds.has(file.documentId) ? " file-action-pinned" : ""}`}
+                        type="button"
+                        aria-pressed={pinnedDocumentIds.has(file.documentId)}
+                        onClick={() =>
+                          void toggleDocumentPin(
+                            file.documentId,
+                            !pinnedDocumentIds.has(file.documentId),
+                          )
+                        }
+                      >
+                        {pinnedDocumentIds.has(file.documentId) ? "Unpin" : "Pin"}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-result">No documents have been opened yet.</div>
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {!hasQuery && !selectedRoot && viewMode === "pinned" ? (
+          <section className="results-panel quick-access-panel" aria-label="Pinned documents">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">PINNED</p>
+                <h2>Pinned documents</h2>
+              </div>
+              <span>Pins follow document identity across legitimate renames and moves.</span>
+            </div>
+            <div className="file-list">
+              {pinnedDocuments.length ? (
+                pinnedDocuments.map((file) => (
+                  <div className="file-row" key={file.fileInstanceId}>
+                    <div className="file-icon" aria-hidden="true">
+                      {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
+                    </div>
+                    <div className="file-main">
+                      <strong>{file.name}</strong>
+                      <span>{file.path}</span>
+                    </div>
+                    <div className="file-meta">
+                      <span className={stateClass(file.availabilityState)}>
+                        {file.availabilityState}
+                      </span>
+                      <button
+                        className="file-action"
+                        type="button"
+                        onClick={() => void openFileInstance(file.fileInstanceId)}
+                        disabled={file.availabilityState === "MISSING"}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className="file-action file-action-pinned"
+                        type="button"
+                        aria-pressed="true"
+                        onClick={() => void toggleDocumentPin(file.documentId, false)}
+                      >
+                        Unpin
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-result">
+                  Pin a search result to keep important documents one click away.
+                </div>
+              )}
+            </div>
           </section>
         ) : null}
 
@@ -655,6 +838,19 @@ export default function App() {
                       >
                         Location
                       </button>
+                      <button
+                        className={`file-action${pinnedDocumentIds.has(file.documentId) ? " file-action-pinned" : ""}`}
+                        type="button"
+                        aria-pressed={pinnedDocumentIds.has(file.documentId)}
+                        onClick={() =>
+                          void toggleDocumentPin(
+                            file.documentId,
+                            !pinnedDocumentIds.has(file.documentId),
+                          )
+                        }
+                      >
+                        {pinnedDocumentIds.has(file.documentId) ? "Unpin" : "Pin"}
+                      </button>
                     </div>
                   </div>
                 ))
@@ -667,22 +863,30 @@ export default function App() {
               )}
             </div>
           </section>
-        ) : !hasQuery && !selectedRoot ? (
+        ) : !hasQuery && !selectedRoot && viewMode === "home" ? (
           <section className="quick-grid" aria-label="Search capabilities">
             <article>
               <span>01</span>
-              <h2>Filename first</h2>
-              <p>Exact filenames, terms, prefixes, and partial filename matches receive priority.</p>
+              <h2>Recent documents</h2>
+              <p>
+                {recentDocuments.length
+                  ? `${recentDocuments.length} recently opened document${recentDocuments.length === 1 ? "" : "s"} ready from the sidebar.`
+                  : "Successfully opened documents will appear in Recent automatically."}
+              </p>
             </article>
             <article>
               <span>02</span>
-              <h2>Typo tolerant</h2>
-              <p>Common spelling mistakes can still reach the intended indexed document.</p>
+              <h2>Pinned documents</h2>
+              <p>
+                {pinnedDocuments.length
+                  ? `${pinnedDocuments.length} pinned document${pinnedDocuments.length === 1 ? "" : "s"} available in one click.`
+                  : "Pin important search results so they remain one click away."}
+              </p>
             </article>
             <article>
               <span>03</span>
-              <h2>Source aware</h2>
-              <p>Missing linked files remain searchable and are clearly marked instead of disappearing.</p>
+              <h2>Keyboard first</h2>
+              <p>Ctrl+K → type → ↑↓ → Enter reaches and opens an indexed original.</p>
             </article>
           </section>
         ) : null}

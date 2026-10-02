@@ -723,3 +723,26 @@ input:focus-visible {
 .search-result-row:hover {
   background: #f8faff;
 }
+
+
+.nav-count {
+  float: right;
+  min-width: 22px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #cbd5e1;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.file-action-pinned {
+  border-color: #c4d3ee;
+  background: #eef4ff;
+  color: #31558e;
+}
+
+.quick-access-panel {
+  margin-top: 0;
+}
