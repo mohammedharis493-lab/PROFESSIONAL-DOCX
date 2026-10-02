@@ -47,9 +47,7 @@ pub fn reveal_source(source: &ResolvedFileSource) -> Result<(), LaunchError> {
 
 fn validated_existing_path(source: &ResolvedFileSource) -> Result<PathBuf, LaunchError> {
     let root = fs::canonicalize(&source.storage_root_path).map_err(|error| {
-        LaunchError::SourceUnavailable(format!(
-            "Approved source root is unavailable: {error}"
-        ))
+        LaunchError::SourceUnavailable(format!("Approved source root is unavailable: {error}"))
     })?;
 
     let joined = source.storage_root_path.join(&source.relative_path);
@@ -91,7 +89,11 @@ fn platform_open(path: &Path) -> Result<(), LaunchError> {
     }
 
     let operation: Vec<u16> = "open".encode_utf16().chain(iter::once(0)).collect();
-    let file: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
+    let file: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
 
     let result = unsafe {
         ShellExecuteW(
@@ -144,7 +146,8 @@ mod tests {
             availability_state: "MISSING".to_string(),
         };
 
-        let error = open_source(&source).expect_err("missing file must not reach platform launcher");
+        let error =
+            open_source(&source).expect_err("missing file must not reach platform launcher");
         assert!(error.to_string().contains("unavailable"));
 
         let _ = fs::remove_dir_all(root);
