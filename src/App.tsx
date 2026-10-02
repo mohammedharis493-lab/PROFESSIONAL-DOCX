@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type ApprovedStorageRoot = {
@@ -39,6 +39,11 @@ type IndexedFile = {
   availabilityState: string;
 };
 
+type SearchResult = IndexedFile & {
+  matchedField: string;
+  score: number;
+};
+
 const TERMINAL_JOB_STATUSES = new Set([
   "COMPLETE",
   "PARTIAL",
@@ -67,6 +72,10 @@ function jobLabel(job: IndexJob | null | undefined) {
   return job.status.replaceAll("_", " ");
 }
 
+function stateClass(availabilityState: string) {
+  return `file-state file-state-${availabilityState.toLowerCase()}`;
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
@@ -74,12 +83,30 @@ export default function App() {
   const [latestJobs, setLatestJobs] = useState<Record<string, IndexJob | null>>({});
   const [activeJob, setActiveJob] = useState<IndexJob | null>(null);
   const [previewFiles, setPreviewFiles] = useState<IndexedFile[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchSequence = useRef(0);
 
   useEffect(() => {
     void refreshRoots();
+  }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        const input = document.getElementById("universal-search") as HTMLInputElement | null;
+        input?.focus();
+        input?.select();
+      }
+    };
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
   useEffect(() => {
@@ -95,17 +122,45 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeJob?.indexJobId, activeJob?.status]);
 
-  const visibleFiles = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
+  useEffect(() => {
+    const trimmedQuery = query.trim();
+    const sequence = searchSequence.current + 1;
+    searchSequence.current = sequence;
 
-    if (!normalizedQuery) {
-      return previewFiles.slice(0, 100);
+    if (!trimmedQuery) {
+      setSearchResults([]);
+      setSearchError(null);
+      setIsSearching(false);
+      return;
     }
 
-    return previewFiles
-      .filter((file) => file.name.toLocaleLowerCase().includes(normalizedQuery))
-      .slice(0, 100);
-  }, [previewFiles, query]);
+    setIsSearching(true);
+    setSearchError(null);
+
+    const timer = window.setTimeout(() => {
+      void invoke<SearchResult[]>("search_documents", {
+        query: trimmedQuery,
+        limit: 50,
+      })
+        .then((results) => {
+          if (searchSequence.current !== sequence) return;
+          setSearchResults(results);
+          setSearchError(null);
+        })
+        .catch((searchFailure) => {
+          if (searchSequence.current !== sequence) return;
+          setSearchResults([]);
+          setSearchError(String(searchFailure));
+        })
+        .finally(() => {
+          if (searchSequence.current === sequence) {
+            setIsSearching(false);
+          }
+        });
+    }, 120);
+
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   async function refreshRoots() {
     try {
@@ -135,7 +190,6 @@ export default function App() {
       limit: 200,
     });
     setPreviewFiles(files);
-    setQuery("");
   }
 
   async function selectRoot(root: ApprovedStorageRoot) {
@@ -234,6 +288,7 @@ export default function App() {
 
   const activeIsRunning =
     activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
+  const hasQuery = query.trim().length > 0;
 
   return (
     <div className="app-shell">
@@ -242,7 +297,7 @@ export default function App() {
           <div className="brand-mark">PD</div>
           <div>
             <strong>Professional DocX</strong>
-            <span>Indexing foundation</span>
+            <span>Search-first workspace</span>
           </div>
         </div>
 
@@ -268,7 +323,7 @@ export default function App() {
       <main className="main-content">
         <header className="topbar">
           <label className="search-label" htmlFor="universal-search">
-            Filter indexed filename preview
+            Universal search
           </label>
           <div className="search-wrap">
             <span aria-hidden="true">⌕</span>
@@ -276,9 +331,10 @@ export default function App() {
               id="universal-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter indexed filename preview..."
+              placeholder="Search anything..."
               autoComplete="off"
-              disabled={!previewFiles.length}
+              aria-controls="universal-search-results"
+              aria-busy={isSearching}
             />
             <kbd>Ctrl K</kbd>
           </div>
@@ -293,12 +349,12 @@ export default function App() {
         </header>
 
         <section className="hero">
-          <p className="eyebrow">INDEXING & RECONCILIATION</p>
-          <h1>File continuity survives normal moves, edits, and missing sources.</h1>
+          <p className="eyebrow">UNIVERSAL SEARCH</p>
+          <h1>Find the document without remembering where it lives.</h1>
           <p className="hero-copy">
-            Completed roots now reconcile against a new authoritative scan generation.
-            Strong filesystem identity preserves legitimate rename/move continuity, while
-            incomplete scans never infer deletion.
+            Search existing indexed files by filename or path across approved roots.
+            Partial words, prefixes, common typing errors, and year separators are
+            handled while the original file stays in its existing location.
           </p>
 
           {error ? (
@@ -309,7 +365,7 @@ export default function App() {
             <div className="job-card" aria-live="polite">
               <div className="job-card-heading">
                 <div>
-                  <span>INDEX JOB</span>
+                  <span>{activeJob.jobType.replaceAll("_", " ")}</span>
                   <strong>{activeJob.status}</strong>
                 </div>
                 {activeIsRunning ? (
@@ -354,20 +410,80 @@ export default function App() {
               {isLoading
                 ? "Loading approved storage roots…"
                 : roots.length
-                  ? `${roots.length} approved storage root${roots.length === 1 ? "" : "s"} ready.`
-                  : "Add a folder to create the first persistent background index job."}
+                  ? `${roots.length} approved storage root${roots.length === 1 ? "" : "s"} ready for search.`
+                  : "Add a folder to create the first searchable source."}
             </div>
           )}
         </section>
+
+        {hasQuery ? (
+          <section
+            className="results-panel universal-results"
+            id="universal-search-results"
+            aria-label="Universal search results"
+            aria-live="polite"
+          >
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">SEARCH RESULTS</p>
+                <h2>
+                  {isSearching
+                    ? "Searching…"
+                    : `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}`}
+                </h2>
+              </div>
+              <span>
+                Filename matches rank ahead of path and fuzzy-only matches. Results are
+                hydrated from SQLite before display.
+              </span>
+            </div>
+
+            {searchError ? (
+              <div className="empty-result status-error" role="alert">
+                Search failed: {searchError}
+              </div>
+            ) : searchResults.length ? (
+              <div className="file-list">
+                {searchResults.map((file) => (
+                  <div className="file-row" key={file.fileInstanceId}>
+                    <div className="file-icon" aria-hidden="true">
+                      {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
+                    </div>
+                    <div className="file-main">
+                      <strong>{file.name}</strong>
+                      <span>{file.path}</span>
+                      <span className="match-source">Matched: {file.matchedField}</span>
+                    </div>
+                    <div className="file-meta">
+                      <span className={stateClass(file.availabilityState)}>
+                        {file.availabilityState}
+                      </span>
+                      <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-result">
+                {isSearching
+                  ? "Searching indexed metadata…"
+                  : "No indexed document matched this search."}
+              </div>
+            )}
+          </section>
+        ) : null}
 
         {roots.length ? (
           <section className="roots-panel" aria-label="Approved storage roots">
             <div className="results-heading">
               <div>
                 <p className="eyebrow">APPROVED ROOTS</p>
-                <h2>Index sources</h2>
+                <h2>Search sources</h2>
               </div>
-              <span>Only one filesystem index job runs at a time in this foundation build.</span>
+              <span>
+                Existing files stay in place. Reconcile a completed root to refresh
+                moves, edits, additions, and missing-file status.
+              </span>
             </div>
 
             <div className="root-list">
@@ -406,28 +522,26 @@ export default function App() {
           </section>
         ) : null}
 
-        {selectedRoot ? (
+        {!hasQuery && selectedRoot ? (
           <section className="results-panel" aria-label="Indexed file preview">
             <div className="results-heading">
               <div>
-                <p className="eyebrow">SQLITE FILE PREVIEW</p>
+                <p className="eyebrow">INDEXED SOURCE</p>
                 <h2>
-                  {query
-                    ? `${visibleFiles.length} preview match${visibleFiles.length === 1 ? "" : "es"}`
-                    : previewFiles.length
-                      ? `First ${previewFiles.length} indexed files`
-                      : "No persisted files yet"}
+                  {previewFiles.length
+                    ? `First ${previewFiles.length} indexed files`
+                    : "No persisted files yet"}
                 </h2>
               </div>
               <span>
-                This is a SQLite preview. Tantivy-backed universal search comes after
-                the indexing/reconciliation foundation.
+                This SQLite-backed source view is diagnostic. Use the universal search
+                above for the normal document-access path.
               </span>
             </div>
 
             <div className="file-list">
-              {visibleFiles.length ? (
-                visibleFiles.map((file) => (
+              {previewFiles.length ? (
+                previewFiles.map((file) => (
                   <div className="file-row" key={file.fileInstanceId}>
                     <div className="file-icon" aria-hidden="true">
                       {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
@@ -437,9 +551,7 @@ export default function App() {
                       <span>{file.path}</span>
                     </div>
                     <div className="file-meta">
-                      <span
-                        className={`file-state file-state-${file.availabilityState.toLowerCase()}`}
-                      >
+                      <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
@@ -455,25 +567,25 @@ export default function App() {
               )}
             </div>
           </section>
-        ) : (
-          <section className="quick-grid" aria-label="Indexing principles">
+        ) : !hasQuery && !selectedRoot ? (
+          <section className="quick-grid" aria-label="Search capabilities">
             <article>
               <span>01</span>
-              <h2>Persistent jobs</h2>
-              <p>Job and generation status survive application crashes.</p>
+              <h2>Filename first</h2>
+              <p>Exact filenames, terms, prefixes, and partial filename matches receive priority.</p>
             </article>
             <article>
               <span>02</span>
-              <h2>Bounded batches</h2>
-              <p>File observations are committed in batches instead of one giant scan.</p>
+              <h2>Typo tolerant</h2>
+              <p>Common spelling mistakes can still reach the intended indexed document.</p>
             </article>
             <article>
               <span>03</span>
-              <h2>Safe cancellation</h2>
-              <p>Cancelled or interrupted scans never become authoritative generations.</p>
+              <h2>Source aware</h2>
+              <p>Missing linked files remain searchable and are clearly marked instead of disappearing.</p>
             </article>
           </section>
-        )}
+        ) : null}
       </main>
     </div>
   );
