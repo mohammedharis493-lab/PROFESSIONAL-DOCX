@@ -1,6 +1,10 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+
+type ApprovedStorageRoot = {
+  storageRootId: string;
+  displayPath: string;
+};
 
 type FileEntry = {
   name: string;
@@ -11,7 +15,8 @@ type FileEntry = {
 };
 
 type FolderScan = {
-  root: string;
+  storageRootId: string;
+  rootDisplayPath: string;
   totalFiles: number;
   totalBytes: number;
   skippedEntries: number;
@@ -34,6 +39,7 @@ function formatBytes(bytes: number) {
 
 export default function App() {
   const [query, setQuery] = useState("");
+  const [approvedRoot, setApprovedRoot] = useState<ApprovedStorageRoot | null>(null);
   const [scan, setScan] = useState<FolderScan | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,24 +59,23 @@ export default function App() {
 
   async function chooseFolder() {
     setError(null);
-
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      recursive: true,
-      title: "Choose a folder to scan",
-    });
-
-    if (!selected || Array.isArray(selected)) {
-      return;
-    }
-
     setIsScanning(true);
 
     try {
-      const result = await invoke<FolderScan>("scan_folder", {
-        root: selected,
+      const root = await invoke<ApprovedStorageRoot | null>(
+        "choose_and_register_storage_root",
+      );
+
+      if (!root) {
+        return;
+      }
+
+      setApprovedRoot(root);
+
+      const result = await invoke<FolderScan>("scan_storage_root", {
+        storageRootId: root.storageRootId,
       });
+
       setScan(result);
       setQuery("");
     } catch (scanError) {
@@ -138,12 +143,12 @@ export default function App() {
         </header>
 
         <section className="hero">
-          <p className="eyebrow">FIRST WORKING FEATURE</p>
-          <h1>Scan existing files without copying them.</h1>
+          <p className="eyebrow">APPROVED STORAGE ROOT</p>
+          <h1>Native-approved folders, not arbitrary paths.</h1>
           <p className="hero-copy">
-            Choose a folder already on your computer or network storage.
-            Professional DocX reads file metadata in place; this step does not
-            import or duplicate those files.
+            The native layer now chooses and registers the folder. The UI scans
+            it using an opaque storage-root ID and cannot grant itself access by
+            submitting an arbitrary filesystem path.
           </p>
 
           {error ? (
@@ -153,8 +158,8 @@ export default function App() {
           ) : scan ? (
             <div className="scan-summary" aria-live="polite">
               <div>
-                <span>Selected folder</span>
-                <strong>{scan.root}</strong>
+                <span>Approved folder</span>
+                <strong>{scan.rootDisplayPath}</strong>
               </div>
               <div>
                 <span>Files found</span>
@@ -169,9 +174,13 @@ export default function App() {
                 <strong>{scan.skippedEntries.toLocaleString()}</strong>
               </div>
             </div>
+          ) : approvedRoot ? (
+            <div className="status-card">
+              Approved root registered: {approvedRoot.displayPath}
+            </div>
           ) : (
             <div className="status-card">
-              No folder has been scanned. Your existing files remain untouched.
+              No approved storage root has been registered in this session.
             </div>
           )}
         </section>
@@ -188,7 +197,7 @@ export default function App() {
                 </h2>
               </div>
               <span>
-                Scan keeps source files at their original paths.
+                Source files remain at their original approved location.
               </span>
             </div>
 
@@ -217,7 +226,7 @@ export default function App() {
               <p className="preview-note">
                 This screen intentionally shows only the first{" "}
                 {scan.previewFiles.length.toLocaleString()} files from the scan.
-                Full indexing is added in the search phase.
+                Full indexing is added after the foundation remediations.
               </p>
             ) : null}
           </section>
@@ -225,18 +234,18 @@ export default function App() {
           <section className="quick-grid" aria-label="Foundation principles">
             <article>
               <span>01</span>
-              <h2>Search first</h2>
-              <p>Partial names such as “salamudd” must find the right file.</p>
+              <h2>Native approval</h2>
+              <p>The native layer owns which storage roots are authorized.</p>
             </article>
             <article>
               <span>02</span>
-              <h2>Files stay in place</h2>
-              <p>Existing folders are referenced and indexed, not duplicated.</p>
+              <h2>ID-based commands</h2>
+              <p>The UI refers to approved roots using opaque UUIDs.</p>
             </article>
             <article>
               <span>03</span>
-              <h2>Evidence when needed</h2>
-              <p>Immutable copies are created only for controlled evidence.</p>
+              <h2>Files stay in place</h2>
+              <p>Scanning reads metadata without importing the source files.</p>
             </article>
           </section>
         )}

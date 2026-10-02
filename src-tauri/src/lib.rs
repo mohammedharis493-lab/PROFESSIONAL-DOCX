@@ -1,8 +1,35 @@
 use serde::Serialize;
-use std::time::UNIX_EPOCH;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Mutex,
+    time::UNIX_EPOCH,
+};
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 const PREVIEW_FILE_LIMIT: usize = 200;
+
+#[derive(Debug, Clone)]
+struct ApprovedStorageRoot {
+    storage_root_id: Uuid,
+    canonical_path: PathBuf,
+    display_path: String,
+}
+
+#[derive(Default)]
+struct StorageRootRegistry {
+    roots: Mutex<HashMap<Uuid, ApprovedStorageRoot>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovedStorageRootDto {
+    storage_root_id: String,
+    display_path: String,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +44,8 @@ struct FileEntry {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FolderScan {
-    root: String,
+    storage_root_id: String,
+    root_display_path: String,
     total_files: u64,
     total_bytes: u64,
     skipped_entries: u64,
@@ -25,20 +53,75 @@ struct FolderScan {
 }
 
 #[tauri::command]
-fn scan_folder(root: String) -> Result<FolderScan, String> {
-    let canonical_root = std::fs::canonicalize(&root)
+async fn choose_and_register_storage_root(
+    app: AppHandle,
+    roots: State<'_, StorageRootRegistry>,
+) -> Result<Option<ApprovedStorageRootDto>, String> {
+    let selected = app.dialog().file().blocking_pick_folder();
+
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    let selected_path = selected
+        .into_path()
+        .map_err(|_| "Selected folder could not be resolved to a native path.".to_string())?;
+
+    let canonical_path = std::fs::canonicalize(&selected_path)
         .map_err(|error| format!("Unable to access selected folder: {error}"))?;
 
-    if !canonical_root.is_dir() {
+    if !canonical_path.is_dir() {
         return Err("Selected path is not a folder.".to_string());
     }
+
+    let storage_root_id = Uuid::new_v4();
+    let display_path = canonical_path.to_string_lossy().into_owned();
+
+    let approved = ApprovedStorageRoot {
+        storage_root_id,
+        canonical_path,
+        display_path: display_path.clone(),
+    };
+
+    let mut registry = roots
+        .roots
+        .lock()
+        .map_err(|_| "Approved storage-root registry is unavailable.".to_string())?;
+
+    registry.insert(storage_root_id, approved);
+
+    Ok(Some(ApprovedStorageRootDto {
+        storage_root_id: storage_root_id.to_string(),
+        display_path,
+    }))
+}
+
+#[tauri::command]
+fn scan_storage_root(
+    storage_root_id: String,
+    roots: State<'_, StorageRootRegistry>,
+) -> Result<FolderScan, String> {
+    let root_id = Uuid::parse_str(&storage_root_id)
+        .map_err(|_| "Invalid storage-root identifier.".to_string())?;
+
+    let approved = {
+        let registry = roots
+            .roots
+            .lock()
+            .map_err(|_| "Approved storage-root registry is unavailable.".to_string())?;
+
+        registry
+            .get(&root_id)
+            .cloned()
+            .ok_or_else(|| "Storage root is not approved for this application session.".to_string())?
+    };
 
     let mut total_files = 0_u64;
     let mut total_bytes = 0_u64;
     let mut skipped_entries = 0_u64;
     let mut preview_files = Vec::with_capacity(PREVIEW_FILE_LIMIT);
 
-    for entry_result in WalkDir::new(&canonical_root).follow_links(false) {
+    for entry_result in WalkDir::new(&approved.canonical_path).follow_links(false) {
         let entry = match entry_result {
             Ok(entry) => entry,
             Err(_) => {
@@ -86,7 +169,8 @@ fn scan_folder(root: String) -> Result<FolderScan, String> {
     }
 
     Ok(FolderScan {
-        root: canonical_root.to_string_lossy().into_owned(),
+        storage_root_id: approved.storage_root_id.to_string(),
+        root_display_path: approved.display_path,
         total_files,
         total_bytes,
         skipped_entries,
@@ -98,7 +182,11 @@ fn scan_folder(root: String) -> Result<FolderScan, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_folder])
+        .manage(StorageRootRegistry::default())
+        .invoke_handler(tauri::generate_handler![
+            choose_and_register_storage_root,
+            scan_storage_root
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Professional DocX");
 }
