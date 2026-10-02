@@ -819,10 +819,7 @@ fn existing_file_instance_from_row(
     })
 }
 
-fn creation_time_conflicts(
-    existing: &ExistingFileInstance,
-    observation: &FileObservation,
-) -> bool {
+fn creation_time_conflicts(existing: &ExistingFileInstance, observation: &FileObservation) -> bool {
     matches!(
         (existing.creation_time_ms, observation.creation_time_ms),
         (Some(previous), Some(current)) if previous != current
@@ -1122,7 +1119,7 @@ fn enqueue_document_projection(
     observed_at_ms: i64,
 ) -> Result<(), PersistenceError> {
     let projection: SearchProjection = transaction.query_row(
-            "SELECT
+        "SELECT
                 d.document_id,
                 d.display_name,
                 fi.storage_root_id,
@@ -1140,20 +1137,20 @@ fn enqueue_document_projection(
              FROM file_instances fi
              JOIN documents d ON d.document_id = fi.document_id
              WHERE fi.file_instance_id = ?1",
-            [file_instance_id],
-            |row| {
-                Ok(SearchProjection {
-                    document_id: row.get(0)?,
-                    display_name: row.get(1)?,
-                    storage_root_id: row.get(2)?,
-                    relative_path_display: row.get(3)?,
-                    size_bytes: row.get(4)?,
-                    last_write_time_ms: row.get(5)?,
-                    availability_state: row.get(6)?,
-                    content_version_id: row.get(7)?,
-                })
-            },
-        )?;
+        [file_instance_id],
+        |row| {
+            Ok(SearchProjection {
+                document_id: row.get(0)?,
+                display_name: row.get(1)?,
+                storage_root_id: row.get(2)?,
+                relative_path_display: row.get(3)?,
+                size_bytes: row.get(4)?,
+                last_write_time_ms: row.get(5)?,
+                availability_state: row.get(6)?,
+                content_version_id: row.get(7)?,
+            })
+        },
+    )?;
 
     let payload = json!({
         "documentId": projection.document_id,
@@ -1209,10 +1206,9 @@ fn reconcile_unseen_as_missing(
                AND availability_state <> 'MISSING'",
         )?;
 
-        let rows = statement.query_map(
-            params![storage_root_id, scan_generation_id],
-            |row| row.get::<_, String>(0),
-        )?;
+        let rows = statement.query_map(params![storage_root_id, scan_generation_id], |row| {
+            row.get::<_, String>(0)
+        })?;
 
         let mut ids = Vec::new();
         for row in rows {
@@ -1280,12 +1276,7 @@ pub fn finish_index_job(
     let now = now_unix_ms()?;
 
     if completion.status == "COMPLETE" {
-        reconcile_unseen_as_missing(
-            &transaction,
-            storage_root_id,
-            scan_generation_id,
-            now,
-        )?;
+        reconcile_unseen_as_missing(&transaction, storage_root_id, scan_generation_id, now)?;
     }
 
     transaction.execute(
