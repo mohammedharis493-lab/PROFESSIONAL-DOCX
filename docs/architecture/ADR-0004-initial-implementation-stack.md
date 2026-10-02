@@ -58,6 +58,8 @@ Tantivy
 
 Indexing-job, scan-generation, reconciliation, and transactional search-outbox behavior are defined in ADR-0006.
 
+SQLite durability, schema migration, backup, and recovery behavior are defined in ADR-0008.
+
 ## Why This Stack
 
 ### Tauri 2
@@ -120,6 +122,8 @@ SQLite is the local source of truth.
 The persistence layer must be abstracted so shared deployment can later use PostgreSQL.
 
 SQLite must not be used as a shared multi-host database by placing the application database on a NAS.
+
+The local database uses the durability/migration contract defined in ADR-0008, including WAL mode, FULL synchronous durability, per-connection foreign-key enforcement, bounded lock waits, ordered migrations, and SQLite-consistent backups.
 
 ### Tantivy
 
@@ -267,3 +271,4 @@ Those choices are deferred until needed.
 - Tantivy: https://docs.rs/tantivy/
 - Tantivy fuzzy search example: https://github.com/quickwit-oss/tantivy/blob/main/examples/fuzzy_search.rs
 - ADR-0006: Indexing Jobs, Scan Generations, Reconciliation, and Search Consistency
+- ADR-0008: SQLite Persistence, Durability, Migration, Backup, and Recovery
