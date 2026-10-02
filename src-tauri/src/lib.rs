@@ -254,12 +254,18 @@ async fn start_index_job(
         runtime_handle.finish(&index_job_id);
 
         let search_database_path = database_path.clone();
-        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+        match tauri::async_runtime::spawn_blocking(move || {
             search::sync_search_index(&search_database_path, &search_handle)
         })
         .await
         {
-            eprintln!("Search-index synchronization task failed to join: {error}");
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                eprintln!("Search-index synchronization failed: {error}");
+            }
+            Err(error) => {
+                eprintln!("Search-index synchronization task failed to join: {error}");
+            }
         }
     });
 
