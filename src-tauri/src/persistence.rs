@@ -136,7 +136,13 @@ pub struct SearchProjectionRecord {
 pub struct ResolvedFileSource {
     pub storage_root_path: PathBuf,
     pub relative_path: PathBuf,
-    pub availability_state: String,
+}
+
+struct ResolvedFileSourceRow {
+    root_native: Vec<u8>,
+    root_encoding: String,
+    relative_native: Vec<u8>,
+    relative_encoding: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1808,38 +1814,34 @@ pub fn resolve_file_instance_source(
 ) -> Result<Option<ResolvedFileSource>, PersistenceError> {
     let connection = open_configured_connection(database_path)?;
 
-    let row: Option<(Vec<u8>, String, Vec<u8>, String, String)> = connection
+    let row: Option<ResolvedFileSourceRow> = connection
         .query_row(
             "SELECT
                 COALESCE(sr.canonical_native_locator, sr.native_locator),
                 sr.native_locator_encoding,
                 fi.relative_path_native,
-                fi.path_native_encoding,
-                fi.availability_state
+                fi.path_native_encoding
              FROM file_instances fi
              JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
              WHERE fi.file_instance_id = ?1",
             [file_instance_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
+                Ok(ResolvedFileSourceRow {
+                    root_native: row.get(0)?,
+                    root_encoding: row.get(1)?,
+                    relative_native: row.get(2)?,
+                    relative_encoding: row.get(3)?,
+                })
             },
         )
         .optional()?;
 
-    let Some((root_native, root_encoding, relative_native, relative_encoding, availability_state)) =
-        row
-    else {
+    let Some(row) = row else {
         return Ok(None);
     };
 
-    let storage_root_path = decode_native_path(&root_native, &root_encoding)?;
-    let relative_path = decode_native_path(&relative_native, &relative_encoding)?;
+    let storage_root_path = decode_native_path(&row.root_native, &row.root_encoding)?;
+    let relative_path = decode_native_path(&row.relative_native, &row.relative_encoding)?;
 
     if relative_path.components().any(|component| {
         matches!(
@@ -1857,7 +1859,6 @@ pub fn resolve_file_instance_source(
     Ok(Some(ResolvedFileSource {
         storage_root_path,
         relative_path,
-        availability_state,
     }))
 }
 
