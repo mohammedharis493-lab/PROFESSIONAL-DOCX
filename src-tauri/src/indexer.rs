@@ -1047,8 +1047,8 @@ mod tests {
         assert_eq!(recents[0].file.document_id, before[0].document_id);
         assert_eq!(recents[0].open_count, 2);
 
-        let pins = persistence::list_pinned_documents(&test.database_path, 10)
-            .expect("pins should load");
+        let pins =
+            persistence::list_pinned_documents(&test.database_path, 10).expect("pins should load");
         assert_eq!(pins.len(), 1);
         assert_eq!(pins[0].file.document_id, before[0].document_id);
 
@@ -1085,11 +1085,9 @@ mod tests {
 
         persistence::set_document_pin(&test.database_path, &before[0].document_id, false)
             .expect("document should unpin");
-        assert!(
-            persistence::list_pinned_documents(&test.database_path, 10)
-                .expect("pins should reload")
-                .is_empty()
-        );
+        assert!(persistence::list_pinned_documents(&test.database_path, 10)
+            .expect("pins should reload")
+            .is_empty());
     }
 
     #[test]
