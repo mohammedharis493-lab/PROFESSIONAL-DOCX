@@ -1003,6 +1003,96 @@ mod tests {
     }
 
     #[test]
+    fn recents_and_pins_follow_document_identity_across_rename() {
+        let test = TestIndex::new();
+        let original = test.source_root.join("Pinned Workpaper.xlsx");
+        let renamed = test.source_root.join("Pinned Workpaper Final.xlsx");
+        fs::write(&original, b"working paper").expect("test file should be written");
+
+        let root = test.register_root("root-quick-access");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        let before =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(before.len(), 1);
+
+        persistence::set_document_pin(&test.database_path, &before[0].document_id, true)
+            .expect("document should pin");
+        persistence::record_document_open(&test.database_path, &before[0].file_instance_id)
+            .expect("first open should record");
+        persistence::record_document_open(&test.database_path, &before[0].file_instance_id)
+            .expect("second open should record");
+
+        let recents = persistence::list_recent_documents(&test.database_path, 10)
+            .expect("recents should load");
+        assert_eq!(recents.len(), 1);
+        assert_eq!(recents[0].file.document_id, before[0].document_id);
+        assert_eq!(recents[0].open_count, 2);
+
+        let pins = persistence::list_pinned_documents(&test.database_path, 10)
+            .expect("pins should load");
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].file.document_id, before[0].document_id);
+
+        fs::rename(&original, &renamed).expect("test file should rename");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root,
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("rename reconciliation should complete");
+
+        let recents_after = persistence::list_recent_documents(&test.database_path, 10)
+            .expect("recents should survive rename");
+        let pins_after = persistence::list_pinned_documents(&test.database_path, 10)
+            .expect("pins should survive rename");
+
+        assert_eq!(recents_after.len(), 1);
+        assert_eq!(pins_after.len(), 1);
+        assert_eq!(recents_after[0].file.name, "Pinned Workpaper Final.xlsx");
+        assert_eq!(pins_after[0].file.name, "Pinned Workpaper Final.xlsx");
+        assert_eq!(pins_after[0].file.document_id, before[0].document_id);
+
+        persistence::set_document_pin(&test.database_path, &before[0].document_id, false)
+            .expect("document should unpin");
+        assert!(
+            persistence::list_pinned_documents(&test.database_path, 10)
+                .expect("pins should reload")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn startup_recovery_marks_running_job_interrupted() {
         let test = TestIndex::new();
         let root = test.register_root("root-recovery");

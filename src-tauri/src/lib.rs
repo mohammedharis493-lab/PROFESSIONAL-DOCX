@@ -104,6 +104,68 @@ impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RecentDocumentDto {
+    document_id: String,
+    file_instance_id: String,
+    name: String,
+    path: String,
+    extension: String,
+    size_bytes: u64,
+    modified_unix_ms: Option<i64>,
+    availability_state: String,
+    last_opened_at_ms: i64,
+    open_count: u64,
+}
+
+impl From<persistence::RecentDocumentRecord> for RecentDocumentDto {
+    fn from(value: persistence::RecentDocumentRecord) -> Self {
+        Self {
+            document_id: value.file.document_id,
+            file_instance_id: value.file.file_instance_id,
+            name: value.file.name,
+            path: value.file.path,
+            extension: value.file.extension,
+            size_bytes: value.file.size_bytes,
+            modified_unix_ms: value.file.modified_unix_ms,
+            availability_state: value.file.availability_state,
+            last_opened_at_ms: value.last_opened_at_ms,
+            open_count: value.open_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PinnedDocumentDto {
+    document_id: String,
+    file_instance_id: String,
+    name: String,
+    path: String,
+    extension: String,
+    size_bytes: u64,
+    modified_unix_ms: Option<i64>,
+    availability_state: String,
+    pinned_at_ms: i64,
+}
+
+impl From<persistence::PinnedDocumentRecord> for PinnedDocumentDto {
+    fn from(value: persistence::PinnedDocumentRecord) -> Self {
+        Self {
+            document_id: value.file.document_id,
+            file_instance_id: value.file.file_instance_id,
+            name: value.file.name,
+            path: value.file.path,
+            extension: value.file.extension,
+            size_bytes: value.file.size_bytes,
+            modified_unix_ms: value.file.modified_unix_ms,
+            availability_state: value.file.availability_state,
+            pinned_at_ms: value.pinned_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SearchResultDto {
     document_id: String,
     file_instance_id: String,
@@ -333,6 +395,38 @@ fn list_indexed_file_preview(
 }
 
 #[tauri::command]
+fn list_recent_documents(
+    limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<RecentDocumentDto>, String> {
+    persistence::list_recent_documents(database.path(), limit.unwrap_or(20))
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_pinned_documents(
+    limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<PinnedDocumentDto>, String> {
+    persistence::list_pinned_documents(database.path(), limit.unwrap_or(50))
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_document_pin(
+    document_id: String,
+    pinned: bool,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&document_id).map_err(|_| "Invalid document identifier.".to_string())?;
+
+    persistence::set_document_pin(database.path(), &document_id, pinned)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn search_documents(
     query: String,
     limit: Option<u32>,
@@ -367,7 +461,10 @@ async fn open_file_instance(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
 
-        launcher::open_source(&source).map_err(|error| error.to_string())
+        launcher::open_source(&source).map_err(|error| error.to_string())?;
+        persistence::record_document_open(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?;
+        Ok(())
     })
     .await
     .map_err(|error| format!("Open-source task failed to join: {error}"))?
@@ -448,6 +545,9 @@ pub fn run() {
             get_latest_index_job_for_root,
             cancel_index_job,
             list_indexed_file_preview,
+            list_recent_documents,
+            list_pinned_documents,
+            set_document_pin,
             search_documents,
             open_file_instance,
             reveal_file_instance,
