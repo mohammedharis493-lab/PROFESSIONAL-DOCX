@@ -84,6 +84,7 @@ export default function App() {
   const [activeJob, setActiveJob] = useState<IndexJob | null>(null);
   const [previewFiles, setPreviewFiles] = useState<IndexedFile[]>([]);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -129,6 +130,7 @@ export default function App() {
 
     if (!trimmedQuery) {
       setSearchResults([]);
+      setSelectedSearchIndex(0);
       setSearchError(null);
       setIsSearching(false);
       return;
@@ -145,11 +147,13 @@ export default function App() {
         .then((results) => {
           if (searchSequence.current !== sequence) return;
           setSearchResults(results);
+          setSelectedSearchIndex(0);
           setSearchError(null);
         })
         .catch((searchFailure) => {
           if (searchSequence.current !== sequence) return;
           setSearchResults([]);
+          setSelectedSearchIndex(0);
           setSearchError(String(searchFailure));
         })
         .finally(() => {
@@ -304,6 +308,38 @@ export default function App() {
     }
   }
 
+  function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setQuery("");
+      setSelectedSearchIndex(0);
+      return;
+    }
+
+    if (!searchResults.length) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelectedSearchIndex((current) =>
+        Math.min(current + 1, searchResults.length - 1),
+      );
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelectedSearchIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+
+    if (event.key === "Enter") {
+      const selected = searchResults[selectedSearchIndex];
+      if (!selected || selected.availabilityState === "MISSING") return;
+      event.preventDefault();
+      void openFileInstance(selected.fileInstanceId);
+    }
+  }
+
   const activeIsRunning =
     activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
   const hasQuery = query.trim().length > 0;
@@ -349,9 +385,13 @@ export default function App() {
               id="universal-search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={handleSearchKeyDown}
               placeholder="Search anything..."
               autoComplete="off"
               aria-controls="universal-search-results"
+              aria-activedescendant={
+                searchResults.length ? `search-result-${selectedSearchIndex}` : undefined
+              }
               aria-busy={isSearching}
             />
             <kbd>Ctrl K</kbd>
@@ -451,8 +491,8 @@ export default function App() {
                 </h2>
               </div>
               <span>
-                Filename matches rank ahead of path and fuzzy-only matches. Results are
-                hydrated from SQLite before display.
+                ↑↓ selects · Enter opens · Esc clears. Filename matches rank ahead of
+                path and fuzzy-only matches.
               </span>
             </div>
 
@@ -462,8 +502,18 @@ export default function App() {
               </div>
             ) : searchResults.length ? (
               <div className="file-list">
-                {searchResults.map((file) => (
-                  <div className="file-row" key={file.fileInstanceId}>
+                {searchResults.map((file, index) => (
+                  <div
+                    className={`file-row search-result-row${index === selectedSearchIndex ? " file-row-selected" : ""}`}
+                    id={`search-result-${index}`}
+                    key={file.fileInstanceId}
+                    onMouseEnter={() => setSelectedSearchIndex(index)}
+                    onDoubleClick={() => {
+                      if (file.availabilityState !== "MISSING") {
+                        void openFileInstance(file.fileInstanceId);
+                      }
+                    }}
+                  >
                     <div className="file-icon" aria-hidden="true">
                       {file.extension ? file.extension.slice(0, 4).toUpperCase() : "FILE"}
                     </div>
