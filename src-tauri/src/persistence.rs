@@ -2,10 +2,16 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::{
     error::Error,
+    ffi::OsString,
     fmt, fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const LATEST_SCHEMA_VERSION: i64 = 1;
@@ -22,7 +28,30 @@ const MIGRATIONS: &[Migration] = &[Migration {
     sql: include_str!("../migrations/0001_initial.sql"),
 }];
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct DatabaseState {
+    path: PathBuf,
+}
+
+impl DatabaseState {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageRootRecord {
+    pub storage_root_id: String,
+    pub display_path: String,
+    pub availability_state: String,
+    pub canonical_path: PathBuf,
+}
+
+#[derive(Debug)] 
 pub enum PersistenceError {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
@@ -67,6 +96,277 @@ pub fn initialize_database(database_path: &Path) -> Result<(), PersistenceError>
     verify_connection_profile(&connection)?;
 
     Ok(())
+}
+
+pub fn register_storage_root(
+    database_path: &Path,
+    proposed_storage_root_id: &str,
+    selected_path: &Path,
+    canonical_path: &Path,
+) -> Result<StorageRootRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let (native_locator, native_encoding) = encode_native_path(selected_path);
+    let (canonical_native_locator, canonical_encoding) = encode_native_path(canonical_path);
+
+    if native_encoding != canonical_encoding {
+        return Err(PersistenceError::Configuration(
+            "selected and canonical paths use different native encodings".to_string(),
+        ));
+    }
+
+    let display_locator = selected_path.to_string_lossy().into_owned();
+    let canonical_display_locator = canonical_path.to_string_lossy().into_owned();
+    let now = now_unix_ms()?;
+    let kind = classify_storage_root(canonical_path);
+
+    let existing_id: Option<String> = transaction
+        .query_row(
+            "SELECT storage_root_id
+             FROM storage_roots
+             WHERE native_locator_encoding = ?1
+               AND canonical_native_locator = ?2
+             LIMIT 1",
+            params![native_encoding, &canonical_native_locator],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let storage_root_id = if let Some(existing_id) = existing_id {
+        transaction.execute(
+            "UPDATE storage_roots
+             SET kind = ?1,
+                 native_locator = ?2,
+                 display_locator = ?3,
+                 canonical_native_locator = ?4,
+                 canonical_display_locator = ?5,
+                 availability_state = 'AVAILABLE',
+                 updated_at_ms = ?6
+             WHERE storage_root_id = ?7",
+            params![
+                kind,
+                &native_locator,
+                &display_locator,
+                &canonical_native_locator,
+                &canonical_display_locator,
+                now,
+                &existing_id
+            ],
+        )?;
+        existing_id
+    } else {
+        transaction.execute(
+            "INSERT INTO storage_roots (
+                storage_root_id,
+                kind,
+                native_locator,
+                native_locator_encoding,
+                display_locator,
+                canonical_native_locator,
+                canonical_display_locator,
+                availability_state,
+                approved_at_ms,
+                approved_by,
+                created_at_ms,
+                updated_at_ms
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'AVAILABLE', ?8, NULL, ?8, ?8
+             )",
+            params![
+                proposed_storage_root_id,
+                kind,
+                &native_locator,
+                native_encoding,
+                &display_locator,
+                &canonical_native_locator,
+                &canonical_display_locator,
+                now
+            ],
+        )?;
+        proposed_storage_root_id.to_string()
+    };
+
+    transaction.commit()?;
+
+    Ok(StorageRootRecord {
+        storage_root_id,
+        display_path: canonical_display_locator,
+        availability_state: "AVAILABLE".to_string(),
+        canonical_path: canonical_path.to_path_buf(),
+    })
+}
+
+pub fn list_storage_roots(
+    database_path: &Path,
+) -> Result<Vec<StorageRootRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            storage_root_id,
+            native_locator_encoding,
+            native_locator,
+            canonical_native_locator,
+            display_locator,
+            canonical_display_locator,
+            availability_state
+         FROM storage_roots
+         ORDER BY COALESCE(canonical_display_locator, display_locator) COLLATE NOCASE",
+    )?;
+
+    let rows = statement.query_map([], storage_root_from_row)?;
+    let mut roots = Vec::new();
+
+    for row in rows {
+        roots.push(row?);
+    }
+
+    Ok(roots)
+}
+
+pub fn get_storage_root(
+    database_path: &Path,
+    storage_root_id: &str,
+) -> Result<Option<StorageRootRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    connection
+        .query_row(
+            "SELECT
+                storage_root_id,
+                native_locator_encoding,
+                native_locator,
+                canonical_native_locator,
+                display_locator,
+                canonical_display_locator,
+                availability_state
+             FROM storage_roots
+             WHERE storage_root_id = ?1",
+            [storage_root_id],
+            storage_root_from_row,
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
+pub fn set_storage_root_availability(
+    database_path: &Path,
+    storage_root_id: &str,
+    availability_state: &str,
+) -> Result<(), PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let updated = connection.execute(
+        "UPDATE storage_roots
+         SET availability_state = ?1,
+             updated_at_ms = ?2
+         WHERE storage_root_id = ?3",
+        params![availability_state, now_unix_ms()?, storage_root_id],
+    )?;
+
+    if updated != 1 {
+        return Err(PersistenceError::Configuration(format!(
+            "storage root {storage_root_id} does not exist"
+        )));
+    }
+
+    Ok(())
+}
+
+fn storage_root_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StorageRootRecord> {
+    let storage_root_id: String = row.get(0)?;
+    let native_encoding: String = row.get(1)?;
+    let native_locator: Vec<u8> = row.get(2)?;
+    let canonical_native_locator: Option<Vec<u8>> = row.get(3)?;
+    let display_locator: String = row.get(4)?;
+    let canonical_display_locator: Option<String> = row.get(5)?;
+    let availability_state: String = row.get(6)?;
+
+    let authoritative_native = canonical_native_locator.as_deref().unwrap_or(&native_locator);
+    let canonical_path = decode_native_path(authoritative_native, &native_encoding).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Blob,
+            Box::new(error),
+        )
+    })?;
+
+    Ok(StorageRootRecord {
+        storage_root_id,
+        display_path: canonical_display_locator.unwrap_or(display_locator),
+        availability_state,
+        canonical_path,
+    })
+}
+
+#[cfg(windows)]
+fn encode_native_path(path: &Path) -> (Vec<u8>, &'static str) {
+    let mut bytes = Vec::new();
+
+    for unit in path.as_os_str().encode_wide() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+
+    (bytes, "windows-utf16le")
+}
+
+#[cfg(unix)]
+fn encode_native_path(path: &Path) -> (Vec<u8>, &'static str) {
+    (path.as_os_str().as_bytes().to_vec(), "unix-bytes")
+}
+
+#[cfg(windows)]
+fn decode_native_path(bytes: &[u8], encoding: &str) -> Result<PathBuf, PersistenceError> {
+    if encoding != "windows-utf16le" {
+        return Err(PersistenceError::Configuration(format!(
+            "unsupported Windows path encoding {encoding}"
+        )));
+    }
+
+    if !bytes.len().is_multiple_of(2) {
+        return Err(PersistenceError::Configuration(
+            "stored UTF-16 path has an odd byte length".to_string(),
+        ));
+    }
+
+    let wide: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+
+    Ok(PathBuf::from(OsString::from_wide(&wide)))
+}
+
+#[cfg(unix)]
+fn decode_native_path(bytes: &[u8], encoding: &str) -> Result<PathBuf, PersistenceError> {
+    if encoding != "unix-bytes" {
+        return Err(PersistenceError::Configuration(format!(
+            "unsupported Unix path encoding {encoding}"
+        )));
+    }
+
+    Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+}
+
+#[cfg(windows)]
+fn classify_storage_root(path: &Path) -> &'static str {
+    use std::path::{Component, Prefix};
+
+    match path.components().next() {
+        Some(Component::Prefix(prefix))
+            if matches!(
+                prefix.kind(),
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..)
+            ) =>
+        {
+            "NETWORK"
+        }
+        _ => "LOCAL",
+    }
+}
+
+#[cfg(unix)]
+fn classify_storage_root(_path: &Path) -> &'static str {
+    "LOCAL"
 }
 
 fn open_configured_connection(database_path: &Path) -> Result<Connection, PersistenceError> {
@@ -265,7 +565,6 @@ fn now_unix_ms() -> Result<i64, PersistenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use uuid::Uuid;
 
     struct TestDatabase {
@@ -280,6 +579,10 @@ mod tests {
             let path = directory.join("metadata.sqlite");
 
             Self { directory, path }
+        }
+
+        fn source_root(&self, name: &str) -> PathBuf {
+            self.directory.join(name)
         }
     }
 
@@ -442,5 +745,64 @@ mod tests {
         assert!(error
             .to_string()
             .contains("newer than this application supports"));
+    }
+
+    #[test]
+    fn storage_root_survives_database_reopen() {
+        let database = TestDatabase::new();
+        let source_root = database.source_root("client-files");
+        fs::create_dir_all(&source_root).expect("test source root should be created");
+
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let canonical =
+            fs::canonicalize(&source_root).expect("test source root should canonicalize");
+
+        let registered = register_storage_root(
+            &database.path,
+            "root-persistent",
+            &source_root,
+            &canonical,
+        )
+        .expect("storage root should register");
+
+        assert_eq!(registered.storage_root_id, "root-persistent");
+
+        initialize_database(&database.path).expect("database reopen should succeed");
+
+        let loaded = get_storage_root(&database.path, "root-persistent")
+            .expect("storage root lookup should succeed")
+            .expect("storage root should still exist");
+
+        assert_eq!(loaded.storage_root_id, "root-persistent");
+        assert_eq!(loaded.canonical_path, canonical);
+
+        let roots = list_storage_roots(&database.path).expect("storage roots should list");
+        assert_eq!(roots.len(), 1);
+    }
+
+    #[test]
+    fn registering_same_canonical_root_reuses_identity() {
+        let database = TestDatabase::new();
+        let source_root = database.source_root("same-root");
+        fs::create_dir_all(&source_root).expect("test source root should be created");
+
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let canonical =
+            fs::canonicalize(&source_root).expect("test source root should canonicalize");
+
+        let first =
+            register_storage_root(&database.path, "root-one", &source_root, &canonical)
+                .expect("first registration should succeed");
+        let second =
+            register_storage_root(&database.path, "root-two", &source_root, &canonical)
+                .expect("second registration should succeed");
+
+        assert_eq!(first.storage_root_id, "root-one");
+        assert_eq!(second.storage_root_id, "root-one");
+
+        let roots = list_storage_roots(&database.path).expect("storage roots should list");
+        assert_eq!(roots.len(), 1);
     }
 }

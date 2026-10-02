@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type ApprovedStorageRoot = {
   storageRootId: string;
   displayPath: string;
+  availabilityState: string;
 };
 
 type FileEntry = {
@@ -40,9 +41,15 @@ function formatBytes(bytes: number) {
 export default function App() {
   const [query, setQuery] = useState("");
   const [approvedRoot, setApprovedRoot] = useState<ApprovedStorageRoot | null>(null);
+  const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
   const [scan, setScan] = useState<FolderScan | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [isLoadingRoots, setIsLoadingRoots] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void refreshRoots();
+  }, []);
 
   const visibleFiles = useMemo(() => {
     if (!scan) return [];
@@ -57,6 +64,39 @@ export default function App() {
       .slice(0, 50);
   }, [query, scan]);
 
+  async function refreshRoots() {
+    try {
+      const storedRoots = await invoke<ApprovedStorageRoot[]>("list_storage_roots");
+      setRoots(storedRoots);
+    } catch (loadError) {
+      setError(String(loadError));
+    } finally {
+      setIsLoadingRoots(false);
+    }
+  }
+
+  async function scanRoot(root: ApprovedStorageRoot) {
+    setError(null);
+    setIsScanning(true);
+    setApprovedRoot(root);
+
+    try {
+      const result = await invoke<FolderScan>("scan_storage_root", {
+        storageRootId: root.storageRootId,
+      });
+
+      setScan(result);
+      setQuery("");
+      await refreshRoots();
+    } catch (scanError) {
+      setScan(null);
+      setError(String(scanError));
+      await refreshRoots();
+    } finally {
+      setIsScanning(false);
+    }
+  }
+
   async function chooseFolder() {
     setError(null);
     setIsScanning(true);
@@ -70,6 +110,8 @@ export default function App() {
         return;
       }
 
+      const storedRoots = await invoke<ApprovedStorageRoot[]>("list_storage_roots");
+      setRoots(storedRoots);
       setApprovedRoot(root);
 
       const result = await invoke<FolderScan>("scan_storage_root", {
@@ -143,12 +185,12 @@ export default function App() {
         </header>
 
         <section className="hero">
-          <p className="eyebrow">APPROVED STORAGE ROOT</p>
-          <h1>Native-approved folders, not arbitrary paths.</h1>
+          <p className="eyebrow">PERSISTED STORAGE ROOTS</p>
+          <h1>Approved folders now survive restart.</h1>
           <p className="hero-copy">
-            The native layer now chooses and registers the folder. The UI scans
-            it using an opaque storage-root ID and cannot grant itself access by
-            submitting an arbitrary filesystem path.
+            Professional DocX stores approved roots in its local SQLite database.
+            The UI receives only opaque root IDs; Rust reconstructs the native
+            filesystem path from authoritative database records when a scan starts.
           </p>
 
           {error ? (
@@ -176,14 +218,49 @@ export default function App() {
             </div>
           ) : approvedRoot ? (
             <div className="status-card">
-              Approved root registered: {approvedRoot.displayPath}
+              Approved root selected: {approvedRoot.displayPath}
             </div>
           ) : (
             <div className="status-card">
-              No approved storage root has been registered in this session.
+              {isLoadingRoots
+                ? "Loading approved storage roots…"
+                : roots.length
+                  ? `${roots.length} approved storage root${roots.length === 1 ? "" : "s"} restored from SQLite.`
+                  : "No approved storage root has been registered yet."}
             </div>
           )}
         </section>
+
+        {roots.length ? (
+          <section className="roots-panel" aria-label="Approved storage roots">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">APPROVED ROOTS</p>
+                <h2>Stored in Professional DocX</h2>
+              </div>
+              <span>These records are restored after application restart.</span>
+            </div>
+
+            <div className="root-list">
+              {roots.map((root) => (
+                <div className="root-row" key={root.storageRootId}>
+                  <div className="root-main">
+                    <strong>{root.displayPath}</strong>
+                    <span>{root.availabilityState}</span>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void scanRoot(root)}
+                    disabled={isScanning}
+                  >
+                    Scan
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {scan ? (
           <section className="results-panel" aria-label="Scanned file preview">
@@ -226,7 +303,7 @@ export default function App() {
               <p className="preview-note">
                 This screen intentionally shows only the first{" "}
                 {scan.previewFiles.length.toLocaleString()} files from the scan.
-                Full indexing is added after the foundation remediations.
+                Full indexing is added with the background indexing-job step.
               </p>
             ) : null}
           </section>
@@ -234,18 +311,18 @@ export default function App() {
           <section className="quick-grid" aria-label="Foundation principles">
             <article>
               <span>01</span>
-              <h2>Native approval</h2>
-              <p>The native layer owns which storage roots are authorized.</p>
+              <h2>Persistent approval</h2>
+              <p>Approved roots are restored from SQLite after restart.</p>
             </article>
             <article>
               <span>02</span>
-              <h2>ID-based commands</h2>
-              <p>The UI refers to approved roots using opaque UUIDs.</p>
+              <h2>ID-based access</h2>
+              <p>The UI still cannot grant access using arbitrary path strings.</p>
             </article>
             <article>
               <span>03</span>
-              <h2>Files stay in place</h2>
-              <p>Scanning reads metadata without importing the source files.</p>
+              <h2>Native path fidelity</h2>
+              <p>Rust stores native path bytes separately from display text.</p>
             </article>
           </section>
         )}

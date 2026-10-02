@@ -1,7 +1,7 @@
 mod persistence;
 
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -9,23 +9,22 @@ use walkdir::WalkDir;
 
 const PREVIEW_FILE_LIMIT: usize = 200;
 
-#[derive(Debug, Clone)]
-struct ApprovedStorageRoot {
-    storage_root_id: Uuid,
-    canonical_path: PathBuf,
-    display_path: String,
-}
-
-#[derive(Default)]
-struct StorageRootRegistry {
-    roots: Mutex<HashMap<Uuid, ApprovedStorageRoot>>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApprovedStorageRootDto {
     storage_root_id: String,
     display_path: String,
+    availability_state: String,
+}
+
+impl From<persistence::StorageRootRecord> for ApprovedStorageRootDto {
+    fn from(value: persistence::StorageRootRecord) -> Self {
+        Self {
+            storage_root_id: value.storage_root_id,
+            display_path: value.display_path,
+            availability_state: value.availability_state,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -52,7 +51,7 @@ struct FolderScan {
 #[tauri::command]
 async fn choose_and_register_storage_root(
     app: AppHandle,
-    roots: State<'_, StorageRootRegistry>,
+    database: State<'_, persistence::DatabaseState>,
 ) -> Result<Option<ApprovedStorageRootDto>, String> {
     let selected = app.dialog().file().blocking_pick_folder();
 
@@ -71,46 +70,66 @@ async fn choose_and_register_storage_root(
         return Err("Selected path is not a folder.".to_string());
     }
 
-    let storage_root_id = Uuid::new_v4();
-    let display_path = canonical_path.to_string_lossy().into_owned();
+    let registered = persistence::register_storage_root(
+        database.path(),
+        &Uuid::new_v4().to_string(),
+        &selected_path,
+        &canonical_path,
+    )
+    .map_err(|error| error.to_string())?;
 
-    let approved = ApprovedStorageRoot {
-        storage_root_id,
-        canonical_path,
-        display_path: display_path.clone(),
-    };
+    Ok(Some(registered.into()))
+}
 
-    let mut registry = roots
-        .roots
-        .lock()
-        .map_err(|_| "Approved storage-root registry is unavailable.".to_string())?;
-
-    registry.insert(storage_root_id, approved);
-
-    Ok(Some(ApprovedStorageRootDto {
-        storage_root_id: storage_root_id.to_string(),
-        display_path,
-    }))
+#[tauri::command]
+fn list_storage_roots(
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ApprovedStorageRootDto>, String> {
+    persistence::list_storage_roots(database.path())
+        .map(|roots| roots.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn scan_storage_root(
     storage_root_id: String,
-    roots: State<'_, StorageRootRegistry>,
+    database: State<'_, persistence::DatabaseState>,
 ) -> Result<FolderScan, String> {
-    let root_id = Uuid::parse_str(&storage_root_id)
+    Uuid::parse_str(&storage_root_id)
         .map_err(|_| "Invalid storage-root identifier.".to_string())?;
 
-    let approved = {
-        let registry = roots
-            .roots
-            .lock()
-            .map_err(|_| "Approved storage-root registry is unavailable.".to_string())?;
+    let approved = persistence::get_storage_root(database.path(), &storage_root_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Storage root is not approved.".to_string())?;
 
-        registry.get(&root_id).cloned().ok_or_else(|| {
-            "Storage root is not approved for this application session.".to_string()
-        })?
-    };
+    match std::fs::metadata(&approved.canonical_path) {
+        Ok(metadata) if metadata.is_dir() => {
+            persistence::set_storage_root_availability(
+                database.path(),
+                &storage_root_id,
+                "AVAILABLE",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(_) => {
+            persistence::set_storage_root_availability(
+                database.path(),
+                &storage_root_id,
+                "DEGRADED",
+            )
+            .map_err(|error| error.to_string())?;
+            return Err("Approved storage root is no longer a directory.".to_string());
+        }
+        Err(error) => {
+            persistence::set_storage_root_availability(
+                database.path(),
+                &storage_root_id,
+                "OFFLINE",
+            )
+            .map_err(|persistence_error| persistence_error.to_string())?;
+            return Err(format!("Approved storage root is unavailable: {error}"));
+        }
+    }
 
     let mut total_files = 0_u64;
     let mut total_bytes = 0_u64;
@@ -165,7 +184,7 @@ fn scan_storage_root(
     }
 
     Ok(FolderScan {
-        storage_root_id: approved.storage_root_id.to_string(),
+        storage_root_id: approved.storage_root_id,
         root_display_path: approved.display_path,
         total_files,
         total_bytes,
@@ -178,7 +197,6 @@ fn scan_storage_root(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(StorageRootRegistry::default())
         .setup(|app| {
             let database_path = app
                 .path()
@@ -187,10 +205,12 @@ pub fn run() {
                 .join("metadata.sqlite");
 
             persistence::initialize_database(&database_path)?;
+            app.manage(persistence::DatabaseState::new(database_path));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             choose_and_register_storage_root,
+            list_storage_roots,
             scan_storage_root
         ])
         .run(tauri::generate_context!())
