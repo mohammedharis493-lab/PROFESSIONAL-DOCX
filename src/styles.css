@@ -687,3 +687,25 @@ input:focus-visible {
     justify-content: flex-start;
   }
 }
+
+
+.file-action {
+  min-height: 30px;
+  border: 1px solid #d9e0e9;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.file-action:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.file-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
