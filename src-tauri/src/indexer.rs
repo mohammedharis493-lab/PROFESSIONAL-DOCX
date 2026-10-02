@@ -441,10 +441,7 @@ fn flush_batch(
 }
 
 #[cfg(unix)]
-fn platform_file_metadata(
-    _path: &Path,
-    metadata: &fs::Metadata,
-) -> PlatformFileMetadata {
+fn platform_file_metadata(_path: &Path, metadata: &fs::Metadata) -> PlatformFileMetadata {
     use std::os::unix::fs::MetadataExt;
 
     PlatformFileMetadata {
@@ -456,10 +453,7 @@ fn platform_file_metadata(
 }
 
 #[cfg(windows)]
-fn platform_file_metadata(
-    path: &Path,
-    metadata: &fs::Metadata,
-) -> PlatformFileMetadata {
+fn platform_file_metadata(path: &Path, metadata: &fs::Metadata) -> PlatformFileMetadata {
     use std::mem::MaybeUninit;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
@@ -475,9 +469,8 @@ fn platform_file_metadata(
     };
 
     let mut information = MaybeUninit::<WindowsByHandleFileInformation>::uninit();
-    let succeeded = unsafe {
-        get_file_information_by_handle(file.as_raw_handle(), information.as_mut_ptr())
-    };
+    let succeeded =
+        unsafe { get_file_information_by_handle(file.as_raw_handle(), information.as_mut_ptr()) };
 
     if succeeded == 0 {
         return result;
@@ -661,7 +654,9 @@ mod tests {
                 .expect("reconciled preview should load");
 
         assert_eq!(after.len(), 2);
-        assert!(after.iter().all(|file| file.availability_state == "AVAILABLE"));
+        assert!(after
+            .iter()
+            .all(|file| file.availability_state == "AVAILABLE"));
     }
 
     #[test]
@@ -1006,7 +1001,6 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].availability_state, "AVAILABLE");
     }
-
 
     #[test]
     fn startup_recovery_marks_running_job_interrupted() {
