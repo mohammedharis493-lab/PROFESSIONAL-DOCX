@@ -94,6 +94,10 @@ pub struct FileObservation {
     pub size_bytes: u64,
     pub creation_time_ms: Option<i64>,
     pub last_write_time_ms: Option<i64>,
+    pub filesystem_identity: Option<Vec<u8>>,
+    pub volume_identity: Option<Vec<u8>>,
+    pub file_attributes: Option<i64>,
+    pub reparse_tag: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +119,7 @@ pub struct IndexedFilePreviewRecord {
     pub extension: String,
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
+    pub availability_state: String,
 }
 
 #[derive(Debug, Clone)]
@@ -125,11 +130,36 @@ pub struct IndexJobCompletion<'a> {
 }
 
 #[derive(Debug)]
-struct ExistingIncompleteFile {
+struct ExistingFileInstance {
     file_instance_id: String,
+    document_id: String,
+    relative_path_native: Vec<u8>,
+    path_native_encoding: String,
+    relative_path_display: String,
+    filesystem_identity: Option<Vec<u8>>,
+    volume_identity: Option<Vec<u8>>,
     size_bytes: i64,
     last_write_time_ms: Option<i64>,
     creation_time_ms: Option<i64>,
+    availability_state: String,
+}
+
+struct ObservationContext<'a> {
+    storage_root_id: &'a str,
+    scan_generation_id: &'a str,
+    observation: &'a FileObservation,
+    observed_at_ms: i64,
+}
+
+struct SearchProjection {
+    document_id: String,
+    display_name: String,
+    storage_root_id: String,
+    relative_path_display: String,
+    size_bytes: i64,
+    last_write_time_ms: Option<i64>,
+    availability_state: String,
+    content_version_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -377,7 +407,7 @@ pub fn recover_interrupted_index_jobs(database_path: &Path) -> Result<u64, Persi
     Ok(changed as u64)
 }
 
-pub fn create_initial_index_job(
+pub fn create_index_job(
     database_path: &Path,
     storage_root_id: &str,
     index_job_id: &str,
@@ -417,7 +447,7 @@ pub fn create_initial_index_job(
         ));
     }
 
-    let complete_exists: i64 = transaction.query_row(
+    let authoritative_exists: i64 = transaction.query_row(
         "SELECT EXISTS(
              SELECT 1
              FROM scan_generations
@@ -429,12 +459,11 @@ pub fn create_initial_index_job(
         |row| row.get(0),
     )?;
 
-    if complete_exists == 1 {
-        return Err(PersistenceError::Configuration(
-            "initial indexing is already complete for this root; reconciliation is the next indexing step"
-                .to_string(),
-        ));
-    }
+    let job_type = if authoritative_exists == 1 {
+        "FULL_RECONCILIATION"
+    } else {
+        "INITIAL_SCAN"
+    };
 
     let generation_number: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(generation_number), 0) + 1
@@ -483,10 +512,16 @@ pub fn create_initial_index_job(
             failure_code,
             failure_message
          ) VALUES (
-            ?1, ?2, 'INITIAL_SCAN', 'QUEUED', ?3, NULL, NULL, NULL, NULL,
-            'QUEUED', 0, 0, 0, 0, 0, ?4, NULL, NULL
+            ?1, ?2, ?3, 'QUEUED', ?4, NULL, NULL, NULL, NULL,
+            'QUEUED', 0, 0, 0, 0, 0, ?5, NULL, NULL
          )",
-        params![index_job_id, storage_root_id, now, scan_generation_id],
+        params![
+            index_job_id,
+            storage_root_id,
+            job_type,
+            now,
+            scan_generation_id
+        ],
     )?;
 
     transaction.commit()?;
@@ -650,70 +685,302 @@ fn persist_file_observation(
     observation: &FileObservation,
     observed_at_ms: i64,
 ) -> Result<(), PersistenceError> {
-    let existing: Option<ExistingIncompleteFile> = transaction
-        .query_row(
-            "SELECT
-                fi.file_instance_id,
-                fi.size_bytes,
-                fi.last_write_time_ms,
-                fi.creation_time_ms
-             FROM file_instances fi
-             JOIN scan_generations first_generation
-               ON first_generation.scan_generation_id = fi.first_seen_generation_id
-             WHERE fi.storage_root_id = ?1
-               AND fi.path_native_encoding = ?2
-               AND fi.relative_path_native = ?3
-               AND first_generation.is_authoritative = 0
-             ORDER BY fi.first_seen_at_ms DESC
-             LIMIT 1",
-            params![
-                storage_root_id,
-                &observation.path_native_encoding,
-                &observation.relative_path_native
-            ],
-            |row| {
-                Ok(ExistingIncompleteFile {
-                    file_instance_id: row.get(0)?,
-                    size_bytes: row.get(1)?,
-                    last_write_time_ms: row.get(2)?,
-                    creation_time_ms: row.get(3)?,
-                })
-            },
-        )
-        .optional()?;
+    let context = ObservationContext {
+        storage_root_id,
+        scan_generation_id,
+        observation,
+        observed_at_ms,
+    };
 
-    if let Some(existing) = existing {
-        let same_observation = existing.size_bytes == u64_to_i64(observation.size_bytes)?
-            && existing.last_write_time_ms == observation.last_write_time_ms
-            && existing.creation_time_ms == observation.creation_time_ms;
+    let identity_match = find_existing_by_identity(transaction, &context)?
+        .filter(|candidate| !creation_time_conflicts(candidate, observation));
 
-        if same_observation {
-            transaction.execute(
-                "UPDATE file_instances
-                 SET last_seen_at_ms = ?1,
-                     last_seen_generation_id = ?2,
-                     availability_state = 'AVAILABLE'
-                 WHERE file_instance_id = ?3",
-                params![
-                    observed_at_ms,
-                    scan_generation_id,
-                    existing.file_instance_id
-                ],
-            )?;
-            return Ok(());
+    if let Some(existing) = identity_match {
+        return update_existing_file_instance(transaction, &context, existing);
+    }
+
+    if let Some(path_candidate) = find_existing_by_path(transaction, &context)? {
+        if can_reuse_path_candidate(&path_candidate, observation) {
+            return update_existing_file_instance(transaction, &context, path_candidate);
         }
 
+        if path_candidate.availability_state != "CHANGED"
+            && path_candidate.availability_state != "MISSING"
+        {
+            transaction.execute(
+                "UPDATE file_instances
+                 SET availability_state = 'CHANGED'
+                 WHERE file_instance_id = ?1",
+                [&path_candidate.file_instance_id],
+            )?;
+            enqueue_document_projection(
+                transaction,
+                &path_candidate.file_instance_id,
+                observed_at_ms,
+            )?;
+        }
+    }
+
+    insert_new_file_instance(transaction, &context)
+}
+
+fn find_existing_by_identity(
+    transaction: &rusqlite::Transaction<'_>,
+    context: &ObservationContext<'_>,
+) -> Result<Option<ExistingFileInstance>, PersistenceError> {
+    let (Some(filesystem_identity), Some(volume_identity)) = (
+        context.observation.filesystem_identity.as_deref(),
+        context.observation.volume_identity.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+
+    transaction
+        .query_row(
+            "SELECT
+                file_instance_id,
+                document_id,
+                relative_path_native,
+                path_native_encoding,
+                relative_path_display,
+                filesystem_identity,
+                volume_identity,
+                size_bytes,
+                last_write_time_ms,
+                creation_time_ms,
+                availability_state
+             FROM file_instances
+             WHERE storage_root_id = ?1
+               AND filesystem_identity = ?2
+               AND volume_identity = ?3
+             ORDER BY last_seen_at_ms DESC
+             LIMIT 1",
+            params![
+                context.storage_root_id,
+                filesystem_identity,
+                volume_identity
+            ],
+            existing_file_instance_from_row,
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
+fn find_existing_by_path(
+    transaction: &rusqlite::Transaction<'_>,
+    context: &ObservationContext<'_>,
+) -> Result<Option<ExistingFileInstance>, PersistenceError> {
+    transaction
+        .query_row(
+            "SELECT
+                file_instance_id,
+                document_id,
+                relative_path_native,
+                path_native_encoding,
+                relative_path_display,
+                filesystem_identity,
+                volume_identity,
+                size_bytes,
+                last_write_time_ms,
+                creation_time_ms,
+                availability_state
+             FROM file_instances
+             WHERE storage_root_id = ?1
+               AND path_native_encoding = ?2
+               AND relative_path_native = ?3
+             ORDER BY last_seen_at_ms DESC
+             LIMIT 1",
+            params![
+                context.storage_root_id,
+                &context.observation.path_native_encoding,
+                &context.observation.relative_path_native
+            ],
+            existing_file_instance_from_row,
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
+fn existing_file_instance_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ExistingFileInstance> {
+    Ok(ExistingFileInstance {
+        file_instance_id: row.get(0)?,
+        document_id: row.get(1)?,
+        relative_path_native: row.get(2)?,
+        path_native_encoding: row.get(3)?,
+        relative_path_display: row.get(4)?,
+        filesystem_identity: row.get(5)?,
+        volume_identity: row.get(6)?,
+        size_bytes: row.get(7)?,
+        last_write_time_ms: row.get(8)?,
+        creation_time_ms: row.get(9)?,
+        availability_state: row.get(10)?,
+    })
+}
+
+fn creation_time_conflicts(
+    existing: &ExistingFileInstance,
+    observation: &FileObservation,
+) -> bool {
+    matches!(
+        (existing.creation_time_ms, observation.creation_time_ms),
+        (Some(previous), Some(current)) if previous != current
+    )
+}
+
+fn can_reuse_path_candidate(
+    existing: &ExistingFileInstance,
+    observation: &FileObservation,
+) -> bool {
+    if creation_time_conflicts(existing, observation) {
+        return false;
+    }
+
+    match (
+        existing.filesystem_identity.as_deref(),
+        existing.volume_identity.as_deref(),
+        observation.filesystem_identity.as_deref(),
+        observation.volume_identity.as_deref(),
+    ) {
+        (Some(existing_file), Some(existing_volume), Some(current_file), Some(current_volume)) => {
+            existing_file == current_file && existing_volume == current_volume
+        }
+        _ => true,
+    }
+}
+
+fn update_existing_file_instance(
+    transaction: &rusqlite::Transaction<'_>,
+    context: &ObservationContext<'_>,
+    existing: ExistingFileInstance,
+) -> Result<(), PersistenceError> {
+    let observation = context.observation;
+    let path_changed = existing.path_native_encoding != observation.path_native_encoding
+        || existing.relative_path_native != observation.relative_path_native;
+    let content_changed = existing.size_bytes != u64_to_i64(observation.size_bytes)?
+        || matches!(
+            observation.last_write_time_ms,
+            Some(current) if existing.last_write_time_ms != Some(current)
+        );
+    let availability_changed = existing.availability_state != "AVAILABLE";
+    let display_name_changed = Path::new(&existing.relative_path_display)
+        .file_name()
+        .map(|value| value.to_string_lossy().as_ref() != observation.display_name)
+        .unwrap_or(true);
+
+    if path_changed {
         transaction.execute(
-            "UPDATE file_instances
-             SET availability_state = 'CHANGED'
-             WHERE file_instance_id = ?1",
-            [existing.file_instance_id],
+            "UPDATE file_path_history
+             SET observed_until_ms = ?1
+             WHERE file_instance_id = ?2
+               AND observed_until_ms IS NULL",
+            params![context.observed_at_ms, &existing.file_instance_id],
+        )?;
+
+        transaction.execute(
+            "INSERT INTO file_path_history (
+                file_path_history_id,
+                file_instance_id,
+                storage_root_id,
+                relative_path_native,
+                path_native_encoding,
+                relative_path_display,
+                observed_from_ms,
+                observed_until_ms,
+                change_reason,
+                actor_id,
+                scan_generation_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL, ?9)",
+            params![
+                Uuid::new_v4().to_string(),
+                &existing.file_instance_id,
+                context.storage_root_id,
+                &observation.relative_path_native,
+                &observation.path_native_encoding,
+                &observation.relative_path_display,
+                context.observed_at_ms,
+                path_change_reason(
+                    &existing.relative_path_display,
+                    &observation.relative_path_display
+                ),
+                context.scan_generation_id
+            ],
         )?;
     }
 
+    transaction.execute(
+        "UPDATE file_instances
+         SET relative_path_native = ?1,
+             path_native_encoding = ?2,
+             relative_path_display = ?3,
+             relative_path_search = ?4,
+             filesystem_identity = COALESCE(?5, filesystem_identity),
+             volume_identity = COALESCE(?6, volume_identity),
+             creation_time_ms = COALESCE(?7, creation_time_ms),
+             last_write_time_ms = COALESCE(?8, last_write_time_ms),
+             size_bytes = ?9,
+             file_attributes = COALESCE(?10, file_attributes),
+             reparse_tag = COALESCE(?11, reparse_tag),
+             last_seen_at_ms = ?12,
+             last_seen_generation_id = ?13,
+             availability_state = 'AVAILABLE'
+         WHERE file_instance_id = ?14",
+        params![
+            &observation.relative_path_native,
+            &observation.path_native_encoding,
+            &observation.relative_path_display,
+            &observation.relative_path_search,
+            observation.filesystem_identity.as_deref(),
+            observation.volume_identity.as_deref(),
+            observation.creation_time_ms,
+            observation.last_write_time_ms,
+            u64_to_i64(observation.size_bytes)?,
+            observation.file_attributes,
+            observation.reparse_tag,
+            context.observed_at_ms,
+            context.scan_generation_id,
+            &existing.file_instance_id
+        ],
+    )?;
+
+    if display_name_changed || path_changed {
+        transaction.execute(
+            "UPDATE documents
+             SET display_name = ?1
+             WHERE document_id = ?2",
+            params![&observation.display_name, &existing.document_id],
+        )?;
+    }
+
+    if content_changed {
+        insert_content_version(
+            transaction,
+            &existing.document_id,
+            &existing.file_instance_id,
+            observation,
+            context.observed_at_ms,
+        )?;
+    }
+
+    if path_changed || content_changed || availability_changed || display_name_changed {
+        enqueue_document_projection(
+            transaction,
+            &existing.file_instance_id,
+            context.observed_at_ms,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn insert_new_file_instance(
+    transaction: &rusqlite::Transaction<'_>,
+    context: &ObservationContext<'_>,
+) -> Result<(), PersistenceError> {
+    let observation = context.observation;
     let document_id = Uuid::new_v4().to_string();
     let file_instance_id = Uuid::new_v4().to_string();
-    let content_version_id = Uuid::new_v4().to_string();
 
     transaction.execute(
         "INSERT INTO documents (
@@ -724,7 +991,11 @@ fn persist_file_observation(
             created_by,
             archived_at_ms
          ) VALUES (?1, 'LINKED', ?2, ?3, NULL, NULL)",
-        params![document_id, &observation.display_name, observed_at_ms],
+        params![
+            &document_id,
+            &observation.display_name,
+            context.observed_at_ms
+        ],
     )?;
 
     transaction.execute(
@@ -749,22 +1020,26 @@ fn persist_file_observation(
             last_seen_generation_id,
             availability_state
          ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9, ?10,
-            NULL, NULL, ?11, ?11, ?12, ?12, 'AVAILABLE'
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+            ?13, ?14, ?15, ?15, ?16, ?16, 'AVAILABLE'
          )",
         params![
-            file_instance_id,
-            document_id,
-            storage_root_id,
+            &file_instance_id,
+            &document_id,
+            context.storage_root_id,
             &observation.relative_path_native,
             &observation.path_native_encoding,
             &observation.relative_path_display,
             &observation.relative_path_search,
+            observation.filesystem_identity.as_deref(),
+            observation.volume_identity.as_deref(),
             observation.creation_time_ms,
             observation.last_write_time_ms,
             u64_to_i64(observation.size_bytes)?,
-            observed_at_ms,
-            scan_generation_id
+            observation.file_attributes,
+            observation.reparse_tag,
+            context.observed_at_ms,
+            context.scan_generation_id
         ],
     )?;
 
@@ -784,15 +1059,36 @@ fn persist_file_observation(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'DISCOVERED', NULL, ?8)",
         params![
             Uuid::new_v4().to_string(),
-            file_instance_id,
-            storage_root_id,
+            &file_instance_id,
+            context.storage_root_id,
             &observation.relative_path_native,
             &observation.path_native_encoding,
             &observation.relative_path_display,
-            observed_at_ms,
-            scan_generation_id
+            context.observed_at_ms,
+            context.scan_generation_id
         ],
     )?;
+
+    insert_content_version(
+        transaction,
+        &document_id,
+        &file_instance_id,
+        observation,
+        context.observed_at_ms,
+    )?;
+    enqueue_document_projection(transaction, &file_instance_id, context.observed_at_ms)?;
+
+    Ok(())
+}
+
+fn insert_content_version(
+    transaction: &rusqlite::Transaction<'_>,
+    document_id: &str,
+    file_instance_id: &str,
+    observation: &FileObservation,
+    observed_at_ms: i64,
+) -> Result<String, PersistenceError> {
+    let content_version_id = Uuid::new_v4().to_string();
 
     transaction.execute(
         "INSERT INTO content_versions (
@@ -808,7 +1104,7 @@ fn persist_file_observation(
             source_stable_during_read
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, 'METADATA_ONLY', NULL)",
         params![
-            content_version_id,
+            &content_version_id,
             document_id,
             file_instance_id,
             observed_at_ms,
@@ -817,15 +1113,58 @@ fn persist_file_observation(
         ],
     )?;
 
+    Ok(content_version_id)
+}
+
+fn enqueue_document_projection(
+    transaction: &rusqlite::Transaction<'_>,
+    file_instance_id: &str,
+    observed_at_ms: i64,
+) -> Result<(), PersistenceError> {
+    let projection: SearchProjection = transaction.query_row(
+            "SELECT
+                d.document_id,
+                d.display_name,
+                fi.storage_root_id,
+                fi.relative_path_display,
+                fi.size_bytes,
+                fi.last_write_time_ms,
+                fi.availability_state,
+                (
+                    SELECT cv.content_version_id
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = fi.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
+             FROM file_instances fi
+             JOIN documents d ON d.document_id = fi.document_id
+             WHERE fi.file_instance_id = ?1",
+            [file_instance_id],
+            |row| {
+                Ok(SearchProjection {
+                    document_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    storage_root_id: row.get(2)?,
+                    relative_path_display: row.get(3)?,
+                    size_bytes: row.get(4)?,
+                    last_write_time_ms: row.get(5)?,
+                    availability_state: row.get(6)?,
+                    content_version_id: row.get(7)?,
+                })
+            },
+        )?;
+
     let payload = json!({
-        "documentId": document_id,
+        "documentId": projection.document_id,
         "fileInstanceId": file_instance_id,
-        "contentVersionId": content_version_id,
-        "storageRootId": storage_root_id,
-        "displayName": observation.display_name,
-        "relativePath": observation.relative_path_display,
-        "sizeBytes": observation.size_bytes,
-        "modifiedUnixMs": observation.last_write_time_ms
+        "contentVersionId": projection.content_version_id,
+        "storageRootId": projection.storage_root_id,
+        "displayName": projection.display_name,
+        "relativePath": projection.relative_path_display,
+        "sizeBytes": projection.size_bytes.max(0) as u64,
+        "modifiedUnixMs": projection.last_write_time_ms,
+        "availabilityState": projection.availability_state
     });
 
     transaction.execute(
@@ -843,13 +1182,76 @@ fn persist_file_observation(
          ) VALUES (?1, 'DOCUMENT', ?2, 'UPSERT', 1, ?3, ?4, NULL, 0, NULL)",
         params![
             Uuid::new_v4().to_string(),
-            document_id,
+            projection.document_id,
             payload.to_string(),
             observed_at_ms
         ],
     )?;
 
     Ok(())
+}
+
+fn reconcile_unseen_as_missing(
+    transaction: &rusqlite::Transaction<'_>,
+    storage_root_id: &str,
+    scan_generation_id: &str,
+    observed_at_ms: i64,
+) -> Result<(), PersistenceError> {
+    let file_instance_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT file_instance_id
+             FROM file_instances
+             WHERE storage_root_id = ?1
+               AND (
+                   last_seen_generation_id IS NULL
+                   OR last_seen_generation_id <> ?2
+               )
+               AND availability_state <> 'MISSING'",
+        )?;
+
+        let rows = statement.query_map(
+            params![storage_root_id, scan_generation_id],
+            |row| row.get::<_, String>(0),
+        )?;
+
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+
+    for file_instance_id in file_instance_ids {
+        transaction.execute(
+            "UPDATE file_instances
+             SET availability_state = 'MISSING'
+             WHERE file_instance_id = ?1",
+            [&file_instance_id],
+        )?;
+
+        transaction.execute(
+            "UPDATE file_path_history
+             SET observed_until_ms = COALESCE(observed_until_ms, ?1)
+             WHERE file_instance_id = ?2
+               AND observed_until_ms IS NULL",
+            params![observed_at_ms, &file_instance_id],
+        )?;
+
+        enqueue_document_projection(transaction, &file_instance_id, observed_at_ms)?;
+    }
+
+    Ok(())
+}
+
+fn path_change_reason(previous: &str, current: &str) -> &'static str {
+    let previous_parent = Path::new(previous).parent();
+    let current_parent = Path::new(current).parent();
+
+    if previous_parent == current_parent {
+        "RENAMED"
+    } else {
+        "MOVED"
+    }
 }
 
 pub fn finish_index_job(
@@ -876,6 +1278,15 @@ pub fn finish_index_job(
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let now = now_unix_ms()?;
+
+    if completion.status == "COMPLETE" {
+        reconcile_unseen_as_missing(
+            &transaction,
+            storage_root_id,
+            scan_generation_id,
+            now,
+        )?;
+    }
 
     transaction.execute(
         "UPDATE index_jobs
@@ -1103,12 +1514,21 @@ pub fn list_indexed_file_preview(
             fi.relative_path_native,
             fi.path_native_encoding,
             fi.size_bytes,
-            fi.last_write_time_ms
+            fi.last_write_time_ms,
+            fi.availability_state
          FROM file_instances fi
          JOIN documents d ON d.document_id = fi.document_id
          WHERE fi.storage_root_id = ?1
-           AND fi.availability_state = 'AVAILABLE'
-         ORDER BY fi.relative_path_search
+         ORDER BY
+            CASE fi.availability_state
+                WHEN 'AVAILABLE' THEN 0
+                WHEN 'CHANGED' THEN 1
+                WHEN 'UNAVAILABLE' THEN 2
+                WHEN 'UNKNOWN' THEN 3
+                WHEN 'MISSING' THEN 4
+                ELSE 5
+            END,
+            fi.relative_path_search
          LIMIT ?2",
     )?;
 
@@ -1120,6 +1540,7 @@ pub fn list_indexed_file_preview(
         let native_encoding: String = row.get(4)?;
         let size_bytes: i64 = row.get(5)?;
         let modified_unix_ms: Option<i64> = row.get(6)?;
+        let availability_state: String = row.get(7)?;
 
         Ok((
             document_id,
@@ -1129,6 +1550,7 @@ pub fn list_indexed_file_preview(
             native_encoding,
             size_bytes,
             modified_unix_ms,
+            availability_state,
         ))
     })?;
 
@@ -1142,6 +1564,7 @@ pub fn list_indexed_file_preview(
             native_encoding,
             size_bytes,
             modified_unix_ms,
+            availability_state,
         ) = row?;
 
         let relative = decode_native_path(&relative_native, &native_encoding)?;
@@ -1159,10 +1582,48 @@ pub fn list_indexed_file_preview(
             extension,
             size_bytes: size_bytes.max(0) as u64,
             modified_unix_ms,
+            availability_state,
         });
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+pub(crate) fn count_content_versions_for_test(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<u64, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM content_versions
+         WHERE file_instance_id = ?1",
+        [file_instance_id],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
+#[cfg(test)]
+pub(crate) fn path_history_reasons_for_test(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<Vec<String>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT change_reason
+         FROM file_path_history
+         WHERE file_instance_id = ?1
+         ORDER BY observed_from_ms, rowid",
+    )?;
+
+    let rows = statement.query_map([file_instance_id], |row| row.get::<_, String>(0))?;
+    let mut reasons = Vec::new();
+    for row in rows {
+        reasons.push(row?);
+    }
+    Ok(reasons)
 }
 
 pub fn encode_native_path_for_storage(path: &Path) -> (Vec<u8>, String) {

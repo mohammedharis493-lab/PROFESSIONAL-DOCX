@@ -15,6 +15,46 @@ use walkdir::WalkDir;
 
 const INDEX_BATCH_SIZE: usize = 500;
 
+#[derive(Default)]
+struct PlatformFileMetadata {
+    filesystem_identity: Option<Vec<u8>>,
+    volume_identity: Option<Vec<u8>>,
+    file_attributes: Option<i64>,
+    reparse_tag: Option<i64>,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsFileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsByHandleFileInformation {
+    file_attributes: u32,
+    creation_time: WindowsFileTime,
+    last_access_time: WindowsFileTime,
+    last_write_time: WindowsFileTime,
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "GetFileInformationByHandle"]
+    fn get_file_information_by_handle(
+        file: *mut std::ffi::c_void,
+        information: *mut WindowsByHandleFileInformation,
+    ) -> i32;
+}
+
 struct BatchContext<'a> {
     database_path: &'a Path,
     root: &'a StorageRootRecord,
@@ -67,7 +107,7 @@ impl IndexRuntime {
     }
 }
 
-pub fn run_initial_index_job(
+pub fn run_index_job(
     database_path: PathBuf,
     root: StorageRootRecord,
     index_job_id: String,
@@ -294,6 +334,7 @@ pub fn run_initial_index_job(
             persistence::encode_native_path_for_storage(relative_path);
 
         progress.bytes_seen = progress.bytes_seen.saturating_add(metadata.len());
+        let platform = platform_file_metadata(entry.path(), &metadata);
 
         file_batch.push(FileObservation {
             relative_path_native: relative_native,
@@ -304,6 +345,10 @@ pub fn run_initial_index_job(
             size_bytes: metadata.len(),
             creation_time_ms: metadata.created().ok().and_then(system_time_to_ms),
             last_write_time_ms: metadata.modified().ok().and_then(system_time_to_ms),
+            filesystem_identity: platform.filesystem_identity,
+            volume_identity: platform.volume_identity,
+            file_attributes: platform.file_attributes,
+            reparse_tag: platform.reparse_tag,
         });
 
         maybe_flush(
@@ -393,6 +438,58 @@ fn flush_batch(
     files.clear();
     errors.clear();
     Ok(())
+}
+
+#[cfg(unix)]
+fn platform_file_metadata(
+    _path: &Path,
+    metadata: &fs::Metadata,
+) -> PlatformFileMetadata {
+    use std::os::unix::fs::MetadataExt;
+
+    PlatformFileMetadata {
+        filesystem_identity: Some(metadata.ino().to_le_bytes().to_vec()),
+        volume_identity: Some(metadata.dev().to_le_bytes().to_vec()),
+        file_attributes: Some(i64::from(metadata.mode())),
+        reparse_tag: None,
+    }
+}
+
+#[cfg(windows)]
+fn platform_file_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> PlatformFileMetadata {
+    use std::mem::MaybeUninit;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
+    let mut result = PlatformFileMetadata {
+        file_attributes: Some(i64::from(metadata.file_attributes())),
+        ..PlatformFileMetadata::default()
+    };
+
+    let file = match fs::OpenOptions::new().access_mode(0).open(path) {
+        Ok(file) => file,
+        Err(_) => return result,
+    };
+
+    let mut information = MaybeUninit::<WindowsByHandleFileInformation>::uninit();
+    let succeeded = unsafe {
+        get_file_information_by_handle(file.as_raw_handle(), information.as_mut_ptr())
+    };
+
+    if succeeded == 0 {
+        return result;
+    }
+
+    let information = unsafe { information.assume_init() };
+    let file_index =
+        (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+
+    result.filesystem_identity = Some(file_index.to_le_bytes().to_vec());
+    result.volume_identity = Some(information.volume_serial_number.to_le_bytes().to_vec());
+    result
 }
 
 fn scan_error(
@@ -505,7 +602,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let generation_id = Uuid::new_v4().to_string();
 
-        persistence::create_initial_index_job(
+        persistence::create_index_job(
             &test.database_path,
             &root.storage_root_id,
             &job_id,
@@ -513,7 +610,7 @@ mod tests {
         )
         .expect("initial job should be created");
 
-        run_initial_index_job(
+        run_index_job(
             test.database_path.clone(),
             root.clone(),
             job_id.clone(),
@@ -538,15 +635,33 @@ mod tests {
         assert!(preview.iter().any(|file| file.name.contains("Salamudd")));
         assert!(preview.iter().any(|file| file.name.contains("RCM March")));
 
-        let second = persistence::create_initial_index_job(
+        let second_job_id = Uuid::new_v4().to_string();
+        let second_generation_id = Uuid::new_v4().to_string();
+        let second = persistence::create_index_job(
             &test.database_path,
             &root.storage_root_id,
-            &Uuid::new_v4().to_string(),
-            &Uuid::new_v4().to_string(),
+            &second_job_id,
+            &second_generation_id,
         )
-        .expect_err("completed initial index must not silently become a path-based rescan");
+        .expect("completed initial index should create a reconciliation job");
 
-        assert!(second.to_string().contains("reconciliation"));
+        assert_eq!(second.job_type, "FULL_RECONCILIATION");
+
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job_id,
+            second_generation_id,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("unchanged reconciliation should complete");
+
+        let after =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("reconciled preview should load");
+
+        assert_eq!(after.len(), 2);
+        assert!(after.iter().all(|file| file.availability_state == "AVAILABLE"));
     }
 
     #[test]
@@ -558,7 +673,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let generation_id = Uuid::new_v4().to_string();
 
-        persistence::create_initial_index_job(
+        persistence::create_index_job(
             &test.database_path,
             &root.storage_root_id,
             &job_id,
@@ -568,7 +683,7 @@ mod tests {
 
         let token = Arc::new(AtomicBool::new(true));
 
-        run_initial_index_job(
+        run_index_job(
             test.database_path.clone(),
             root,
             job_id.clone(),
@@ -586,13 +701,321 @@ mod tests {
     }
 
     #[test]
+    fn rename_preserves_document_and_file_instance_identity() {
+        let test = TestIndex::new();
+        let original = test.source_root.join("Revenue March.xlsx");
+        let renamed = test.source_root.join("Revenue Apr.xlsx");
+        fs::write(&original, b"same bytes").expect("test file should be written");
+
+        let root = test.register_root("root-rename");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        let before =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(before.len(), 1);
+
+        fs::rename(&original, &renamed).expect("test file should rename");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        let job = persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        assert_eq!(job.job_type, "FULL_RECONCILIATION");
+
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("rename reconciliation should complete");
+
+        let after =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].document_id, before[0].document_id);
+        assert_eq!(after[0].file_instance_id, before[0].file_instance_id);
+        assert_eq!(after[0].name, "Revenue Apr.xlsx");
+        assert_eq!(after[0].availability_state, "AVAILABLE");
+
+        let reasons = persistence::path_history_reasons_for_test(
+            &test.database_path,
+            &after[0].file_instance_id,
+        )
+        .expect("path history should load");
+        assert_eq!(reasons, vec!["DISCOVERED", "RENAMED"]);
+    }
+
+    #[test]
+    fn in_place_modification_preserves_identity_and_adds_content_version() {
+        let test = TestIndex::new();
+        let path = test.source_root.join("Ledger.xlsx");
+        fs::write(&path, b"old").expect("test file should be written");
+
+        let root = test.register_root("root-modify");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        let before =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(before.len(), 1);
+        assert_eq!(
+            persistence::count_content_versions_for_test(
+                &test.database_path,
+                &before[0].file_instance_id
+            )
+            .expect("version count should load"),
+            1
+        );
+
+        fs::write(&path, b"new content with different size").expect("file should be modified");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("modified-file reconciliation should complete");
+
+        let after =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].document_id, before[0].document_id);
+        assert_eq!(after[0].file_instance_id, before[0].file_instance_id);
+        assert_eq!(
+            persistence::count_content_versions_for_test(
+                &test.database_path,
+                &after[0].file_instance_id
+            )
+            .expect("version count should load"),
+            2
+        );
+    }
+
+    #[test]
+    fn copied_file_becomes_a_distinct_document_and_file_instance() {
+        let test = TestIndex::new();
+        let source = test.source_root.join("Invoice.pdf");
+        let copy = test.source_root.join("Invoice Copy.pdf");
+        fs::write(&source, b"identical bytes").expect("source should be written");
+
+        let root = test.register_root("root-copy");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        fs::copy(&source, &copy).expect("copy should be created");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("copy reconciliation should complete");
+
+        let files =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        let available: Vec<_> = files
+            .iter()
+            .filter(|file| file.availability_state == "AVAILABLE")
+            .collect();
+
+        assert_eq!(available.len(), 2);
+        assert_ne!(available[0].file_instance_id, available[1].file_instance_id);
+        assert_ne!(available[0].document_id, available[1].document_id);
+    }
+
+    #[test]
+    fn complete_reconciliation_marks_unseen_file_missing() {
+        let test = TestIndex::new();
+        let path = test.source_root.join("Old Support.pdf");
+        fs::write(&path, b"evidence").expect("test file should be written");
+
+        let root = test.register_root("root-missing");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        fs::remove_file(&path).expect("test file should be removed");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("reconciliation should complete");
+
+        let files =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].availability_state, "MISSING");
+    }
+
+    #[test]
+    fn cancelled_reconciliation_never_marks_unseen_file_missing() {
+        let test = TestIndex::new();
+        let path = test.source_root.join("Keep Me.pdf");
+        fs::write(&path, b"evidence").expect("test file should be written");
+
+        let root = test.register_root("root-cancel-reconcile");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        fs::remove_file(&path).expect("test file should be removed");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .expect("cancelled reconciliation should close cleanly");
+
+        let files =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should load");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].availability_state, "AVAILABLE");
+    }
+
+
+    #[test]
     fn startup_recovery_marks_running_job_interrupted() {
         let test = TestIndex::new();
         let root = test.register_root("root-recovery");
         let job_id = Uuid::new_v4().to_string();
         let generation_id = Uuid::new_v4().to_string();
 
-        persistence::create_initial_index_job(
+        persistence::create_index_job(
             &test.database_path,
             &root.storage_root_id,
             &job_id,

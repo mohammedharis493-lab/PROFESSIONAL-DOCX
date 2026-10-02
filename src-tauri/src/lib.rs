@@ -82,6 +82,7 @@ struct IndexedFilePreviewDto {
     extension: String,
     size_bytes: u64,
     modified_unix_ms: Option<i64>,
+    availability_state: String,
 }
 
 impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
@@ -94,6 +95,7 @@ impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
             extension: value.extension,
             size_bytes: value.size_bytes,
             modified_unix_ms: value.modified_unix_ms,
+            availability_state: value.availability_state,
         }
     }
 }
@@ -158,7 +160,7 @@ async fn start_index_job(
     let runtime_handle = runtime.inner().clone();
     let cancellation = runtime_handle.reserve(&index_job_id)?;
 
-    let job = match persistence::create_initial_index_job(
+    let job = match persistence::create_index_job(
         database.path(),
         &storage_root_id,
         &index_job_id,
@@ -179,7 +181,7 @@ async fn start_index_job(
 
     tauri::async_runtime::spawn(async move {
         let worker_result = tauri::async_runtime::spawn_blocking(move || {
-            indexer::run_initial_index_job(
+            indexer::run_index_job(
                 worker_database_path,
                 root,
                 worker_job_id,

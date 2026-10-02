@@ -36,6 +36,7 @@ type IndexedFile = {
   extension: string;
   sizeBytes: number;
   modifiedUnixMs: number | null;
+  availabilityState: string;
 };
 
 const TERMINAL_JOB_STATUSES = new Set([
@@ -292,12 +293,12 @@ export default function App() {
         </header>
 
         <section className="hero">
-          <p className="eyebrow">BACKGROUND INDEXING</p>
-          <h1>Large folder scans no longer block the application.</h1>
+          <p className="eyebrow">INDEXING & RECONCILIATION</p>
+          <h1>File continuity survives normal moves, edits, and missing sources.</h1>
           <p className="hero-copy">
-            Each approved root is indexed as a persistent job and scan generation.
-            File observations are written to SQLite in bounded batches while the UI
-            reads progress from durable job state.
+            Completed roots now reconcile against a new authoritative scan generation.
+            Strong filesystem identity preserves legitimate rename/move continuity, while
+            incomplete scans never infer deletion.
           </p>
 
           {error ? (
@@ -394,9 +395,9 @@ export default function App() {
                       className="secondary-button"
                       type="button"
                       onClick={() => void startIndex(root)}
-                      disabled={isStarting || activeIsRunning || completed || running}
+                      disabled={isStarting || activeIsRunning || running}
                     >
-                      {completed ? "Indexed" : running ? "Indexing…" : "Index"}
+                      {running ? "Indexing…" : completed ? "Reconcile" : "Index"}
                     </button>
                   </div>
                 );
@@ -435,7 +436,14 @@ export default function App() {
                       <strong>{file.name}</strong>
                       <span>{file.path}</span>
                     </div>
-                    <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                    <div className="file-meta">
+                      <span
+                        className={`file-state file-state-${file.availabilityState.toLowerCase()}`}
+                      >
+                        {file.availabilityState}
+                      </span>
+                      <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                    </div>
                   </div>
                 ))
               ) : (

@@ -622,3 +622,36 @@ input:focus-visible {
     border-bottom: 0;
   }
 }
+
+
+.file-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-state {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eef2f7;
+  color: #526174;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.file-state-missing {
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.file-state-changed {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.file-state-unavailable,
+.file-state-unknown {
+  background: #f4f4f5;
+  color: #52525b;
+}
