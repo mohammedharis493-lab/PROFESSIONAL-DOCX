@@ -977,6 +977,149 @@ The application should expose its own search abstraction so that the underlying 
 
 ---
 
+# Delivery Scope & Engineering Effort
+
+These are **planning estimates of engineering effort**, not delivery promises. Actual calendar duration depends on developer count, testing depth, deployment environment, file volumes, Windows/network-storage behaviour, and how much functionality is included in the first release.
+
+The project should be treated as four increasingly complete products:
+
+## Level A — Search-First Prototype
+
+**Scope:** Phase 0 + the essential parts of Phases 1–2.
+
+Includes:
+
+- local application shell,
+- add/index existing folders without duplicating source files,
+- filename/title indexing,
+- partial/prefix search,
+- fuzzy/typo search,
+- fast search-as-you-type,
+- basic PDF/Office opening,
+- recent files,
+- pins/favourites,
+- basic client/engagement metadata,
+- source-path tracking.
+
+**Indicative engineering effort:** roughly **2–4 engineer-weeks** for a working prototype using mature existing libraries/services.
+
+This is enough to prove the central proposition:
+
+> Professional DocX can retrieve the right file materially faster than File Explorer.
+
+## Level B — Usable Firm V1
+
+**Scope:** Phases 0–4 in practical V1 form.
+
+Adds:
+
+- multi-user authentication,
+- permissions,
+- PDF/Excel/Word previews,
+- metadata and contextual navigation,
+- linked-file health detection,
+- controlled evidence capture,
+- hashing/provenance,
+- document relationships,
+- workpapers,
+- review notes,
+- preparer/reviewer workflow,
+- PBC/request tracking,
+- reliable audit event logging.
+
+**Indicative engineering effort:** roughly **8–14 engineer-weeks**.
+
+This is the first level suitable for controlled daily use by a small audit team after acceptance testing.
+
+## Level C — Professional Audit Platform V1
+
+**Scope:** Phases 0–6 with production hardening of the core.
+
+Adds:
+
+- firm methodology/templates,
+- engagement roll-forward concepts,
+- ledger imports,
+- ledger scrutiny,
+- TB/FS linkage,
+- deterministic reconciliation framework,
+- statutory compliance engine,
+- stronger deployment/backup/security controls,
+- larger-volume performance work.
+
+**Indicative engineering effort:** roughly **18–30 engineer-weeks**.
+
+At this stage the product is no longer merely an improved document browser; it is a substantial audit-engagement platform.
+
+## Level D — Full Roadmap Platform
+
+**Scope:** Phases 0–11.
+
+Adds:
+
+- internal audit,
+- due diligence/data room,
+- external collaboration,
+- integrations,
+- automated intake,
+- optional AI assistance,
+- enterprise hardening,
+- large-scale deployment,
+- full security/retention/disaster-recovery capability.
+
+**Indicative engineering effort:** roughly **40–70 engineer-weeks** depending heavily on integration depth and enterprise requirements.
+
+## Recommended Build Strategy
+
+Do **not** wait for Level D before using the product.
+
+Recommended release progression:
+
+```text
+A — prove search/accessibility
+        |
+        v
+B — use internally for real engagements
+        |
+        v
+C — replace more audit spreadsheets/workflows
+        |
+        v
+D — expand into broader firm platform
+```
+
+The first practical target should therefore be **Level A**, immediately followed by Level B if the search/accessibility benchmark succeeds.
+
+## Complexity Assessment
+
+The basic concept is not unusually difficult:
+
+```text
+Index existing files
+-> store metadata
+-> fast search
+-> preview/open
+-> organize by client/engagement
+```
+
+The engineering complexity comes mainly from making it **trustworthy enough for professional audit use**, especially:
+
+- Windows/network-file change detection,
+- moved/renamed file handling,
+- high-quality search ranking,
+- large Excel/PDF processing,
+- secure permissions,
+- immutable evidence capture,
+- audit trails,
+- concurrency,
+- backup/recovery,
+- version integrity,
+- reviewer/sign-off controls.
+
+Therefore, accessibility/search should be built first and demonstrated with real firm files before investing heavily in the specialist modules.
+
+---
+
 # First Implementation Sequence
 
 The recommended immediate sequence is:
