@@ -30,10 +30,10 @@ User interface:
 Native application core:
   Rust
 
-Local metadata:
+Local authoritative metadata:
   SQLite
 
-Embedded search:
+Embedded derived search:
   Tantivy
 
 File storage:
@@ -45,6 +45,18 @@ Future shared deployment:
   Separate service/API boundary
   PostgreSQL and/or dedicated shared search may replace local implementations
 ```
+
+The persistence/search authority rule is:
+
+```text
+SQLite
+  = authoritative local metadata
+
+Tantivy
+  = derived, disposable, rebuildable search projection
+```
+
+Indexing-job, scan-generation, reconciliation, and transactional search-outbox behavior are defined in ADR-0006.
 
 ## Why This Stack
 
@@ -91,25 +103,29 @@ This keeps the first prototype self-contained and avoids requiring a separate ru
 
 ### SQLite
 
-SQLite will hold structured local application metadata for the first prototype.
+SQLite will hold authoritative structured local application metadata for the first prototype.
 
 Examples:
 
-- indexed storage roots,
-- file references,
+- approved storage roots,
+- file/document identity records,
+- indexing jobs and scan generations,
 - client metadata,
 - engagement metadata,
 - pins,
-- recents,
-- indexing status.
+- recents.
 
-SQLite is not the full-text search engine.
+SQLite is the local source of truth.
 
 The persistence layer must be abstracted so shared deployment can later use PostgreSQL.
+
+SQLite must not be used as a shared multi-host database by placing the application database on a NAS.
 
 ### Tantivy
 
 Tantivy will provide the local search index.
+
+Tantivy is not authoritative application state and must be fully rebuildable from SQLite.
 
 Initial indexed/searchable fields should include:
 
@@ -133,6 +149,8 @@ Search composition will support:
 - ranked results.
 
 Filename/title fields receive stronger ranking than extracted document contents.
+
+Search-index updates are driven from a transactional SQLite outbox as defined in ADR-0006.
 
 ## Search Ranking Principle
 
@@ -179,6 +197,7 @@ The codebase must define boundaries for:
 - SearchIndex
 - FileSystemGateway
 - DocumentExtractor
+- IndexJobRepository
 
 The UI must call application commands/services rather than SQLite or Tantivy directly.
 
@@ -193,6 +212,8 @@ SearchIndex
   TantivySearchIndex
   FutureSharedSearchIndex
 ```
+
+No Tantivy query/field types or SQLite row identifiers should leak into UI/domain contracts.
 
 ## Document Extraction
 
@@ -209,6 +230,8 @@ Likely later processors include:
 - OCR for scanned documents.
 
 Heavy format-specific processing may be implemented as Rust modules or isolated worker/sidecar processes without changing the search API.
+
+Initial discovery must not eagerly hash or extract the full contents of every source file.
 
 ## Explicit Non-Decisions
 
@@ -229,11 +252,13 @@ Those choices are deferred until needed.
 2. User can add an allowed folder.
 3. Rust core enumerates file metadata without copying source files.
 4. Metadata persists across application restart.
-5. Tantivy index persists across restart.
+5. Tantivy index persists across restart or can be rebuilt if removed.
 6. Search for `salamudd` returns `2024-25 Salamudd ITR.pdf`.
 7. Exact filename matches rank above fuzzy content-only matches.
 8. User can open the original selected file through Windows.
 9. Search and persistence are accessed through interfaces rather than directly from UI components.
+10. Deleting the Tantivy index does not delete authoritative metadata.
+11. Pending search updates survive a crash through the SQLite outbox.
 
 ## References
 
@@ -241,3 +266,4 @@ Those choices are deferred until needed.
 - Tauri opener: https://v2.tauri.app/plugin/opener/
 - Tantivy: https://docs.rs/tantivy/
 - Tantivy fuzzy search example: https://github.com/quickwit-oss/tantivy/blob/main/examples/fuzzy_search.rs
+- ADR-0006: Indexing Jobs, Scan Generations, Reconciliation, and Search Consistency
