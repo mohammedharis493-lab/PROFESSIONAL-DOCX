@@ -1,10 +1,5 @@
 use serde::Serialize;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::Mutex,
-    time::UNIX_EPOCH,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::UNIX_EPOCH};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -110,10 +105,9 @@ fn scan_storage_root(
             .lock()
             .map_err(|_| "Approved storage-root registry is unavailable.".to_string())?;
 
-        registry
-            .get(&root_id)
-            .cloned()
-            .ok_or_else(|| "Storage root is not approved for this application session.".to_string())?
+        registry.get(&root_id).cloned().ok_or_else(|| {
+            "Storage root is not approved for this application session.".to_string()
+        })?
     };
 
     let mut total_files = 0_u64;
