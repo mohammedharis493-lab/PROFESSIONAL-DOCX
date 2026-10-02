@@ -1,5 +1,6 @@
 mod indexer;
 mod persistence;
+mod search;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -100,6 +101,38 @@ impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchResultDto {
+    document_id: String,
+    file_instance_id: String,
+    name: String,
+    path: String,
+    extension: String,
+    size_bytes: u64,
+    modified_unix_ms: Option<i64>,
+    availability_state: String,
+    matched_field: String,
+    score: f32,
+}
+
+impl From<search::SearchResultRecord> for SearchResultDto {
+    fn from(value: search::SearchResultRecord) -> Self {
+        Self {
+            document_id: value.document_id,
+            file_instance_id: value.file_instance_id,
+            name: value.name,
+            path: value.path,
+            extension: value.extension,
+            size_bytes: value.size_bytes,
+            modified_unix_ms: value.modified_unix_ms,
+            availability_state: value.availability_state,
+            matched_field: value.matched_field,
+            score: value.score,
+        }
+    }
+}
+
 #[tauri::command]
 async fn choose_and_register_storage_root(
     app: AppHandle,
@@ -147,6 +180,7 @@ async fn start_index_job(
     storage_root_id: String,
     database: State<'_, persistence::DatabaseState>,
     runtime: State<'_, indexer::IndexRuntime>,
+    search_state: State<'_, search::SearchState>,
 ) -> Result<IndexJobDto, String> {
     Uuid::parse_str(&storage_root_id)
         .map_err(|_| "Invalid storage-root identifier.".to_string())?;
@@ -158,6 +192,7 @@ async fn start_index_job(
     let index_job_id = Uuid::new_v4().to_string();
     let scan_generation_id = Uuid::new_v4().to_string();
     let runtime_handle = runtime.inner().clone();
+    let search_handle = search_state.inner().clone();
     let cancellation = runtime_handle.reserve(&index_job_id)?;
 
     let job = match persistence::create_index_job(
@@ -217,6 +252,15 @@ async fn start_index_job(
         }
 
         runtime_handle.finish(&index_job_id);
+
+        let search_database_path = database_path.clone();
+        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+            search::sync_search_index(&search_database_path, &search_handle)
+        })
+        .await
+        {
+            eprintln!("Search-index synchronization task failed to join: {error}");
+        }
     });
 
     Ok(job.into())
@@ -281,21 +325,70 @@ fn list_indexed_file_preview(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn search_documents(
+    query: String,
+    limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+    search_state: State<'_, search::SearchState>,
+) -> Result<Vec<SearchResultDto>, String> {
+    let database_path = database.path().to_path_buf();
+    let search_handle = search_state.inner().clone();
+    let bounded_limit = limit.unwrap_or(50);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        search::search_documents(&database_path, &search_handle, &query, bounded_limit)
+            .map(|results| results.into_iter().map(Into::into).collect())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Search task failed to join: {error}"))?
+}
+
+#[tauri::command]
+async fn rebuild_search_index(
+    database: State<'_, persistence::DatabaseState>,
+    search_state: State<'_, search::SearchState>,
+) -> Result<(), String> {
+    let database_path = database.path().to_path_buf();
+    let search_handle = search_state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        search::rebuild_search_index(&database_path, &search_handle)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Search rebuild task failed to join: {error}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let database_path = app
-                .path()
-                .app_data_dir()?
-                .join("data")
-                .join("metadata.sqlite");
+            let data_dir = app.path().app_data_dir()?.join("data");
+            let database_path = data_dir.join("metadata.sqlite");
+            let search_path = data_dir.join("search-index");
 
             persistence::initialize_database(&database_path)?;
             persistence::recover_interrupted_index_jobs(&database_path)?;
+
+            let search_state = search::SearchState::new(search_path);
+            let startup_search_state = search_state.clone();
+            let startup_database_path = database_path.clone();
+
             app.manage(persistence::DatabaseState::new(database_path));
             app.manage(indexer::IndexRuntime::default());
+            app.manage(search_state);
+
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) =
+                    search::sync_search_index(&startup_database_path, &startup_search_state)
+                {
+                    eprintln!("Search index startup synchronization failed: {error}");
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -305,7 +398,9 @@ pub fn run() {
             get_index_job,
             get_latest_index_job_for_root,
             cancel_index_job,
-            list_indexed_file_preview
+            list_indexed_file_preview,
+            search_documents,
+            rebuild_search_index
         ])
         .run(tauri::generate_context!())
         .expect("error while running Professional DocX");

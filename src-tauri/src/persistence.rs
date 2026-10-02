@@ -123,6 +123,42 @@ pub struct IndexedFilePreviewRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct SearchProjectionRecord {
+    pub document_id: String,
+    pub file_instance_id: String,
+    pub content_version_id: Option<String>,
+    pub storage_root_id: String,
+    pub display_name: String,
+    pub relative_path_display: String,
+    pub size_bytes: u64,
+    pub modified_unix_ms: Option<i64>,
+    pub availability_state: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchOutboxRecord {
+    pub operation_id: String,
+    pub entity_id: String,
+    pub operation: String,
+    pub payload_version: u32,
+    pub payload_json: String,
+}
+
+#[derive(Debug)]
+struct HydratedIndexRow {
+    document_id: String,
+    file_instance_id: String,
+    name: String,
+    relative_path_native: Vec<u8>,
+    path_native_encoding: String,
+    size_bytes: i64,
+    modified_unix_ms: Option<i64>,
+    availability_state: String,
+    root_native: Vec<u8>,
+    root_native_encoding: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct IndexJobCompletion<'a> {
     pub status: &'a str,
     pub failure_code: Option<&'a str>,
@@ -1615,6 +1651,243 @@ pub(crate) fn path_history_reasons_for_test(
         reasons.push(row?);
     }
     Ok(reasons)
+}
+
+
+pub fn list_search_projection_snapshot(
+    database_path: &Path,
+) -> Result<Vec<SearchProjectionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            d.document_id,
+            fi.file_instance_id,
+            (
+                SELECT cv.content_version_id
+                FROM content_versions cv
+                WHERE cv.file_instance_id = fi.file_instance_id
+                ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                LIMIT 1
+            ),
+            fi.storage_root_id,
+            d.display_name,
+            fi.relative_path_display,
+            fi.size_bytes,
+            fi.last_write_time_ms,
+            fi.availability_state
+         FROM file_instances fi
+         JOIN documents d ON d.document_id = fi.document_id
+         WHERE d.archived_at_ms IS NULL
+         ORDER BY fi.file_instance_id",
+    )?;
+
+    let rows = statement.query_map([], |row| {
+        let size_bytes: i64 = row.get(6)?;
+        Ok(SearchProjectionRecord {
+            document_id: row.get(0)?,
+            file_instance_id: row.get(1)?,
+            content_version_id: row.get(2)?,
+            storage_root_id: row.get(3)?,
+            display_name: row.get(4)?,
+            relative_path_display: row.get(5)?,
+            size_bytes: size_bytes.max(0) as u64,
+            modified_unix_ms: row.get(7)?,
+            availability_state: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_pending_search_outbox(
+    database_path: &Path,
+    limit: u32,
+) -> Result<Vec<SearchOutboxRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let bounded_limit = i64::from(limit.clamp(1, 5_000));
+    let mut statement = connection.prepare(
+        "SELECT
+            operation_id,
+            entity_id,
+            operation,
+            payload_version,
+            payload_json
+         FROM search_index_outbox
+         WHERE acknowledged_at_ms IS NULL
+         ORDER BY created_at_ms, rowid
+         LIMIT ?1",
+    )?;
+
+    let rows = statement.query_map([bounded_limit], |row| {
+        let payload_version: i64 = row.get(3)?;
+        Ok(SearchOutboxRecord {
+            operation_id: row.get(0)?,
+            entity_id: row.get(1)?,
+            operation: row.get(2)?,
+            payload_version: payload_version.max(0) as u32,
+            payload_json: row.get(4)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_pending_search_outbox_ids(
+    database_path: &Path,
+) -> Result<Vec<String>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT operation_id
+         FROM search_index_outbox
+         WHERE acknowledged_at_ms IS NULL
+         ORDER BY created_at_ms, rowid",
+    )?;
+
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn acknowledge_search_outbox(
+    database_path: &Path,
+    operation_ids: &[String],
+) -> Result<(), PersistenceError> {
+    if operation_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let acknowledged_at_ms = now_unix_ms()?;
+
+    for operation_id in operation_ids {
+        transaction.execute(
+            "UPDATE search_index_outbox
+             SET acknowledged_at_ms = ?1,
+                 last_error = NULL
+             WHERE operation_id = ?2
+               AND acknowledged_at_ms IS NULL",
+            params![acknowledged_at_ms, operation_id],
+        )?;
+    }
+
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn record_search_outbox_failure(
+    database_path: &Path,
+    operation_ids: &[String],
+    message: &str,
+) -> Result<(), PersistenceError> {
+    if operation_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    for operation_id in operation_ids {
+        transaction.execute(
+            "UPDATE search_index_outbox
+             SET attempt_count = attempt_count + 1,
+                 last_error = ?1
+             WHERE operation_id = ?2
+               AND acknowledged_at_ms IS NULL",
+            params![message, operation_id],
+        )?;
+    }
+
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn hydrate_search_files(
+    database_path: &Path,
+    file_instance_ids: &[String],
+) -> Result<Vec<Option<IndexedFilePreviewRecord>>, PersistenceError> {
+    if file_instance_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            d.document_id,
+            fi.file_instance_id,
+            d.display_name,
+            fi.relative_path_native,
+            fi.path_native_encoding,
+            fi.size_bytes,
+            fi.last_write_time_ms,
+            fi.availability_state,
+            COALESCE(sr.canonical_native_locator, sr.native_locator),
+            sr.native_locator_encoding
+         FROM file_instances fi
+         JOIN documents d ON d.document_id = fi.document_id
+         JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+         WHERE fi.file_instance_id = ?1
+           AND d.archived_at_ms IS NULL",
+    )?;
+
+    let mut result = Vec::with_capacity(file_instance_ids.len());
+
+    for file_instance_id in file_instance_ids {
+        let row = statement
+            .query_row([file_instance_id], |row| {
+                Ok(HydratedIndexRow {
+                    document_id: row.get(0)?,
+                    file_instance_id: row.get(1)?,
+                    name: row.get(2)?,
+                    relative_path_native: row.get(3)?,
+                    path_native_encoding: row.get(4)?,
+                    size_bytes: row.get(5)?,
+                    modified_unix_ms: row.get(6)?,
+                    availability_state: row.get(7)?,
+                    root_native: row.get(8)?,
+                    root_native_encoding: row.get(9)?,
+                })
+            })
+            .optional()?;
+
+        let Some(row) = row else {
+            result.push(None);
+            continue;
+        };
+
+        let root_path = decode_native_path(&row.root_native, &row.root_native_encoding)?;
+        let relative_path =
+            decode_native_path(&row.relative_path_native, &row.path_native_encoding)?;
+        let absolute_path = root_path.join(&relative_path);
+        let extension = relative_path
+            .extension()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        result.push(Some(IndexedFilePreviewRecord {
+            document_id: row.document_id,
+            file_instance_id: row.file_instance_id,
+            name: row.name,
+            path: absolute_path.to_string_lossy().into_owned(),
+            extension,
+            size_bytes: row.size_bytes.max(0) as u64,
+            modified_unix_ms: row.modified_unix_ms,
+            availability_state: row.availability_state,
+        }));
+    }
+
+    Ok(result)
 }
 
 pub fn encode_native_path_for_storage(path: &Path) -> (Vec<u8>, String) {
