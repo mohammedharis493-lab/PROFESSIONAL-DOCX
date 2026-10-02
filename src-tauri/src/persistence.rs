@@ -51,7 +51,7 @@ pub struct StorageRootRecord {
     pub canonical_path: PathBuf,
 }
 
-#[derive(Debug)] 
+#[derive(Debug)]
 pub enum PersistenceError {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
@@ -281,14 +281,17 @@ fn storage_root_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StorageRoo
     let canonical_display_locator: Option<String> = row.get(5)?;
     let availability_state: String = row.get(6)?;
 
-    let authoritative_native = canonical_native_locator.as_deref().unwrap_or(&native_locator);
-    let canonical_path = decode_native_path(authoritative_native, &native_encoding).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            3,
-            rusqlite::types::Type::Blob,
-            Box::new(error),
-        )
-    })?;
+    let authoritative_native = canonical_native_locator
+        .as_deref()
+        .unwrap_or(&native_locator);
+    let canonical_path =
+        decode_native_path(authoritative_native, &native_encoding).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Blob,
+                Box::new(error),
+            )
+        })?;
 
     Ok(StorageRootRecord {
         storage_root_id,
@@ -353,10 +356,7 @@ fn classify_storage_root(path: &Path) -> &'static str {
 
     match path.components().next() {
         Some(Component::Prefix(prefix))
-            if matches!(
-                prefix.kind(),
-                Prefix::UNC(..) | Prefix::VerbatimUNC(..)
-            ) =>
+            if matches!(prefix.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..)) =>
         {
             "NETWORK"
         }
@@ -758,13 +758,9 @@ mod tests {
         let canonical =
             fs::canonicalize(&source_root).expect("test source root should canonicalize");
 
-        let registered = register_storage_root(
-            &database.path,
-            "root-persistent",
-            &source_root,
-            &canonical,
-        )
-        .expect("storage root should register");
+        let registered =
+            register_storage_root(&database.path, "root-persistent", &source_root, &canonical)
+                .expect("storage root should register");
 
         assert_eq!(registered.storage_root_id, "root-persistent");
 
@@ -792,12 +788,10 @@ mod tests {
         let canonical =
             fs::canonicalize(&source_root).expect("test source root should canonicalize");
 
-        let first =
-            register_storage_root(&database.path, "root-one", &source_root, &canonical)
-                .expect("first registration should succeed");
-        let second =
-            register_storage_root(&database.path, "root-two", &source_root, &canonical)
-                .expect("second registration should succeed");
+        let first = register_storage_root(&database.path, "root-one", &source_root, &canonical)
+            .expect("first registration should succeed");
+        let second = register_storage_root(&database.path, "root-two", &source_root, &canonical)
+            .expect("second registration should succeed");
 
         assert_eq!(first.storage_root_id, "root-one");
         assert_eq!(second.storage_root_id, "root-one");
