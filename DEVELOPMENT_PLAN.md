@@ -19,6 +19,8 @@ These principles are architectural constraints and should not be weakened silent
 8. **Human review remains authoritative.** Important conclusions, deletions, approval actions, rule changes, and final sign-offs require appropriate human authority.
 9. **Auditability by design.** Material document and workflow events must be traceable through an append-oriented audit history.
 10. **Private/local deployment must remain possible.** Core document storage, search, OCR, workpapers, and review workflows should not require a public SaaS dependency.
+11. **Reference existing files by default; do not duplicate them unnecessarily.** Professional DocX should normally index and organize files where they already exist on the user's PC, office server, NAS, or other configured storage. A controlled immutable copy is created only when evidence is formally captured for an engagement, when policy requires preservation, or when the user explicitly imports the file into managed storage.
+12. **Storage location must be abstracted from accessibility.** Users should search and navigate by what a document is, not by remembering its physical Windows path. The system must retain the source path/provenance and detect when linked files are moved, renamed, changed, or unavailable.
 
 ---
 
@@ -57,6 +59,20 @@ Freeze the core domain model, development rules, acceptance-test philosophy, and
             -> Procedure / Workpaper / Checklist / Evidence
   ```
 - Define immutable-original policy.
+- Define the three document storage states:
+  ```text
+  LINKED FILE
+    Existing file remains at its current storage path.
+    Professional DocX stores reference + metadata + search index + optional preview/cache.
+
+  CONTROLLED EVIDENCE
+    Immutable captured copy retained by Professional DocX for formal engagement evidence.
+
+  MANAGED FILE
+    File explicitly imported into Professional DocX-controlled storage.
+  ```
+- Define promotion rules from linked file -> controlled evidence.
+- Define source-path health/change detection and provenance requirements.
 - Define permission model boundaries.
 - Define search-ranking principles.
 - Define local/private deployment model.
@@ -71,6 +87,8 @@ Phase 1 cannot begin until:
 - No statutory-audit-specific structure is embedded as a mandatory schema.
 - Test harness and CI run successfully.
 - Data-loss-sensitive actions have explicit design controls.
+- Architecture does not require duplicating every indexed client file.
+- Linked-file, controlled-evidence, and managed-file states have explicit lifecycle rules.
 
 ---
 
@@ -84,7 +102,9 @@ Create the secure application shell and reliable persistence layer on which all 
 ### Backend
 - Modular-monolith backend.
 - PostgreSQL metadata database.
-- Object/file storage abstraction.
+- Object/file storage abstraction supporting both external linked paths and Professional DocX-managed storage.
+- File-reference registry storing canonical source path/URI, filename, size, timestamps, hash/fingerprint where appropriate, storage state, and availability status.
+- Linked-file health detection for missing, moved, renamed, or changed files.
 - Authentication.
 - Role-based access control foundation.
 - Client and engagement CRUD.
@@ -105,6 +125,8 @@ Create the secure application shell and reliable persistence layer on which all 
 - File access authorization.
 - No client documents committed into Git.
 - Backups/export design.
+- Index/preview/cache storage separated from original client-file storage.
+- Cache data must be safely rebuildable from originals or controlled evidence where applicable.
 
 ## Gate
 
@@ -128,7 +150,9 @@ Make finding and opening a document materially faster than Windows File Explorer
 ## Deliverables
 
 ### Universal Search
-A single search entry point covering:
+A single search entry point covering both files managed by Professional DocX and files that remain in their existing Windows/server/NAS locations. Indexing a linked file must not require copying the full source file into application storage.
+
+Search covers:
 
 - Filename/title
 - Client
@@ -208,6 +232,10 @@ Fuzzy-only match                        Lowest
 - Breadcrumb navigation.
 - Back/forward navigation history.
 - Open result directly into in-app preview.
+- Open the original file in its native application when requested.
+- Reveal/open source location where permitted.
+- Clearly indicate when a linked source is unavailable, moved, or changed.
+- Search remains usable from the index even when a linked source is temporarily offline, while clearly indicating that the original cannot currently be opened.
 
 ### Performance Targets
 
@@ -250,25 +278,43 @@ Phase 3 should not be accepted until:
 
 ---
 
-# Phase 3 — Evidence Store, Viewer, Versioning & Relationship Graph
+# Phase 3 — Linked Files, Controlled Evidence, Viewer, Versioning & Relationship Graph
 
 ## Objective
-Turn stored files into controlled audit evidence rather than ordinary attachments.
+Provide fast access to existing files without unnecessary duplication, while allowing selected documents to be promoted into immutable controlled audit evidence when preservation is required.
 
 ## Deliverables
 
-### Evidence Model
+### Storage & Evidence Model
 
 ```text
-Original Evidence
-  -> immutable original
-  -> preview representation
-  -> OCR/text representation
-  -> metadata
-  -> annotations
-  -> subsequent versions
-  -> linked workpapers/findings/queries
+Existing File Explorer / Server / NAS file
+        |
+        +-> LINKED FILE
+        |     -> source path/URI
+        |     -> metadata
+        |     -> search index
+        |     -> preview/cache
+        |     -> hash/fingerprint where appropriate
+        |
+        +-> Promote when required
+              |
+              +-> CONTROLLED EVIDENCE
+                    -> immutable captured original
+                    -> provenance back to source
+                    -> captured by / captured date
+                    -> cryptographic hash
+                    -> preview/OCR representation
+                    -> annotations
+                    -> subsequent controlled versions
+                    -> linked workpapers/findings/queries
+
+Explicit user import may instead create a MANAGED FILE directly in Professional DocX storage.
 ```
+
+The default for ordinary existing client files is **LINKED FILE**, not automatic duplication.
+
+Professional DocX may store small derived artifacts such as metadata, extracted text, search indexes, thumbnails, previews, and caches. These are not treated as substitute originals.
 
 ### File Support
 
@@ -305,13 +351,23 @@ Where technically possible, retain visibility of:
 - hidden rows/columns indicators,
 - hyperlinks.
 
-### Versioning
+### Linked-File Integrity & Versioning
+
+For linked files:
+
+- Preserve canonical source path/URI and source provenance.
+- Detect unavailable sources.
+- Detect material file changes using metadata and/or cryptographic fingerprinting.
+- Never silently treat a changed source file as the same signed-off evidence.
+- Allow relinking when a file has been legitimately moved or renamed, with an auditable action.
+
+For controlled/managed evidence:
 
 - Document version history.
-- Original preserved.
+- Immutable captured original preserved.
 - New upload can create a new version rather than silent replacement.
 - Hash important evidence (e.g. SHA-256).
-- Display uploader/date/source/version.
+- Display source path, capture/import method, uploader/capturer, date, and version.
 
 ### Relationships
 
@@ -344,7 +400,11 @@ Where a derived result stores provenance, allow navigation back to:
 
 ## Gate
 
-- Original evidence cannot be silently overwritten.
+- Indexing an existing folder does not duplicate every source file.
+- Linked files remain at their original storage locations unless explicitly imported or promoted.
+- Controlled evidence cannot be silently overwritten.
+- A linked file that changes after evidence capture cannot silently alter the controlled evidence.
+- Missing/moved linked files are clearly detected and can be relinked through an auditable action.
 - Version history is reliable.
 - Related evidence can be reached directly.
 - User can move through evidence relationships and back again without losing context.
@@ -418,6 +478,18 @@ Not Started
 ### Sign-off
 
 Role-aware preparer/reviewer/final approval structure.
+
+Where engagement policy requires preserved evidence, moving a workpaper into a defined sign-off state may trigger or require explicit **evidence capture**:
+
+```text
+Linked working file
+    -> evidence capture
+    -> immutable controlled-evidence snapshot
+    -> hash + source provenance
+    -> reviewer sign-off against the captured version
+```
+
+The policy must be configurable so temporary/irrelevant working files are not copied unnecessarily.
 
 ## Gate
 
@@ -790,10 +862,14 @@ Office LAN server
 Local/self-hosted deployment
 ```
 
-### Performance
+### Performance & Storage Efficiency
 
 Stress-test:
 
+- very large existing file trees indexed in-place without full duplication,
+- storage overhead from metadata/indexes/previews versus source-file volume,
+- linked files on local disks, office servers, and NAS/network paths,
+- temporarily unavailable network storage and subsequent recovery/relinking,
 - large client libraries,
 - many years,
 - many engagements,
@@ -830,12 +906,19 @@ These tests should remain active through the life of the project.
 5. Advanced filters are not required for normal search.
 6. Search authorization never returns documents the user cannot access.
 
-## Evidence Integrity
+## Storage & Evidence Integrity
 
-1. Original upload remains retrievable after OCR.
-2. Original upload remains retrievable after annotation.
-3. New versions do not destroy prior versions.
-4. Hash/provenance information is retained where required.
+1. Adding an existing folder for indexing does not create a second full copy of every source document.
+2. A linked file remains openable from its original path when available.
+3. Missing/moved/renamed linked files are detected rather than silently replaced.
+4. Legitimate relinking is auditable and does not alter historical controlled evidence.
+5. Promoting a linked document to controlled evidence creates a preserved immutable snapshot with source provenance.
+6. Subsequent edits to the external working file do not change the previously captured controlled-evidence version.
+7. Original controlled/managed evidence remains retrievable after OCR.
+8. Original controlled/managed evidence remains retrievable after annotation.
+9. New controlled versions do not destroy prior versions.
+10. Hash/provenance information is retained where required.
+11. Search indexes, previews, thumbnails, and OCR caches can be rebuilt without being mistaken for original evidence.
 
 ## Flexibility
 
@@ -872,7 +955,11 @@ Database:
   PostgreSQL
 
 File Storage:
-  Abstracted object/filesystem storage
+  Hybrid storage abstraction:
+  - linked external/local/network file references by default
+  - Professional DocX managed storage for explicit imports
+  - immutable controlled-evidence store for captured audit evidence
+  - separate rebuildable preview/OCR/index cache
 
 Search:
   Dedicated search service with typo tolerance,
