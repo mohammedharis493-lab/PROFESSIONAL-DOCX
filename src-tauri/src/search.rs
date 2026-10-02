@@ -99,12 +99,9 @@ impl From<serde_json::Error> for SearchError {
 struct SearchPayload {
     document_id: String,
     file_instance_id: String,
-    content_version_id: Option<String>,
     storage_root_id: String,
     display_name: String,
     relative_path: String,
-    size_bytes: u64,
-    modified_unix_ms: Option<i64>,
     availability_state: String,
 }
 
@@ -402,12 +399,6 @@ fn add_payload_document(
     fields: &SearchFields,
     payload: &SearchPayload,
 ) -> Result<(), SearchError> {
-    let _ = (
-        payload.content_version_id.as_deref(),
-        payload.size_bytes,
-        payload.modified_unix_ms,
-    );
-
     let document = build_document(
         fields,
         &payload.document_id,
@@ -474,7 +465,7 @@ fn build_query(
                 Occur::Should,
                 boosted_regex(
                     fields.filename_tokens,
-                    &format!("^{}.*", escape_regex(token)),
+                    &format!("{}.*", escape_regex(token)),
                     10.0,
                 )?,
             ));
@@ -511,7 +502,7 @@ fn build_query(
                 Occur::Should,
                 boosted_regex(
                     fields.path_tokens,
-                    &format!("^{}.*", escape_regex(token)),
+                    &format!("{}.*", escape_regex(token)),
                     2.5,
                 )?,
             ));
