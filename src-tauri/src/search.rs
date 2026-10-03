@@ -171,6 +171,7 @@ impl SearchFields {
     }
 }
 
+#[cfg(test)]
 pub fn sync_search_index(database_path: &Path, state: &SearchState) -> Result<(), SearchError> {
     let _ = sync_search_index_once(database_path, state)?;
     Ok(())
