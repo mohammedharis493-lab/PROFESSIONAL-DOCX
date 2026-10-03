@@ -243,7 +243,6 @@ async fn start_index_job(
     storage_root_id: String,
     database: State<'_, persistence::DatabaseState>,
     runtime: State<'_, indexer::IndexRuntime>,
-    search_state: State<'_, search::SearchState>,
 ) -> Result<IndexJobDto, String> {
     Uuid::parse_str(&storage_root_id)
         .map_err(|_| "Invalid storage-root identifier.".to_string())?;
@@ -255,7 +254,6 @@ async fn start_index_job(
     let index_job_id = Uuid::new_v4().to_string();
     let scan_generation_id = Uuid::new_v4().to_string();
     let runtime_handle = runtime.inner().clone();
-    let search_handle = search_state.inner().clone();
     let cancellation = runtime_handle.reserve(&index_job_id)?;
 
     let job = match persistence::create_index_job(
@@ -315,21 +313,6 @@ async fn start_index_job(
         }
 
         runtime_handle.finish(&index_job_id);
-
-        let search_database_path = database_path.clone();
-        match tauri::async_runtime::spawn_blocking(move || {
-            search::sync_search_index(&search_database_path, &search_handle)
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                eprintln!("Search-index synchronization failed: {error}");
-            }
-            Err(error) => {
-                eprintln!("Search-index synchronization task failed to join: {error}");
-            }
-        }
     });
 
     Ok(job.into())
@@ -520,20 +503,13 @@ pub fn run() {
             persistence::recover_interrupted_index_jobs(&database_path)?;
 
             let search_state = search::SearchState::new(search_path);
-            let startup_search_state = search_state.clone();
-            let startup_database_path = database_path.clone();
+            let search_sync_worker =
+                search::SearchSyncWorker::start(database_path.clone(), search_state.clone());
 
             app.manage(persistence::DatabaseState::new(database_path));
             app.manage(indexer::IndexRuntime::default());
             app.manage(search_state);
-
-            tauri::async_runtime::spawn_blocking(move || {
-                if let Err(error) =
-                    search::sync_search_index(&startup_database_path, &startup_search_state)
-                {
-                    eprintln!("Search index startup synchronization failed: {error}");
-                }
-            });
+            app.manage(search_sync_worker);
 
             Ok(())
         })

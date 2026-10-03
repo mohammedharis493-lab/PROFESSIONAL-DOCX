@@ -4,7 +4,12 @@ use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::Duration,
 };
 use tantivy::{
     collector::TopDocs,
@@ -15,8 +20,10 @@ use tantivy::{
 use uuid::Uuid;
 
 const SEARCH_WRITER_HEAP_BYTES: usize = 50_000_000;
-const OUTBOX_BATCH_SIZE: u32 = 2_000;
+const OUTBOX_BATCH_SIZE: u32 = 500;
 const MAX_SEARCH_RESULTS: u32 = 100;
+const SEARCH_SYNC_IDLE_MS: u64 = 250;
+const SEARCH_SYNC_RETRY_MS: u64 = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct SearchState {
@@ -29,6 +36,40 @@ impl SearchState {
         Self {
             root,
             gate: Arc::new(Mutex::new(())),
+        }
+    }
+}
+
+pub struct SearchSyncWorker {
+    stop: Arc<AtomicBool>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl SearchSyncWorker {
+    pub fn start(database_path: PathBuf, state: SearchState) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+
+        let handle = thread::Builder::new()
+            .name("professional-docx-search-sync".to_string())
+            .spawn(move || run_search_sync_loop(database_path, state, worker_stop))
+            .expect("search sync worker thread should start");
+
+        Self {
+            stop,
+            handle: Mutex::new(Some(handle)),
+        }
+    }
+}
+
+impl Drop for SearchSyncWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+
+        if let Ok(mut handle) = self.handle.lock() {
+            if let Some(handle) = handle.take() {
+                let _ = handle.join();
+            }
         }
     }
 }
@@ -131,14 +172,64 @@ impl SearchFields {
 }
 
 pub fn sync_search_index(database_path: &Path, state: &SearchState) -> Result<(), SearchError> {
+    let _ = sync_search_index_once(database_path, state)?;
+    Ok(())
+}
+
+fn sync_search_index_once(
+    database_path: &Path,
+    state: &SearchState,
+) -> Result<usize, SearchError> {
     let _guard = state
         .gate
         .lock()
         .map_err(|_| SearchError::Configuration("search-index lock was poisoned".to_string()))?;
 
     let index = ensure_index(database_path, &state.root)?;
-    apply_pending_outbox(database_path, &index)?;
-    Ok(())
+    apply_pending_outbox_batch(database_path, &index)
+}
+
+fn run_search_sync_loop(
+    database_path: PathBuf,
+    state: SearchState,
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_error: Option<String> = None;
+
+    while !stop.load(Ordering::Acquire) {
+        match sync_search_index_once(&database_path, &state) {
+            Ok(processed) => {
+                if last_error.take().is_some() {
+                    eprintln!("Search-index synchronization recovered.");
+                }
+
+                if processed == OUTBOX_BATCH_SIZE as usize {
+                    continue;
+                }
+
+                sleep_with_stop(&stop, SEARCH_SYNC_IDLE_MS);
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if last_error.as_deref() != Some(message.as_str()) {
+                    eprintln!("Search-index synchronization failed: {message}");
+                    last_error = Some(message);
+                }
+                sleep_with_stop(&stop, SEARCH_SYNC_RETRY_MS);
+            }
+        }
+    }
+}
+
+fn sleep_with_stop(stop: &AtomicBool, duration_ms: u64) {
+    let slices = duration_ms.div_ceil(50);
+
+    for _ in 0..slices {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn rebuild_search_index(database_path: &Path, state: &SearchState) -> Result<(), SearchError> {
@@ -149,7 +240,7 @@ pub fn rebuild_search_index(database_path: &Path, state: &SearchState) -> Result
 
     rebuild_index(database_path, &state.root)?;
     let index = open_active_index(&state.root)?;
-    apply_pending_outbox(database_path, &index)?;
+    while apply_pending_outbox_batch(database_path, &index)? == OUTBOX_BATCH_SIZE as usize {}
     Ok(())
 }
 
@@ -180,7 +271,6 @@ pub fn search_documents(
         .map_err(|_| SearchError::Configuration("search-index lock was poisoned".to_string()))?;
 
     let index = ensure_index(database_path, &state.root)?;
-    apply_pending_outbox(database_path, &index)?;
 
     let schema = index.schema();
     let fields = SearchFields::from_schema(&schema)?;
@@ -305,36 +395,34 @@ fn rebuild_index(database_path: &Path, root: &Path) -> Result<(), SearchError> {
     Ok(())
 }
 
-fn apply_pending_outbox(database_path: &Path, index: &Index) -> Result<(), SearchError> {
+fn apply_pending_outbox_batch(
+    database_path: &Path,
+    index: &Index,
+) -> Result<usize, SearchError> {
     let fields = SearchFields::from_schema(&index.schema())?;
+    let batch = persistence::list_pending_search_outbox(database_path, OUTBOX_BATCH_SIZE)?;
 
-    loop {
-        let batch = persistence::list_pending_search_outbox(database_path, OUTBOX_BATCH_SIZE)?;
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        let operation_ids: Vec<String> = batch
-            .iter()
-            .map(|record| record.operation_id.clone())
-            .collect();
-
-        let result = apply_outbox_batch(index, &fields, &batch);
-        if let Err(error) = result {
-            let _ = persistence::record_search_outbox_failure(
-                database_path,
-                &operation_ids,
-                &error.to_string(),
-            );
-            return Err(error);
-        }
-
-        persistence::acknowledge_search_outbox(database_path, &operation_ids)?;
-
-        if batch.len() < OUTBOX_BATCH_SIZE as usize {
-            return Ok(());
-        }
+    if batch.is_empty() {
+        return Ok(0);
     }
+
+    let operation_ids: Vec<String> = batch
+        .iter()
+        .map(|record| record.operation_id.clone())
+        .collect();
+
+    let result = apply_outbox_batch(index, &fields, &batch);
+    if let Err(error) = result {
+        let _ = persistence::record_search_outbox_failure(
+            database_path,
+            &operation_ids,
+            &error.to_string(),
+        );
+        return Err(error);
+    }
+
+    persistence::acknowledge_search_outbox(database_path, &operation_ids)?;
+    Ok(batch.len())
 }
 
 fn apply_outbox_batch(
@@ -786,6 +874,49 @@ mod tests {
         let pending = persistence::list_pending_search_outbox_ids(&test.database_path)
             .expect("pending outbox ids should load");
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn background_worker_replays_outbox_without_query_side_drain() {
+        let test = TestSearch::new();
+        fs::write(test.source_root.join("GST RCM April.xlsx"), b"rcm")
+            .expect("test file should be written");
+
+        let root = test.register_root("root-background-search");
+        test.scan(&root);
+
+        let worker = SearchSyncWorker::start(
+            test.database_path.clone(),
+            test.search_state.clone(),
+        );
+
+        let mut pending = persistence::list_pending_search_outbox_ids(&test.database_path)
+            .expect("pending outbox ids should load");
+
+        for _ in 0..100 {
+            if pending.is_empty() {
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(25));
+            pending = persistence::list_pending_search_outbox_ids(&test.database_path)
+                .expect("pending outbox ids should load");
+        }
+
+        assert!(pending.is_empty(), "background worker should drain the outbox");
+
+        let results = search_documents(
+            &test.database_path,
+            &test.search_state,
+            "gst rcm april",
+            10,
+        )
+        .expect("search should use the background-synchronized index");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "GST RCM April.xlsx");
+
+        drop(worker);
     }
 
     #[test]
