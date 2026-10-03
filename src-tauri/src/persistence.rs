@@ -16,7 +16,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const LATEST_SCHEMA_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
@@ -34,6 +34,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "document_quick_access",
         sql: include_str!("../migrations/0002_document_quick_access.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "recent_searches",
+        sql: include_str!("../migrations/0003_recent_searches.sql"),
     },
 ];
 
@@ -140,6 +145,14 @@ pub struct RecentDocumentRecord {
 pub struct PinnedDocumentRecord {
     pub file: IndexedFilePreviewRecord,
     pub pinned_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentSearchRecord {
+    pub query_text: String,
+    pub normalized_query: String,
+    pub last_used_at_ms: i64,
+    pub use_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2090,6 +2103,69 @@ pub fn list_recent_documents(
     Ok(result)
 }
 
+pub fn record_recent_search(
+    database_path: &Path,
+    query: &str,
+) -> Result<(), PersistenceError> {
+    let query_text = query.trim();
+    let normalized_query = normalize_search_text(query_text);
+
+    if normalized_query.is_empty() {
+        return Ok(());
+    }
+
+    let connection = open_configured_connection(database_path)?;
+    connection.execute(
+        "INSERT INTO recent_searches (
+            normalized_query,
+            query_text,
+            last_used_at_ms,
+            use_count
+         ) VALUES (?1, ?2, ?3, 1)
+         ON CONFLICT(normalized_query) DO UPDATE SET
+            query_text = excluded.query_text,
+            last_used_at_ms = excluded.last_used_at_ms,
+            use_count = recent_searches.use_count + 1",
+        params![normalized_query, query_text, now_unix_ms()?],
+    )?;
+
+    Ok(())
+}
+
+pub fn list_recent_searches(
+    database_path: &Path,
+    limit: u32,
+) -> Result<Vec<RecentSearchRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let bounded_limit = i64::from(limit.clamp(1, 100));
+    let mut statement = connection.prepare(
+        "SELECT
+            query_text,
+            normalized_query,
+            last_used_at_ms,
+            use_count
+         FROM recent_searches
+         ORDER BY last_used_at_ms DESC, rowid DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = statement.query_map([bounded_limit], |row| {
+        let use_count: i64 = row.get(3)?;
+        Ok(RecentSearchRecord {
+            query_text: row.get(0)?,
+            normalized_query: row.get(1)?,
+            last_used_at_ms: row.get(2)?,
+            use_count: use_count.max(0) as u64,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn list_pinned_documents(
     database_path: &Path,
     limit: u32,
@@ -2526,7 +2602,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
 
         let table_count: i64 = connection
             .query_row(
@@ -2543,14 +2619,15 @@ mod tests {
                        'scan_errors',
                        'search_index_outbox',
                        'document_pins',
-                       'recent_document_access'
+                       'recent_document_access',
+                       'recent_searches'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 11);
+        assert_eq!(table_count, 12);
     }
 
     #[test]
@@ -2578,25 +2655,98 @@ mod tests {
             assert_eq!(user_version, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 2");
+        initialize_database(&database.path).expect("database should upgrade through later migrations");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
 
         let table_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'table'
-                   AND name IN ('document_pins', 'recent_document_access')",
+                   AND name IN ('document_pins', 'recent_document_access', 'recent_searches')",
                 [],
                 |row| row.get(0),
             )
             .expect("quick-access tables should exist");
-        assert_eq!(table_count, 2);
+        assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn third_migration_upgrades_existing_v2_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..2] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 2);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 3");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 3);
+
+        let table_exists: i64 = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'recent_searches'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("recent-search table should exist");
+        assert_eq!(table_exists, 1);
+    }
+
+    #[test]
+    fn recent_searches_deduplicate_normalized_query_and_track_usage() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        record_recent_search(&database.path, "Salamudd ITR")
+            .expect("first recent search should record");
+        record_recent_search(&database.path, "salamudd   itr")
+            .expect("normalized duplicate should update");
+        record_recent_search(&database.path, "GST RCM March")
+            .expect("second recent search should record");
+
+        let recent = list_recent_searches(&database.path, 20)
+            .expect("recent searches should list");
+        assert_eq!(recent.len(), 2);
+
+        let salamudd = recent
+            .iter()
+            .find(|item| item.normalized_query == "salamudd itr")
+            .expect("normalized Salamudd search should exist");
+        assert_eq!(salamudd.use_count, 2);
+        assert_eq!(salamudd.query_text, "salamudd   itr");
     }
 
     #[test]

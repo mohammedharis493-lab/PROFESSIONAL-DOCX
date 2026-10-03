@@ -53,7 +53,14 @@ type PinnedDocument = IndexedFile & {
   pinnedAtMs: number;
 };
 
-type ViewMode = "home" | "recent" | "pinned";
+type RecentSearch = {
+  queryText: string;
+  normalizedQuery: string;
+  lastUsedAtMs: number;
+  useCount: number;
+};
+
+type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 const TERMINAL_JOB_STATUSES = new Set([
   "COMPLETE",
@@ -97,6 +104,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
   const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDocument[]>([]);
+  const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -205,11 +213,13 @@ export default function App() {
 
   async function refreshQuickAccess() {
     try {
-      const [recents, pins] = await Promise.all([
+      const [recents, searches, pins] = await Promise.all([
         invoke<RecentDocument[]>("list_recent_documents", { limit: 20 }),
+        invoke<RecentSearch[]>("list_recent_searches", { limit: 20 }),
         invoke<PinnedDocument[]>("list_pinned_documents", { limit: 50 }),
       ]);
       setRecentDocuments(recents);
+      setRecentSearches(searches);
       setPinnedDocuments(pins);
     } catch (quickAccessError) {
       setError(String(quickAccessError));
@@ -318,10 +328,19 @@ export default function App() {
     }
   }
 
-  async function openFileInstance(fileInstanceId: string) {
+  async function openFileInstance(fileInstanceId: string, usedQuery?: string) {
     setError(null);
     try {
       await invoke("open_file_instance", { fileInstanceId });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
       await refreshQuickAccess();
     } catch (openError) {
       setError(String(openError));
@@ -353,6 +372,18 @@ export default function App() {
     setViewMode(mode);
   }
 
+  function reuseRecentSearch(search: RecentSearch) {
+    setSelectedRoot(null);
+    setViewMode("home");
+    setQuery(search.queryText);
+
+    window.requestAnimationFrame(() => {
+      const input = document.getElementById("universal-search") as HTMLInputElement | null;
+      input?.focus();
+      input?.setSelectionRange(search.queryText.length, search.queryText.length);
+    });
+  }
+
   function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -381,7 +412,7 @@ export default function App() {
       const selected = searchResults[selectedSearchIndex];
       if (!selected || selected.availabilityState === "MISSING") return;
       event.preventDefault();
-      void openFileInstance(selected.fileInstanceId);
+      void openFileInstance(selected.fileInstanceId, query);
     }
   }
 
@@ -423,6 +454,13 @@ export default function App() {
             onClick={() => showView("recent")}
           >
             Recent <span className="nav-count">{recentDocuments.length}</span>
+          </button>
+          <button
+            className={`nav-item${viewMode === "searches" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("searches")}
+          >
+            Searches <span className="nav-count">{recentSearches.length}</span>
           </button>
           <button
             className={`nav-item${viewMode === "pinned" ? " nav-item-active" : ""}`}
@@ -570,7 +608,7 @@ export default function App() {
                     onMouseEnter={() => setSelectedSearchIndex(index)}
                     onDoubleClick={() => {
                       if (file.availabilityState !== "MISSING") {
-                        void openFileInstance(file.fileInstanceId);
+                        void openFileInstance(file.fileInstanceId, query);
                       }
                     }}
                   >
@@ -590,7 +628,7 @@ export default function App() {
                       <button
                         className="file-action"
                         type="button"
-                        onClick={() => void openFileInstance(file.fileInstanceId)}
+                        onClick={() => void openFileInstance(file.fileInstanceId, query)}
                         disabled={file.availabilityState === "MISSING"}
                       >
                         Open
@@ -683,6 +721,46 @@ export default function App() {
                 ))
               ) : (
                 <div className="empty-result">No documents have been opened yet.</div>
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {!hasQuery && !selectedRoot && viewMode === "searches" ? (
+          <section className="results-panel quick-access-panel" aria-label="Recent searches">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">RECENT SEARCHES</p>
+                <h2>Searches that led to an opened document</h2>
+              </div>
+              <span>
+                Search-as-you-type fragments are not saved. A query appears here only
+                after you use it to open a result.
+              </span>
+            </div>
+            <div className="recent-search-list">
+              {recentSearches.length ? (
+                recentSearches.map((search) => (
+                  <button
+                    className="recent-search-row"
+                    type="button"
+                    key={search.normalizedQuery}
+                    onClick={() => reuseRecentSearch(search)}
+                  >
+                    <span className="recent-search-icon" aria-hidden="true">⌕</span>
+                    <span className="recent-search-main">
+                      <strong>{search.queryText}</strong>
+                      <span>
+                        Used {search.useCount} time{search.useCount === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                    <span className="recent-search-action">Search again</span>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-result">
+                  Open a document from universal search and that useful query will appear here.
+                </div>
               )}
             </div>
           </section>
@@ -885,8 +963,12 @@ export default function App() {
             </article>
             <article>
               <span>03</span>
-              <h2>Keyboard first</h2>
-              <p>Ctrl+K → type → ↑↓ → Enter reaches and opens an indexed original.</p>
+              <h2>Recent searches</h2>
+              <p>
+                {recentSearches.length
+                  ? `${recentSearches.length} useful search${recentSearches.length === 1 ? "" : "es"} ready to repeat from the sidebar.`
+                  : "Searches are remembered only after they successfully open a document."}
+              </p>
             </article>
           </section>
         ) : null}

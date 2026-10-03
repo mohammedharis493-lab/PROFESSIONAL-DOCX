@@ -166,6 +166,26 @@ impl From<persistence::PinnedDocumentRecord> for PinnedDocumentDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RecentSearchDto {
+    query_text: String,
+    normalized_query: String,
+    last_used_at_ms: i64,
+    use_count: u64,
+}
+
+impl From<persistence::RecentSearchRecord> for RecentSearchDto {
+    fn from(value: persistence::RecentSearchRecord) -> Self {
+        Self {
+            query_text: value.query_text,
+            normalized_query: value.normalized_query,
+            last_used_at_ms: value.last_used_at_ms,
+            use_count: value.use_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SearchResultDto {
     document_id: String,
     file_instance_id: String,
@@ -388,6 +408,24 @@ fn list_recent_documents(
 }
 
 #[tauri::command]
+fn list_recent_searches(
+    limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<RecentSearchDto>, String> {
+    persistence::list_recent_searches(database.path(), limit.unwrap_or(20))
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn record_recent_search(
+    query: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    persistence::record_recent_search(database.path(), &query).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn list_pinned_documents(
     limit: Option<u32>,
     database: State<'_, persistence::DatabaseState>,
@@ -522,6 +560,8 @@ pub fn run() {
             cancel_index_job,
             list_indexed_file_preview,
             list_recent_documents,
+            list_recent_searches,
+            record_recent_search,
             list_pinned_documents,
             set_document_pin,
             search_documents,
