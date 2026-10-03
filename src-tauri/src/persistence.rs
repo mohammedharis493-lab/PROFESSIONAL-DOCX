@@ -2285,13 +2285,7 @@ pub fn finish_evidence_capture_failure(
              failure_message = ?4
          WHERE evidence_capture_job_id = ?5
            AND status = 'CAPTURING'",
-        params![
-            status,
-            now,
-            failure_code,
-            failure_message,
-            capture_job_id
-        ],
+        params![status, now, failure_code, failure_message, capture_job_id],
     )?;
 
     let event_type = if status == "QUARANTINED" {

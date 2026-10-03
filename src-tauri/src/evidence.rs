@@ -1,6 +1,5 @@
 use crate::{
-    filesystem,
-    launcher,
+    filesystem, launcher,
     persistence::{self, ControlledEvidenceVersionRecord, EvidenceCaptureSourceRecord},
 };
 use sha2::{Digest, Sha256};
@@ -240,10 +239,7 @@ where
         ));
     }
 
-    let locator = format!(
-        "{}/{}",
-        source.document_id, controlled_evidence_version_id
-    );
+    let locator = format!("{}/{}", source.document_id, controlled_evidence_version_id);
 
     persistence::complete_evidence_capture(
         database_path,
@@ -294,10 +290,7 @@ fn expected_optional_matches<T: PartialEq>(expected: Option<T>, actual: Option<T
     }
 }
 
-fn expected_optional_matches_ref<T: PartialEq>(
-    expected: Option<&T>,
-    actual: Option<&T>,
-) -> bool {
+fn expected_optional_matches_ref<T: PartialEq>(expected: Option<&T>, actual: Option<&T>) -> bool {
     match expected {
         Some(expected) => actual == Some(expected),
         None => true,
@@ -370,10 +363,7 @@ fn system_time_to_ms(value: SystemTime) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::indexer;
-    use std::sync::{
-        atomic::AtomicBool,
-        Arc,
-    };
+    use std::sync::{atomic::AtomicBool, Arc};
 
     struct TestEvidence {
         directory: PathBuf,
@@ -388,7 +378,8 @@ mod tests {
                 std::env::temp_dir().join(format!("professional-docx-evidence-{}", Uuid::new_v4()));
             let database_path = directory.join("data").join("metadata.sqlite");
             let source_root = directory.join("source");
-            let evidence_state = EvidenceState::new(directory.join("data").join("controlled-evidence"));
+            let evidence_state =
+                EvidenceState::new(directory.join("data").join("controlled-evidence"));
 
             fs::create_dir_all(&source_root).expect("source root should be created");
             persistence::initialize_database(&database_path)
@@ -433,16 +424,12 @@ mod tests {
             )
             .expect("indexing should succeed");
 
-            persistence::list_indexed_file_preview(
-                &self.database_path,
-                &root.storage_root_id,
-                10,
-            )
-            .expect("indexed files should list")
-            .into_iter()
-            .find(|file| file.name == name)
-            .expect("indexed file should exist")
-            .file_instance_id
+            persistence::list_indexed_file_preview(&self.database_path, &root.storage_root_id, 10)
+                .expect("indexed files should list")
+                .into_iter()
+                .find(|file| file.name == name)
+                .expect("indexed file should exist")
+                .file_instance_id
         }
     }
 
@@ -473,7 +460,9 @@ mod tests {
             b"original evidence"
         );
         assert_eq!(
-            hash_file(&stored).expect("controlled evidence hash should verify").to_vec(),
+            hash_file(&stored)
+                .expect("controlled evidence hash should verify")
+                .to_vec(),
             captured.sha256
         );
 

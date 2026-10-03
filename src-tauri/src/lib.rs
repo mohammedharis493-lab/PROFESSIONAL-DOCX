@@ -521,13 +521,9 @@ async fn capture_controlled_evidence(
     let evidence_handle = evidence_state.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        evidence::capture_controlled_evidence(
-            &database_path,
-            &evidence_handle,
-            &file_instance_id,
-        )
-        .map(Into::into)
-        .map_err(|error| error.to_string())
+        evidence::capture_controlled_evidence(&database_path, &evidence_handle, &file_instance_id)
+            .map(Into::into)
+            .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Evidence capture task failed to join: {error}"))?
