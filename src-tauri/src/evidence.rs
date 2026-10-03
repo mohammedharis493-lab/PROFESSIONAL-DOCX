@@ -119,7 +119,7 @@ where
 
     if let Err(error) = &result {
         let (status, code) = match error {
-            EvidenceError::Integrity(_) => ("QUARANTINED", "CAPTURE_INTEGRITY_FAILED"),
+            EvidenceError::Integrity(_) => ("FAILED", "CAPTURE_INTEGRITY_FAILED"),
             EvidenceError::SourceChanged(_) => ("FAILED", "SOURCE_CHANGED_DURING_CAPTURE"),
             EvidenceError::Launch(_) => ("FAILED", "SOURCE_UNAVAILABLE"),
             EvidenceError::Io(_) => ("FAILED", "CAPTURE_IO_FAILED"),
@@ -228,16 +228,17 @@ where
 
     fs::rename(&temp_path, &final_path)?;
 
-    let mut permissions = fs::metadata(&final_path)?.permissions();
-    permissions.set_readonly(true);
-    fs::set_permissions(&final_path, permissions)?;
-
     let verified_sha256 = hash_file(&final_path)?;
     if verified_sha256 != sha256 {
+        let _ = fs::remove_file(&final_path);
         return Err(EvidenceError::Integrity(
             "preserved bytes do not verify against the capture hash".to_string(),
         ));
     }
+
+    let mut permissions = fs::metadata(&final_path)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&final_path, permissions)?;
 
     let locator = format!("{}/{}", source.document_id, controlled_evidence_version_id);
 
