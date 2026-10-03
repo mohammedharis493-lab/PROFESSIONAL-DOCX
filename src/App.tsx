@@ -60,6 +60,24 @@ type RecentSearch = {
   useCount: number;
 };
 
+type ControlledEvidenceVersion = {
+  controlledEvidenceVersionId: string;
+  evidenceCaptureJobId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  versionNumber: number;
+  sha256Hex: string;
+  sizeBytes: number;
+  capturedAtMs: number;
+  verificationState: string;
+};
+
+type EvidenceCaptureNotice = {
+  fileName: string;
+  versionNumber: number;
+  sha256Hex: string;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -113,6 +131,9 @@ export default function App() {
   const [recentDocuments, setRecentDocuments] = useState<RecentDocument[]>([]);
   const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDocument[]>([]);
   const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
+  const [capturingFileInstanceId, setCapturingFileInstanceId] = useState<string | null>(null);
+  const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
+    useState<EvidenceCaptureNotice | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -512,6 +533,61 @@ export default function App() {
     }
   }
 
+  async function captureEvidence(file: IndexedFile) {
+    if (file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Capture "${file.name}" as immutable controlled evidence?\n\nProfessional DocX will preserve a separate verified copy. Later source edits will not change this evidence version, and a later capture will create another version rather than overwrite it.`,
+    );
+
+    if (!confirmed) return;
+
+    setError(null);
+    setEvidenceCaptureNotice(null);
+    setCapturingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const captured = await invoke<ControlledEvidenceVersion>(
+        "capture_controlled_evidence",
+        { fileInstanceId: file.fileInstanceId },
+      );
+
+      setEvidenceCaptureNotice({
+        fileName: file.name,
+        versionNumber: captured.versionNumber,
+        sha256Hex: captured.sha256Hex,
+      });
+    } catch (captureError) {
+      setError(String(captureError));
+    } finally {
+      setCapturingFileInstanceId(null);
+    }
+  }
+
+  function renderCaptureAction(file: IndexedFile) {
+    const isThisCapture = capturingFileInstanceId === file.fileInstanceId;
+    const captureUnavailable =
+      file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null;
+
+    return (
+      <button
+        className="file-action file-action-capture"
+        type="button"
+        onClick={() => void captureEvidence(file)}
+        disabled={captureUnavailable}
+        title={
+          file.availabilityState === "AVAILABLE"
+            ? "Preserve an immutable verified evidence copy"
+            : "Reconcile the source before evidence capture"
+        }
+      >
+        {isThisCapture ? "Capturing…" : "Capture evidence"}
+      </button>
+    );
+  }
+
   function showView(mode: ViewMode) {
     void navigateTo({
       viewMode: mode,
@@ -689,6 +765,18 @@ export default function App() {
             handled while the original file stays in its existing location.
           </p>
 
+          {evidenceCaptureNotice ? (
+            <div className="status-card evidence-success" role="status" aria-live="polite">
+              <strong>
+                Controlled evidence v{evidenceCaptureNotice.versionNumber} captured
+              </strong>
+              <span>{evidenceCaptureNotice.fileName}</span>
+              <code title={evidenceCaptureNotice.sha256Hex}>
+                SHA-256 {evidenceCaptureNotice.sha256Hex.slice(0, 16)}…
+              </code>
+            </div>
+          ) : null}
+
           {error ? (
             <div className="status-card status-error" role="alert">
               {error}
@@ -802,6 +890,7 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      {renderCaptureAction(file)}
                       <button
                         className="file-action"
                         type="button"
@@ -872,6 +961,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderCaptureAction(file)}
                       <button
                         className="file-action"
                         type="button"
@@ -967,6 +1057,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderCaptureAction(file)}
                       <button
                         className="file-action"
                         type="button"
@@ -1077,6 +1168,7 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      {renderCaptureAction(file)}
                       <button
                         className="file-action"
                         type="button"

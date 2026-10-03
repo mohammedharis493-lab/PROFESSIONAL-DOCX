@@ -855,3 +855,42 @@ input:focus-visible {
     grid-column: 2;
   }
 }
+
+
+.file-action-capture {
+  border-color: #c8d6c8;
+  background: #f4faf4;
+  color: #2f5d37;
+}
+
+.file-action-capture:hover:not(:disabled) {
+  background: #eaf5eb;
+}
+
+.evidence-success {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 14px;
+  border-color: #c8ddca;
+  background: #f5fbf5;
+  color: #315b37;
+}
+
+.evidence-success strong,
+.evidence-success span,
+.evidence-success code {
+  display: block;
+}
+
+.evidence-success span {
+  color: #4f6653;
+  font-size: 13px;
+}
+
+.evidence-success code {
+  overflow: hidden;
+  color: #54705a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
