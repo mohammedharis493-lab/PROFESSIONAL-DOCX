@@ -102,12 +102,39 @@ input:focus-visible {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(260px, 880px) auto;
+  grid-template-columns: auto minmax(260px, 880px) auto;
   gap: 12px;
   align-items: center;
   padding: 20px 28px;
   border-bottom: 1px solid #e5e7eb;
   background: #ffffff;
+}
+
+.history-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.history-button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid #d7dce5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.history-button:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.history-button:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .search-label {
@@ -459,8 +486,13 @@ input:focus-visible {
   }
 
   .topbar {
-    grid-template-columns: 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     padding: 16px 20px;
+  }
+
+  .topbar > .primary-button {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   .hero {

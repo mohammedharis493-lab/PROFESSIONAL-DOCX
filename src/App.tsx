@@ -62,6 +62,14 @@ type RecentSearch = {
 
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
+type NavigationLocation = {
+  viewMode: ViewMode;
+  query: string;
+  storageRootId: string | null;
+};
+
+const NAVIGATION_HISTORY_LIMIT = 50;
+
 const TERMINAL_JOB_STATUSES = new Set([
   "COMPLETE",
   "PARTIAL",
@@ -113,6 +121,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchSequence = useRef(0);
+  const navigationSequence = useRef(0);
+  const backHistory = useRef<NavigationLocation[]>([]);
+  const forwardHistory = useRef<NavigationLocation[]>([]);
+  const [, setNavigationRevision] = useState(0);
 
   useEffect(() => {
     void refreshRoots();
@@ -121,6 +133,18 @@ export default function App() {
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
+      if (event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        void navigateBack();
+        return;
+      }
+
+      if (event.altKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        void navigateForward();
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         const input = document.getElementById("universal-search") as HTMLInputElement | null;
@@ -131,7 +155,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [query, roots, selectedRoot?.storageRootId, viewMode]);
 
   useEffect(() => {
     if (!activeJob || TERMINAL_JOB_STATUSES.has(activeJob.status)) {
@@ -234,19 +258,125 @@ export default function App() {
     setPreviewFiles(files);
   }
 
-  async function selectRoot(root: ApprovedStorageRoot) {
+  function currentNavigationLocation(): NavigationLocation {
+    return {
+      viewMode,
+      query,
+      storageRootId: selectedRoot?.storageRootId ?? null,
+    };
+  }
+
+  function navigationLocationsEqual(
+    left: NavigationLocation,
+    right: NavigationLocation,
+  ) {
+    return (
+      left.viewMode === right.viewMode &&
+      left.query === right.query &&
+      left.storageRootId === right.storageRootId
+    );
+  }
+
+  function pushBoundedHistory(
+    history: NavigationLocation[],
+    location: NavigationLocation,
+  ) {
+    history.push(location);
+    if (history.length > NAVIGATION_HISTORY_LIMIT) {
+      history.splice(0, history.length - NAVIGATION_HISTORY_LIMIT);
+    }
+  }
+
+  function notifyNavigationHistoryChanged() {
+    setNavigationRevision((current) => current + 1);
+  }
+
+  function recordNavigationChange(target: NavigationLocation) {
+    const current = currentNavigationLocation();
+    if (navigationLocationsEqual(current, target)) return;
+
+    pushBoundedHistory(backHistory.current, current);
+    forwardHistory.current = [];
+    notifyNavigationHistoryChanged();
+  }
+
+  async function restoreNavigation(location: NavigationLocation) {
+    const sequence = navigationSequence.current + 1;
+    navigationSequence.current = sequence;
+
     setError(null);
+    setQuery(location.query);
+    setViewMode(location.viewMode);
+    setSelectedSearchIndex(0);
+
+    if (!location.storageRootId) {
+      setSelectedRoot(null);
+      return;
+    }
+
+    const root = roots.find(
+      (item) => item.storageRootId === location.storageRootId,
+    );
+
+    if (!root) {
+      setSelectedRoot(null);
+      setViewMode("home");
+      return;
+    }
+
     setSelectedRoot(root);
 
     try {
-      const latest = await invoke<IndexJob | null>("get_latest_index_job_for_root", {
-        storageRootId: root.storageRootId,
-      });
+      const [latest, files] = await Promise.all([
+        invoke<IndexJob | null>("get_latest_index_job_for_root", {
+          storageRootId: root.storageRootId,
+        }),
+        invoke<IndexedFile[]>("list_indexed_file_preview", {
+          storageRootId: root.storageRootId,
+          limit: 200,
+        }),
+      ]);
+
+      if (navigationSequence.current !== sequence) return;
+
       setActiveJob(latest);
-      await loadPreview(root);
-    } catch (selectionError) {
-      setError(String(selectionError));
+      setPreviewFiles(files);
+    } catch (navigationError) {
+      if (navigationSequence.current === sequence) {
+        setError(String(navigationError));
+      }
     }
+  }
+
+  async function navigateTo(location: NavigationLocation) {
+    recordNavigationChange(location);
+    await restoreNavigation(location);
+  }
+
+  async function navigateBack() {
+    const target = backHistory.current.pop();
+    if (!target) return;
+
+    pushBoundedHistory(forwardHistory.current, currentNavigationLocation());
+    notifyNavigationHistoryChanged();
+    await restoreNavigation(target);
+  }
+
+  async function navigateForward() {
+    const target = forwardHistory.current.pop();
+    if (!target) return;
+
+    pushBoundedHistory(backHistory.current, currentNavigationLocation());
+    notifyNavigationHistoryChanged();
+    await restoreNavigation(target);
+  }
+
+  async function selectRoot(root: ApprovedStorageRoot) {
+    await navigateTo({
+      viewMode: "home",
+      query: "",
+      storageRootId: root.storageRootId,
+    });
   }
 
   async function refreshJob(indexJobId: string) {
@@ -273,7 +403,17 @@ export default function App() {
   }
 
   async function startIndex(root: ApprovedStorageRoot) {
+    const target: NavigationLocation = {
+      viewMode: "home",
+      query: "",
+      storageRootId: root.storageRootId,
+    };
+    recordNavigationChange(target);
+    navigationSequence.current += 1;
+
     setError(null);
+    setQuery("");
+    setViewMode("home");
     setSelectedRoot(root);
     setPreviewFiles([]);
     setIsStarting(true);
@@ -367,15 +507,19 @@ export default function App() {
   }
 
   function showView(mode: ViewMode) {
-    setQuery("");
-    setSelectedRoot(null);
-    setViewMode(mode);
+    void navigateTo({
+      viewMode: mode,
+      query: "",
+      storageRootId: null,
+    });
   }
 
-  function reuseRecentSearch(search: RecentSearch) {
-    setSelectedRoot(null);
-    setViewMode("home");
-    setQuery(search.queryText);
+  async function reuseRecentSearch(search: RecentSearch) {
+    await navigateTo({
+      viewMode: "home",
+      query: search.queryText,
+      storageRootId: null,
+    });
 
     window.requestAnimationFrame(() => {
       const input = document.getElementById("universal-search") as HTMLInputElement | null;
@@ -419,6 +563,8 @@ export default function App() {
   const activeIsRunning =
     activeJob !== null && !TERMINAL_JOB_STATUSES.has(activeJob.status);
   const hasQuery = query.trim().length > 0;
+  const canGoBack = backHistory.current.length > 0;
+  const canGoForward = forwardHistory.current.length > 0;
   const pinnedDocumentIds = new Set(
     pinnedDocuments.map((document) => document.documentId),
   );
@@ -474,6 +620,30 @@ export default function App() {
 
       <main className="main-content">
         <header className="topbar">
+          <div className="history-controls" aria-label="Navigation history">
+            <button
+              className="history-button"
+              type="button"
+              onClick={() => void navigateBack()}
+              disabled={!canGoBack}
+              aria-label="Go back"
+              aria-keyshortcuts="Alt+ArrowLeft"
+              title="Back (Alt+Left)"
+            >
+              ←
+            </button>
+            <button
+              className="history-button"
+              type="button"
+              onClick={() => void navigateForward()}
+              disabled={!canGoForward}
+              aria-label="Go forward"
+              aria-keyshortcuts="Alt+ArrowRight"
+              title="Forward (Alt+Right)"
+            >
+              →
+            </button>
+          </div>
           <label className="search-label" htmlFor="universal-search">
             Universal search
           </label>
@@ -745,7 +915,7 @@ export default function App() {
                     className="recent-search-row"
                     type="button"
                     key={search.normalizedQuery}
-                    onClick={() => reuseRecentSearch(search)}
+                    onClick={() => void reuseRecentSearch(search)}
                   >
                     <span className="recent-search-icon" aria-hidden="true">⌕</span>
                     <span className="recent-search-main">
