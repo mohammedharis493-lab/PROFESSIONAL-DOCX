@@ -118,6 +118,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchElapsedMs, setSearchElapsedMs] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchSequence = useRef(0);
@@ -179,12 +180,15 @@ export default function App() {
       setSearchResults([]);
       setSelectedSearchIndex(0);
       setSearchError(null);
+      setSearchElapsedMs(null);
       setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
     setSearchError(null);
+    setSearchElapsedMs(null);
+    const startedAt = performance.now();
 
     const timer = window.setTimeout(() => {
       void invoke<SearchResult[]>("search_documents", {
@@ -196,11 +200,13 @@ export default function App() {
           setSearchResults(results);
           setSelectedSearchIndex(0);
           setSearchError(null);
+          setSearchElapsedMs(Math.max(0, Math.round(performance.now() - startedAt)));
         })
         .catch((searchFailure) => {
           if (searchSequence.current !== sequence) return;
           setSearchResults([]);
           setSelectedSearchIndex(0);
+          setSearchElapsedMs(null);
           setSearchError(String(searchFailure));
         })
         .finally(() => {
@@ -755,12 +761,13 @@ export default function App() {
                 <h2>
                   {isSearching
                     ? "Searching…"
-                    : `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}`}
+                    : `${searchResults.length} result${searchResults.length === 1 ? "" : "s"}${searchElapsedMs === null ? "" : ` · ${searchElapsedMs} ms`}`}
                 </h2>
               </div>
               <span>
-                ↑↓ selects · Enter opens · Esc clears. Filename matches rank ahead of
-                path and fuzzy-only matches.
+                ↑↓ selects · Enter opens · Esc clears. Response time includes the 120 ms
+                search-as-you-type debounce; the indexed-query engineering target is under 300 ms
+                where feasible.
               </span>
             </div>
 
