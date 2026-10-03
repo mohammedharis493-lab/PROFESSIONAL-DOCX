@@ -176,10 +176,7 @@ pub fn sync_search_index(database_path: &Path, state: &SearchState) -> Result<()
     Ok(())
 }
 
-fn sync_search_index_once(
-    database_path: &Path,
-    state: &SearchState,
-) -> Result<usize, SearchError> {
+fn sync_search_index_once(database_path: &Path, state: &SearchState) -> Result<usize, SearchError> {
     let _guard = state
         .gate
         .lock()
@@ -189,11 +186,7 @@ fn sync_search_index_once(
     apply_pending_outbox_batch(database_path, &index)
 }
 
-fn run_search_sync_loop(
-    database_path: PathBuf,
-    state: SearchState,
-    stop: Arc<AtomicBool>,
-) {
+fn run_search_sync_loop(database_path: PathBuf, state: SearchState, stop: Arc<AtomicBool>) {
     let mut last_error: Option<String> = None;
 
     while !stop.load(Ordering::Acquire) {
@@ -395,10 +388,7 @@ fn rebuild_index(database_path: &Path, root: &Path) -> Result<(), SearchError> {
     Ok(())
 }
 
-fn apply_pending_outbox_batch(
-    database_path: &Path,
-    index: &Index,
-) -> Result<usize, SearchError> {
+fn apply_pending_outbox_batch(database_path: &Path, index: &Index) -> Result<usize, SearchError> {
     let fields = SearchFields::from_schema(&index.schema())?;
     let batch = persistence::list_pending_search_outbox(database_path, OUTBOX_BATCH_SIZE)?;
 
@@ -885,10 +875,7 @@ mod tests {
         let root = test.register_root("root-background-search");
         test.scan(&root);
 
-        let worker = SearchSyncWorker::start(
-            test.database_path.clone(),
-            test.search_state.clone(),
-        );
+        let worker = SearchSyncWorker::start(test.database_path.clone(), test.search_state.clone());
 
         let mut pending = persistence::list_pending_search_outbox_ids(&test.database_path)
             .expect("pending outbox ids should load");
@@ -903,15 +890,14 @@ mod tests {
                 .expect("pending outbox ids should load");
         }
 
-        assert!(pending.is_empty(), "background worker should drain the outbox");
+        assert!(
+            pending.is_empty(),
+            "background worker should drain the outbox"
+        );
 
-        let results = search_documents(
-            &test.database_path,
-            &test.search_state,
-            "gst rcm april",
-            10,
-        )
-        .expect("search should use the background-synchronized index");
+        let results =
+            search_documents(&test.database_path, &test.search_state, "gst rcm april", 10)
+                .expect("search should use the background-synchronized index");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "GST RCM April.xlsx");
