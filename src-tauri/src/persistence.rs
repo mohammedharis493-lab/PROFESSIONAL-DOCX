@@ -2103,10 +2103,7 @@ pub fn list_recent_documents(
     Ok(result)
 }
 
-pub fn record_recent_search(
-    database_path: &Path,
-    query: &str,
-) -> Result<(), PersistenceError> {
+pub fn record_recent_search(database_path: &Path, query: &str) -> Result<(), PersistenceError> {
     let query_text = query.trim();
     let normalized_query = normalize_search_text(query_text);
 
@@ -2655,7 +2652,8 @@ mod tests {
             assert_eq!(user_version, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through later migrations");
+        initialize_database(&database.path)
+            .expect("database should upgrade through later migrations");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
@@ -2737,8 +2735,7 @@ mod tests {
         record_recent_search(&database.path, "GST RCM March")
             .expect("second recent search should record");
 
-        let recent = list_recent_searches(&database.path, 20)
-            .expect("recent searches should list");
+        let recent = list_recent_searches(&database.path, 20).expect("recent searches should list");
         assert_eq!(recent.len(), 2);
 
         let salamudd = recent
