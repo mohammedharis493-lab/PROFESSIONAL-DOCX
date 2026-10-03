@@ -455,7 +455,8 @@ mod tests {
         let stored = test
             .evidence_state
             .root
-            .join(&captured.controlled_storage_locator);
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
         assert_eq!(
             fs::read(&stored).expect("controlled evidence should be readable"),
             b"original evidence"
