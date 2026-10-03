@@ -1,3 +1,4 @@
+use crate::filesystem;
 use crate::persistence::{
     self, FileObservation, IndexProgress, PersistenceError, ScanErrorObservation, StorageRootRecord,
 };
@@ -14,46 +15,6 @@ use std::{
 use walkdir::WalkDir;
 
 const INDEX_BATCH_SIZE: usize = 500;
-
-#[derive(Default)]
-struct PlatformFileMetadata {
-    filesystem_identity: Option<Vec<u8>>,
-    volume_identity: Option<Vec<u8>>,
-    file_attributes: Option<i64>,
-    reparse_tag: Option<i64>,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct WindowsFileTime {
-    low_date_time: u32,
-    high_date_time: u32,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct WindowsByHandleFileInformation {
-    file_attributes: u32,
-    creation_time: WindowsFileTime,
-    last_access_time: WindowsFileTime,
-    last_write_time: WindowsFileTime,
-    volume_serial_number: u32,
-    file_size_high: u32,
-    file_size_low: u32,
-    number_of_links: u32,
-    file_index_high: u32,
-    file_index_low: u32,
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    #[link_name = "GetFileInformationByHandle"]
-    fn get_file_information_by_handle(
-        file: *mut std::ffi::c_void,
-        information: *mut WindowsByHandleFileInformation,
-    ) -> i32;
-}
 
 struct BatchContext<'a> {
     database_path: &'a Path,
@@ -334,7 +295,7 @@ pub fn run_index_job(
             persistence::encode_native_path_for_storage(relative_path);
 
         progress.bytes_seen = progress.bytes_seen.saturating_add(metadata.len());
-        let platform = platform_file_metadata(entry.path(), &metadata);
+        let platform = filesystem::platform_file_metadata(entry.path(), &metadata);
 
         file_batch.push(FileObservation {
             relative_path_native: relative_native,
@@ -438,51 +399,6 @@ fn flush_batch(
     files.clear();
     errors.clear();
     Ok(())
-}
-
-#[cfg(unix)]
-fn platform_file_metadata(_path: &Path, metadata: &fs::Metadata) -> PlatformFileMetadata {
-    use std::os::unix::fs::MetadataExt;
-
-    PlatformFileMetadata {
-        filesystem_identity: Some(metadata.ino().to_le_bytes().to_vec()),
-        volume_identity: Some(metadata.dev().to_le_bytes().to_vec()),
-        file_attributes: Some(i64::from(metadata.mode())),
-        reparse_tag: None,
-    }
-}
-
-#[cfg(windows)]
-fn platform_file_metadata(path: &Path, metadata: &fs::Metadata) -> PlatformFileMetadata {
-    use std::mem::MaybeUninit;
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    use std::os::windows::io::AsRawHandle;
-
-    let mut result = PlatformFileMetadata {
-        file_attributes: Some(i64::from(metadata.file_attributes())),
-        ..PlatformFileMetadata::default()
-    };
-
-    let file = match fs::OpenOptions::new().access_mode(0).open(path) {
-        Ok(file) => file,
-        Err(_) => return result,
-    };
-
-    let mut information = MaybeUninit::<WindowsByHandleFileInformation>::uninit();
-    let succeeded =
-        unsafe { get_file_information_by_handle(file.as_raw_handle(), information.as_mut_ptr()) };
-
-    if succeeded == 0 {
-        return result;
-    }
-
-    let information = unsafe { information.assume_init() };
-    let file_index =
-        (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
-
-    result.filesystem_identity = Some(file_index.to_le_bytes().to_vec());
-    result.volume_identity = Some(information.volume_serial_number.to_le_bytes().to_vec());
-    result
 }
 
 fn scan_error(

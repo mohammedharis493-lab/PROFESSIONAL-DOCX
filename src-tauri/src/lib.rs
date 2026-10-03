@@ -1,3 +1,5 @@
+mod evidence;
+mod filesystem;
 mod indexer;
 mod launcher;
 mod persistence;
@@ -182,6 +184,45 @@ impl From<persistence::RecentSearchRecord> for RecentSearchDto {
             use_count: value.use_count,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlledEvidenceVersionDto {
+    controlled_evidence_version_id: String,
+    evidence_capture_job_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    version_number: u64,
+    sha256_hex: String,
+    size_bytes: u64,
+    captured_at_ms: i64,
+    verification_state: String,
+}
+
+impl From<persistence::ControlledEvidenceVersionRecord> for ControlledEvidenceVersionDto {
+    fn from(value: persistence::ControlledEvidenceVersionRecord) -> Self {
+        Self {
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            evidence_capture_job_id: value.evidence_capture_job_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            version_number: value.version_number,
+            sha256_hex: hex_bytes(&value.sha256),
+            size_bytes: value.size_bytes,
+            captured_at_ms: value.captured_at_ms,
+            verification_state: value.verification_state,
+        }
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
 }
 
 #[derive(Debug, Serialize)]
@@ -468,6 +509,31 @@ async fn search_documents(
 }
 
 #[tauri::command]
+async fn capture_controlled_evidence(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+    evidence_state: State<'_, evidence::EvidenceState>,
+) -> Result<ControlledEvidenceVersionDto, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+    let evidence_handle = evidence_state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        evidence::capture_controlled_evidence(
+            &database_path,
+            &evidence_handle,
+            &file_instance_id,
+        )
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Evidence capture task failed to join: {error}"))?
+}
+
+#[tauri::command]
 async fn open_file_instance(
     file_instance_id: String,
     database: State<'_, persistence::DatabaseState>,
@@ -536,6 +602,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?.join("data");
             let database_path = data_dir.join("metadata.sqlite");
             let search_path = data_dir.join("search-index");
+            let evidence_path = data_dir.join("controlled-evidence");
 
             persistence::initialize_database(&database_path)?;
             persistence::recover_interrupted_index_jobs(&database_path)?;
@@ -548,6 +615,7 @@ pub fn run() {
             app.manage(indexer::IndexRuntime::default());
             app.manage(search_state);
             app.manage(search_sync_worker);
+            app.manage(evidence::EvidenceState::new(evidence_path));
 
             Ok(())
         })
@@ -565,6 +633,7 @@ pub fn run() {
             list_pinned_documents,
             set_document_pin,
             search_documents,
+            capture_controlled_evidence,
             open_file_instance,
             reveal_file_instance,
             rebuild_search_index

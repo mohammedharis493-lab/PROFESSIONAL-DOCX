@@ -16,7 +16,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 3;
+const LATEST_SCHEMA_VERSION: i64 = 4;
 
 struct Migration {
     version: i64,
@@ -39,6 +39,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "recent_searches",
         sql: include_str!("../migrations/0003_recent_searches.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "controlled_evidence",
+        sql: include_str!("../migrations/0004_controlled_evidence.sql"),
     },
 ];
 
@@ -153,6 +158,43 @@ pub struct RecentSearchRecord {
     pub normalized_query: String,
     pub last_used_at_ms: i64,
     pub use_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvidenceCaptureSourceRecord {
+    pub document_id: String,
+    pub file_instance_id: String,
+    pub source: ResolvedFileSource,
+    pub size_bytes: u64,
+    pub creation_time_ms: Option<i64>,
+    pub last_write_time_ms: Option<i64>,
+    pub filesystem_identity: Option<Vec<u8>>,
+    pub volume_identity: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlledEvidenceVersionRecord {
+    pub controlled_evidence_version_id: String,
+    pub evidence_capture_job_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub version_number: u64,
+    pub controlled_storage_locator: String,
+    pub sha256: Vec<u8>,
+    pub size_bytes: u64,
+    pub captured_at_ms: i64,
+    pub verification_state: String,
+}
+
+pub struct EvidenceCaptureCompletion<'a> {
+    pub capture_job_id: &'a str,
+    pub controlled_evidence_version_id: &'a str,
+    pub document_id: &'a str,
+    pub file_instance_id: &'a str,
+    pub controlled_storage_locator: &'a str,
+    pub sha256: &'a [u8; 32],
+    pub size_bytes: u64,
+    pub last_write_time_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1841,6 +1883,453 @@ pub fn record_search_outbox_failure(
     Ok(())
 }
 
+pub fn begin_evidence_capture(
+    database_path: &Path,
+    capture_job_id: &str,
+    file_instance_id: &str,
+    capture_reason: &str,
+    capture_policy: &str,
+) -> Result<EvidenceCaptureSourceRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    type CaptureRow = (
+        String,
+        Vec<u8>,
+        String,
+        Vec<u8>,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        String,
+    );
+
+    let row: Option<CaptureRow> = transaction
+        .query_row(
+            "SELECT
+                fi.document_id,
+                COALESCE(sr.canonical_native_locator, sr.native_locator),
+                sr.native_locator_encoding,
+                fi.relative_path_native,
+                fi.path_native_encoding,
+                fi.size_bytes,
+                fi.creation_time_ms,
+                fi.last_write_time_ms,
+                fi.filesystem_identity,
+                fi.volume_identity,
+                fi.availability_state
+             FROM file_instances fi
+             JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+             JOIN documents d ON d.document_id = fi.document_id
+             WHERE fi.file_instance_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [file_instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((
+        document_id,
+        root_native,
+        root_encoding,
+        relative_native,
+        relative_encoding,
+        size_bytes,
+        creation_time_ms,
+        last_write_time_ms,
+        filesystem_identity,
+        volume_identity,
+        availability_state,
+    )) = row
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    };
+
+    if availability_state != "AVAILABLE" {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} is {availability_state}; reconcile it before controlled evidence capture"
+        )));
+    }
+
+    let storage_root_path = decode_native_path(&root_native, &root_encoding)?;
+    let relative_path = decode_native_path(&relative_native, &relative_encoding)?;
+
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(PersistenceError::Configuration(
+            "stored file-instance path is not root-relative".to_string(),
+        ));
+    }
+
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO evidence_capture_jobs (
+            evidence_capture_job_id,
+            file_instance_id,
+            document_id,
+            status,
+            requested_at_ms,
+            started_at_ms,
+            completed_at_ms,
+            capture_reason,
+            capture_policy,
+            failure_code,
+            failure_message
+         ) VALUES (?1, ?2, ?3, 'CAPTURING', ?4, ?4, NULL, ?5, ?6, NULL, NULL)",
+        params![
+            capture_job_id,
+            file_instance_id,
+            &document_id,
+            now,
+            capture_reason,
+            capture_policy
+        ],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'EVIDENCE_CAPTURE_STARTED', 'EVIDENCE_CAPTURE_JOB', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            capture_job_id,
+            &document_id,
+            now,
+            json!({
+                "fileInstanceId": file_instance_id,
+                "captureReason": capture_reason,
+                "capturePolicy": capture_policy
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+
+    Ok(EvidenceCaptureSourceRecord {
+        document_id,
+        file_instance_id: file_instance_id.to_string(),
+        source: ResolvedFileSource {
+            storage_root_path,
+            relative_path,
+        },
+        size_bytes: size_bytes.max(0) as u64,
+        creation_time_ms,
+        last_write_time_ms,
+        filesystem_identity,
+        volume_identity,
+    })
+}
+
+pub fn complete_evidence_capture(
+    database_path: &Path,
+    completion: EvidenceCaptureCompletion<'_>,
+) -> Result<ControlledEvidenceVersionRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let job: Option<(String, String, String, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                file_instance_id,
+                status,
+                capture_reason,
+                capture_policy
+             FROM evidence_capture_jobs
+             WHERE evidence_capture_job_id = ?1",
+            [completion.capture_job_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((job_document_id, job_file_instance_id, status, capture_reason, capture_policy)) = job
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "evidence capture job {} does not exist",
+            completion.capture_job_id
+        )));
+    };
+
+    if status != "CAPTURING"
+        || job_document_id != completion.document_id
+        || job_file_instance_id != completion.file_instance_id
+    {
+        return Err(PersistenceError::Configuration(
+            "evidence capture job no longer matches the source being finalized".to_string(),
+        ));
+    }
+
+    let version_number: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM controlled_evidence_versions
+         WHERE document_id = ?1",
+        [completion.document_id],
+        |row| row.get(0),
+    )?;
+
+    let now = now_unix_ms()?;
+    let source_content_version_id = Uuid::new_v4().to_string();
+
+    transaction.execute(
+        "INSERT INTO content_versions (
+            content_version_id,
+            document_id,
+            file_instance_id,
+            observed_at_ms,
+            size_bytes,
+            last_write_time_ms,
+            quick_fingerprint,
+            sha256,
+            verification_state,
+            source_stable_during_read
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, 'HASH_VERIFIED', 1)",
+        params![
+            &source_content_version_id,
+            completion.document_id,
+            completion.file_instance_id,
+            now,
+            u64_to_i64(completion.size_bytes)?,
+            completion.last_write_time_ms,
+            &completion.sha256[..]
+        ],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO controlled_evidence_versions (
+            controlled_evidence_version_id,
+            document_id,
+            source_file_instance_id,
+            source_content_version_id,
+            evidence_capture_job_id,
+            version_number,
+            controlled_storage_locator,
+            sha256,
+            size_bytes,
+            captured_at_ms,
+            captured_by,
+            capture_reason,
+            capture_policy,
+            retention_state,
+            verification_state,
+            source_stable_during_read
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12,
+            'RETAINED', 'HASH_VERIFIED', 1
+         )",
+        params![
+            completion.controlled_evidence_version_id,
+            completion.document_id,
+            completion.file_instance_id,
+            &source_content_version_id,
+            completion.capture_job_id,
+            version_number,
+            completion.controlled_storage_locator,
+            &completion.sha256[..],
+            u64_to_i64(completion.size_bytes)?,
+            now,
+            &capture_reason,
+            &capture_policy
+        ],
+    )?;
+
+    transaction.execute(
+        "UPDATE documents
+         SET storage_state = 'CONTROLLED_EVIDENCE'
+         WHERE document_id = ?1",
+        [completion.document_id],
+    )?;
+
+    let changed = transaction.execute(
+        "UPDATE evidence_capture_jobs
+         SET status = 'COMPLETE',
+             completed_at_ms = ?1,
+             failure_code = NULL,
+             failure_message = NULL
+         WHERE evidence_capture_job_id = ?2
+           AND status = 'CAPTURING'",
+        params![now, completion.capture_job_id],
+    )?;
+
+    if changed != 1 {
+        return Err(PersistenceError::Configuration(
+            "evidence capture job could not be finalized".to_string(),
+        ));
+    }
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'EVIDENCE_CAPTURE_COMPLETED', 'CONTROLLED_EVIDENCE_VERSION', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            completion.controlled_evidence_version_id,
+            completion.document_id,
+            now,
+            json!({
+                "captureJobId": completion.capture_job_id,
+                "fileInstanceId": completion.file_instance_id,
+                "sourceContentVersionId": source_content_version_id,
+                "versionNumber": version_number,
+                "sizeBytes": completion.size_bytes
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+
+    Ok(ControlledEvidenceVersionRecord {
+        controlled_evidence_version_id: completion.controlled_evidence_version_id.to_string(),
+        evidence_capture_job_id: completion.capture_job_id.to_string(),
+        document_id: completion.document_id.to_string(),
+        source_content_version_id,
+        version_number: version_number.max(0) as u64,
+        controlled_storage_locator: completion.controlled_storage_locator.to_string(),
+        sha256: completion.sha256.to_vec(),
+        size_bytes: completion.size_bytes,
+        captured_at_ms: now,
+        verification_state: "HASH_VERIFIED".to_string(),
+    })
+}
+
+pub fn finish_evidence_capture_failure(
+    database_path: &Path,
+    capture_job_id: &str,
+    status: &str,
+    failure_code: &str,
+    failure_message: &str,
+) -> Result<(), PersistenceError> {
+    if status != "FAILED" && status != "QUARANTINED" {
+        return Err(PersistenceError::Configuration(format!(
+            "unsupported evidence capture failure status {status}"
+        )));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let now = now_unix_ms()?;
+
+    let row: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT document_id, status
+             FROM evidence_capture_jobs
+             WHERE evidence_capture_job_id = ?1",
+            [capture_job_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    let Some((document_id, current_status)) = row else {
+        return Ok(());
+    };
+
+    if current_status != "CAPTURING" {
+        return Ok(());
+    }
+
+    transaction.execute(
+        "UPDATE evidence_capture_jobs
+         SET status = ?1,
+             completed_at_ms = ?2,
+             failure_code = ?3,
+             failure_message = ?4
+         WHERE evidence_capture_job_id = ?5
+           AND status = 'CAPTURING'",
+        params![
+            status,
+            now,
+            failure_code,
+            failure_message,
+            capture_job_id
+        ],
+    )?;
+
+    let event_type = if status == "QUARANTINED" {
+        "EVIDENCE_CAPTURE_QUARANTINED"
+    } else {
+        "EVIDENCE_CAPTURE_FAILED"
+    };
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, ?2, 'EVIDENCE_CAPTURE_JOB', ?3, 'DOCUMENT', ?4, ?5, NULL, ?6)",
+        params![
+            Uuid::new_v4().to_string(),
+            event_type,
+            capture_job_id,
+            document_id,
+            now,
+            json!({
+                "failureCode": failure_code,
+                "failureMessage": failure_message
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn resolve_file_instance_source(
     database_path: &Path,
     file_instance_id: &str,
@@ -2233,6 +2722,39 @@ pub fn list_pinned_documents(
     Ok(result)
 }
 
+#[cfg(test)]
+pub(crate) fn count_controlled_evidence_versions_for_test(
+    database_path: &Path,
+) -> Result<u64, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM controlled_evidence_versions",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
+#[cfg(test)]
+pub(crate) fn latest_evidence_capture_status_for_test(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<Option<String>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    connection
+        .query_row(
+            "SELECT status
+             FROM evidence_capture_jobs
+             WHERE file_instance_id = ?1
+             ORDER BY requested_at_ms DESC, rowid DESC
+             LIMIT 1",
+            [file_instance_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
 pub fn encode_native_path_for_storage(path: &Path) -> (Vec<u8>, String) {
     let (bytes, encoding) = encode_native_path(path);
     (bytes, encoding.to_string())
@@ -2599,7 +3121,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
 
         let table_count: i64 = connection
             .query_row(
@@ -2617,14 +3139,17 @@ mod tests {
                        'search_index_outbox',
                        'document_pins',
                        'recent_document_access',
-                       'recent_searches'
+                       'recent_searches',
+                       'evidence_capture_jobs',
+                       'controlled_evidence_versions',
+                       'audit_events'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 12);
+        assert_eq!(table_count, 15);
     }
 
     #[test]
@@ -2660,7 +3185,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
 
         let table_count: i64 = connection
             .query_row(
@@ -2701,14 +3226,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 3");
+        initialize_database(&database.path).expect("database should upgrade through version 4");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
 
         let table_exists: i64 = connection
             .query_row(
@@ -2721,6 +3246,58 @@ mod tests {
             )
             .expect("recent-search table should exist");
         assert_eq!(table_exists, 1);
+    }
+
+    #[test]
+    fn fourth_migration_upgrades_existing_v3_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..3] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 3);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 4");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 4);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'evidence_capture_jobs',
+                       'controlled_evidence_versions',
+                       'audit_events'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("controlled-evidence tables should exist");
+        assert_eq!(table_count, 3);
     }
 
     #[test]

@@ -45,7 +45,7 @@ pub fn reveal_source(source: &ResolvedFileSource) -> Result<(), LaunchError> {
     platform_open(parent)
 }
 
-fn validated_existing_path(source: &ResolvedFileSource) -> Result<PathBuf, LaunchError> {
+pub(crate) fn validated_existing_path(source: &ResolvedFileSource) -> Result<PathBuf, LaunchError> {
     let root = fs::canonicalize(&source.storage_root_path).map_err(|error| {
         LaunchError::SourceUnavailable(format!("Approved source root is unavailable: {error}"))
     })?;
