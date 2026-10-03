@@ -3,6 +3,20 @@
 .env.*
 !.env.example
 
+# Credential / certificate material
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.ovpn
+*.rdp
+*.bak
+*.dump
+*.sqlite-wal
+*.sqlite-shm
+*.sarif
+
 # Python
 __pycache__/
 *.py[cod]
