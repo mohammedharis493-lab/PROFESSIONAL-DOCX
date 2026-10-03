@@ -304,7 +304,7 @@ fn expected_optional_matches_ref<T: PartialEq>(
     }
 }
 
-fn snapshot_open_file(path: &Path, file: &File) -> Result<SourceSnapshot, EvidenceError> {
+fn snapshot_open_file(_path: &Path, file: &File) -> Result<SourceSnapshot, EvidenceError> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(EvidenceError::SourceChanged(
