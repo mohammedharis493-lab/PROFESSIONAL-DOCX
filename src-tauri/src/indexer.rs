@@ -305,9 +305,9 @@ pub fn run_index_job(
                 })
                 .unwrap_or(false)
         });
-        let source_stable_during_read = fingerprint_result.as_ref().map(|fingerprint| {
-            fingerprint.source_stable_during_read && metadata_stable_since_scan
-        });
+        let source_stable_during_read = fingerprint_result
+            .as_ref()
+            .map(|fingerprint| fingerprint.source_stable_during_read && metadata_stable_since_scan);
         let quick_fingerprint = fingerprint_result.and_then(|fingerprint| {
             (fingerprint.source_stable_during_read && metadata_stable_since_scan)
                 .then_some(fingerprint.digest)
