@@ -1038,7 +1038,13 @@ mod tests {
         assert_eq!(relinked.document_id, before[0].document_id);
         assert_eq!(relinked.file_instance_id, before[0].file_instance_id);
         assert_eq!(relinked.availability_state, "CHANGED");
-        assert_eq!(relinked.path, target_canonical.join("Moved Support.pdf").to_string_lossy());
+        assert_eq!(
+            relinked.path,
+            target_canonical
+                .join("Moved Support.pdf")
+                .to_string_lossy()
+                .into_owned()
+        );
 
         let target_preview = persistence::list_indexed_file_preview(
             &test.database_path,
@@ -1049,6 +1055,14 @@ mod tests {
         assert_eq!(target_preview.len(), 1);
         assert_eq!(target_preview[0].file_instance_id, before[0].file_instance_id);
         assert_eq!(target_preview[0].availability_state, "CHANGED");
+        assert_eq!(
+            persistence::count_content_versions_for_test(
+                &test.database_path,
+                &before[0].file_instance_id,
+            )
+            .expect("path-only relink must preserve content version count"),
+            1
+        );
         assert_eq!(
             persistence::path_history_reasons_for_test(
                 &test.database_path,
