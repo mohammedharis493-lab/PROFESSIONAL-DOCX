@@ -2140,9 +2140,6 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
-                  {renderIntegrityAction(activeWordPreview.file)}
-                  {renderIntegrityAction(activeWorkbookPreview.file)}
-                  {renderIntegrityAction(activePdfPreview.file)}
                   {renderIntegrityAction(activeTextPreview.file)}
                   <button
                     className="secondary-button"
@@ -2225,6 +2222,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activePdfPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2299,6 +2297,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeWorkbookPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2621,6 +2620,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeWordPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
