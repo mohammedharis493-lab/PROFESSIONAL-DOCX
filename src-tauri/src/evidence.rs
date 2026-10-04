@@ -488,7 +488,10 @@ mod tests {
             Some(captured.controlled_evidence_version_id.as_str())
         );
         assert_eq!(history[0].verification_state, "HASH_VERIFIED");
-        assert_eq!(history[0].sha256.as_deref(), Some(captured.sha256.as_slice()));
+        assert_eq!(
+            history[0].sha256.as_deref(),
+            Some(captured.sha256.as_slice())
+        );
         assert_eq!(history[0].source_stable_during_read, Some(true));
         assert_eq!(history[0].capture_reason.as_deref(), Some(CAPTURE_REASON));
         assert_eq!(history[0].capture_policy.as_deref(), Some(CAPTURE_POLICY));
