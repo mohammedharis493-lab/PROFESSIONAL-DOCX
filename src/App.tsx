@@ -1684,6 +1684,296 @@ export default function App() {
             </section>
           </div>
         ) : null}
+        {activeWorkbookPreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                closeWorkbookPreview();
+              }
+            }}
+          >
+            <section
+              className="workbook-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="workbook-preview-title"
+            >
+              <header className="text-preview-header workbook-preview-header">
+                <div>
+                  <p className="eyebrow">
+                    IN-APP PREVIEW · {activeWorkbookPreview.preview.extension.toUpperCase()}
+                  </p>
+                  <h2 id="workbook-preview-title">{activeWorkbookPreview.file.name}</h2>
+                  <span>
+                    {activeWorkbookPreview.file.availabilityState} ·{" "}
+                    {formatBytes(activeWorkbookPreview.preview.totalSizeBytes)}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activeWorkbookPreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={closeWorkbookPreview}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="workbook-sheet-tabs" aria-label="Workbook sheets">
+                {activeWorkbookPreview.preview.sheets.map((sheet) => (
+                  <button
+                    type="button"
+                    key={sheet.name}
+                    className={
+                      sheet.name === activeWorkbookPreview.preview.selectedSheet
+                        ? "workbook-sheet-tab workbook-sheet-tab-active"
+                        : "workbook-sheet-tab"
+                    }
+                    disabled={!sheet.previewable || previewingFileInstanceId !== null}
+                    onClick={() =>
+                      void loadWorkbookPreview(
+                        activeWorkbookPreview.file,
+                        sheet.name,
+                        undefined,
+                        undefined,
+                      )
+                    }
+                    title={
+                      sheet.previewable
+                        ? `${sheet.sheetType} · ${sheet.visibility}`
+                        : `${sheet.sheetType} cannot be rendered as worksheet cells`
+                    }
+                  >
+                    <span>{sheet.name}</span>
+                    <small>{sheet.visibility.replaceAll("_", " ")}</small>
+                  </button>
+                ))}
+              </div>
+
+              <div className="workbook-preview-toolbar">
+                <div>
+                  <strong>{activeWorkbookPreview.preview.selectedSheet}</strong>
+                  <span>
+                    Used range{" "}
+                    {columnLabel(activeWorkbookPreview.preview.usedStartColumn)}
+                    {activeWorkbookPreview.preview.usedStartRow + 1}:
+                    {columnLabel(activeWorkbookPreview.preview.usedEndColumn)}
+                    {activeWorkbookPreview.preview.usedEndRow + 1}
+                  </span>
+                </div>
+                <div className="workbook-page-actions">
+                  <button
+                    className="file-action"
+                    type="button"
+                    disabled={
+                      activeWorkbookPreview.preview.rowOffset <=
+                        activeWorkbookPreview.preview.usedStartRow ||
+                      previewingFileInstanceId !== null
+                    }
+                    onClick={() =>
+                      void loadWorkbookPreview(
+                        activeWorkbookPreview.file,
+                        activeWorkbookPreview.preview.selectedSheet,
+                        Math.max(
+                          activeWorkbookPreview.preview.usedStartRow,
+                          activeWorkbookPreview.preview.rowOffset - WORKBOOK_PAGE_ROWS,
+                        ),
+                        activeWorkbookPreview.preview.columnOffset,
+                      )
+                    }
+                  >
+                    ↑ Rows
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    disabled={
+                      activeWorkbookPreview.preview.rowOffset +
+                        activeWorkbookPreview.preview.rowCount >
+                        activeWorkbookPreview.preview.usedEndRow ||
+                      previewingFileInstanceId !== null
+                    }
+                    onClick={() =>
+                      void loadWorkbookPreview(
+                        activeWorkbookPreview.file,
+                        activeWorkbookPreview.preview.selectedSheet,
+                        activeWorkbookPreview.preview.rowOffset + WORKBOOK_PAGE_ROWS,
+                        activeWorkbookPreview.preview.columnOffset,
+                      )
+                    }
+                  >
+                    ↓ Rows
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    disabled={
+                      activeWorkbookPreview.preview.columnOffset <=
+                        activeWorkbookPreview.preview.usedStartColumn ||
+                      previewingFileInstanceId !== null
+                    }
+                    onClick={() =>
+                      void loadWorkbookPreview(
+                        activeWorkbookPreview.file,
+                        activeWorkbookPreview.preview.selectedSheet,
+                        activeWorkbookPreview.preview.rowOffset,
+                        Math.max(
+                          activeWorkbookPreview.preview.usedStartColumn,
+                          activeWorkbookPreview.preview.columnOffset - WORKBOOK_PAGE_COLUMNS,
+                        ),
+                      )
+                    }
+                  >
+                    ← Columns
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    disabled={
+                      activeWorkbookPreview.preview.columnOffset +
+                        activeWorkbookPreview.preview.columnCount >
+                        activeWorkbookPreview.preview.usedEndColumn ||
+                      previewingFileInstanceId !== null
+                    }
+                    onClick={() =>
+                      void loadWorkbookPreview(
+                        activeWorkbookPreview.file,
+                        activeWorkbookPreview.preview.selectedSheet,
+                        activeWorkbookPreview.preview.rowOffset,
+                        activeWorkbookPreview.preview.columnOffset + WORKBOOK_PAGE_COLUMNS,
+                      )
+                    }
+                  >
+                    Columns →
+                  </button>
+                </div>
+              </div>
+
+              <div className="workbook-grid-wrap">
+                {activeWorkbookPreview.preview.rowCount &&
+                activeWorkbookPreview.preview.columnCount ? (
+                  <table className="workbook-grid">
+                    <thead>
+                      <tr>
+                        <th className="workbook-corner" aria-label="Row number" />
+                        {Array.from(
+                          { length: activeWorkbookPreview.preview.columnCount },
+                          (_, index) =>
+                            activeWorkbookPreview.preview.columnOffset + index,
+                        ).map((column) => (
+                          <th key={column}>{columnLabel(column)}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.from(
+                        { length: activeWorkbookPreview.preview.rowCount },
+                        (_, index) => activeWorkbookPreview.preview.rowOffset + index,
+                      ).map((row) => (
+                        <tr key={row}>
+                          <th>{row + 1}</th>
+                          {Array.from(
+                            { length: activeWorkbookPreview.preview.columnCount },
+                            (_, index) =>
+                              activeWorkbookPreview.preview.columnOffset + index,
+                          ).map((column) => {
+                            const cell =
+                              activeWorkbookPreview.cellsByPosition[
+                                workbookCellKey(row, column)
+                              ];
+
+                            return (
+                              <td
+                                key={column}
+                                className={
+                                  cell?.formula
+                                    ? "workbook-cell workbook-cell-formula"
+                                    : "workbook-cell"
+                                }
+                                title={cell?.address ?? `${columnLabel(column)}${row + 1}`}
+                              >
+                                {cell ? (
+                                  <>
+                                    <span>{cell.value || " "}</span>
+                                    {cell.formula ? (
+                                      <code>
+                                        {cell.formula.startsWith("=")
+                                          ? cell.formula
+                                          : `=${cell.formula}`}
+                                      </code>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="empty-result">This worksheet has no used cells.</div>
+                )}
+              </div>
+
+              <div className="workbook-metadata">
+                <div>
+                  <strong>
+                    Merged ranges ({activeWorkbookPreview.preview.mergedRanges.length})
+                  </strong>
+                  <span>
+                    {activeWorkbookPreview.preview.mergedRanges.length
+                      ? activeWorkbookPreview.preview.mergedRanges
+                          .slice(0, 12)
+                          .map((range) => range.address)
+                          .join(", ")
+                      : "None detected for this sheet."}
+                  </span>
+                </div>
+                <div>
+                  <strong>
+                    Hyperlinks ({activeWorkbookPreview.preview.hyperlinks.length})
+                  </strong>
+                  <span>
+                    {activeWorkbookPreview.preview.hyperlinks.length
+                      ? activeWorkbookPreview.preview.hyperlinks
+                          .slice(0, 8)
+                          .map(
+                            (link) =>
+                              `${link.range.address}: ${link.displayedText || link.target || link.location || "link"}`,
+                          )
+                          .join(" · ")
+                      : "None surfaced for this sheet/format."}
+                  </span>
+                </div>
+              </div>
+
+              <footer className="text-preview-footer workbook-preview-footer">
+                <span>
+                  Values and formulas are read-only. Sheet visibility is preserved.
+                </span>
+                <span>
+                  {activeWorkbookPreview.preview.metadataTruncated
+                    ? "Sheet metadata list truncated for safety. "
+                    : ""}
+                  Comments and hidden row/column indicators are not yet surfaced in this foundation.
+                </span>
+              </footer>
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );
