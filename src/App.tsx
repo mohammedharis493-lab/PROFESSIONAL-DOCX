@@ -96,6 +96,63 @@ type ActivePdfPreview = {
   url: string;
 };
 
+type WorkbookSheetInfo = {
+  name: string;
+  visibility: string;
+  sheetType: string;
+  previewable: boolean;
+};
+
+type WorkbookCell = {
+  row: number;
+  column: number;
+  address: string;
+  value: string;
+  valueKind: string;
+  formula: string | null;
+};
+
+type WorkbookRangeInfo = {
+  startRow: number;
+  startColumn: number;
+  endRow: number;
+  endColumn: number;
+  address: string;
+};
+
+type WorkbookHyperlinkInfo = {
+  range: WorkbookRangeInfo;
+  target: string | null;
+  location: string | null;
+  displayedText: string | null;
+  tooltip: string | null;
+};
+
+type WorkbookPreview = {
+  sheets: WorkbookSheetInfo[];
+  selectedSheet: string;
+  usedStartRow: number;
+  usedStartColumn: number;
+  usedEndRow: number;
+  usedEndColumn: number;
+  rowOffset: number;
+  columnOffset: number;
+  rowCount: number;
+  columnCount: number;
+  cells: WorkbookCell[];
+  mergedRanges: WorkbookRangeInfo[];
+  hyperlinks: WorkbookHyperlinkInfo[];
+  metadataTruncated: boolean;
+  totalSizeBytes: number;
+  extension: string;
+};
+
+type ActiveWorkbookPreview = {
+  file: IndexedFile;
+  preview: WorkbookPreview;
+  cellsByPosition: Record<string, WorkbookCell>;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -116,6 +173,31 @@ const TERMINAL_JOB_STATUSES = new Set([
 ]);
 
 const TEXT_PREVIEW_EXTENSIONS = new Set(["txt", "csv", "xml"]);
+
+const EXCEL_PREVIEW_EXTENSIONS = new Set(["xlsx", "xlsm", "xls", "xlsb"]);
+const WORKBOOK_PAGE_ROWS = 60;
+const WORKBOOK_PAGE_COLUMNS = 20;
+
+function supportsWorkbookPreview(file: IndexedFile) {
+  return EXCEL_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
+function workbookCellKey(row: number, column: number) {
+  return `${row}:${column}`;
+}
+
+function columnLabel(column: number) {
+  let value = column + 1;
+  let label = "";
+
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return label;
+}
 
 function supportsTextPreview(file: IndexedFile) {
   return TEXT_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
@@ -162,6 +244,8 @@ export default function App() {
     useState<ActiveTextPreview | null>(null);
   const [activePdfPreview, setActivePdfPreview] =
     useState<ActivePdfPreview | null>(null);
+  const [activeWorkbookPreview, setActiveWorkbookPreview] =
+    useState<ActiveWorkbookPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
     useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
