@@ -806,32 +806,43 @@ mod tests {
             2
         );
 
-        persistence::reconcile_linked_file_instance(
+        fs::write(
+            &path,
+            b"unindexed third state that must invalidate stale reconciliation",
+        )
+        .expect("source should change again after the successful scan");
+
+        let reconcile_error = persistence::reconcile_linked_file_instance(
             &test.database_path,
             &still_changed[0].file_instance_id,
         )
-        .expect("changed linked source should require explicit reconciliation");
+        .expect_err("reconciliation must reject a source that changed again after scanning");
+        assert!(
+            reconcile_error
+                .to_string()
+                .contains("changed again since the last successful scan")
+        );
 
-        let reconciled =
+        let rejected =
             persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
-                .expect("reconciled preview should load");
-        assert_eq!(reconciled[0].availability_state, "AVAILABLE");
+                .expect("preview should remain readable after rejected reconciliation");
+        assert_eq!(rejected[0].availability_state, "CHANGED");
         assert_eq!(
             persistence::count_content_versions_for_test(
                 &test.database_path,
-                &reconciled[0].file_instance_id
+                &rejected[0].file_instance_id
             )
-            .expect("reconciliation must preserve content history"),
+            .expect("rejected reconciliation must not invent a content version"),
             2
         );
         assert_eq!(
             persistence::count_audit_events_for_test(
                 &test.database_path,
                 "LINKED_SOURCE_RECONCILED",
-                &reconciled[0].file_instance_id,
+                &rejected[0].file_instance_id,
             )
-            .expect("reconciliation audit event count should load"),
-            1
+            .expect("rejected reconciliation must not record a successful audit event"),
+            0
         );
     }
 
@@ -1001,6 +1012,16 @@ mod tests {
                 .expect("offline preview should remain available from the index");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].availability_state, "UNAVAILABLE");
+
+        let capture_error = persistence::begin_evidence_capture(
+            &test.database_path,
+            &Uuid::new_v4().to_string(),
+            &files[0].file_instance_id,
+            "USER_PROMOTED",
+            "IMMUTABLE_SNAPSHOT",
+        )
+        .expect_err("offline approved roots must reject controlled evidence capture");
+        assert!(capture_error.to_string().contains("storage root is OFFLINE"));
     }
 
     #[test]
