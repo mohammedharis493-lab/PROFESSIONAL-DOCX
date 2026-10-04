@@ -2063,6 +2063,115 @@ export default function App() {
             </section>
           </div>
         ) : null}
+        {activeWordPreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                closeWordPreview();
+              }
+            }}
+          >
+            <section
+              className="word-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="word-preview-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">IN-APP PREVIEW · DOCX</p>
+                  <h2 id="word-preview-title">{activeWordPreview.file.name}</h2>
+                  <span>
+                    {activeWordPreview.file.availabilityState} ·{" "}
+                    {formatBytes(activeWordPreview.preview.totalSizeBytes)} ·{" "}
+                    {activeWordPreview.preview.blockCount} block
+                    {activeWordPreview.preview.blockCount === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activeWordPreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={closeWordPreview}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="word-preview-notice">
+                Structural preview of the main DOCX document body. Exact Word pagination,
+                floating objects, headers/footers, comments, tracked changes, and typography
+                are not reproduced in this foundation.
+              </div>
+
+              <div className="word-preview-body">
+                <article className="word-document">
+                  {activeWordPreview.preview.blocks.map((block, blockIndex) =>
+                    block.kind === "paragraph" ? (
+                      <div
+                        className={wordParagraphClass(block.style)}
+                        key={`paragraph-${blockIndex}`}
+                      >
+                        {block.style ? (
+                          <span className="word-style-label">{block.style}</span>
+                        ) : null}
+                        <span>{block.text}</span>
+                      </div>
+                    ) : (
+                      <div
+                        className="word-table-wrap"
+                        key={`table-${blockIndex}`}
+                      >
+                        <table className="word-table">
+                          <tbody>
+                            {block.rows.map((row, rowIndex) => (
+                              <tr key={rowIndex}>
+                                {row.map((cell, cellIndex) => (
+                                  <td key={cellIndex}>{cell || " "}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {block.truncated ? (
+                          <span className="word-truncation-note">
+                            Table preview was truncated for safety.
+                          </span>
+                        ) : null}
+                      </div>
+                    ),
+                  )}
+                  {!activeWordPreview.preview.blocks.length ? (
+                    <div className="empty-result">
+                      No previewable paragraphs or tables were found in the main document body.
+                    </div>
+                  ) : null}
+                </article>
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>Read-only preview · approved indexed source only.</span>
+                <span>
+                  {activeWordPreview.preview.truncated
+                    ? "Preview truncated at the safety limit. Open the original for the complete document."
+                    : "Open original for full Word rendering fidelity."}
+                </span>
+              </footer>
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );
