@@ -4,11 +4,7 @@ use quick_xml::{
     Reader,
 };
 use serde::Serialize;
-use std::{
-    fs,
-    io::Read,
-    path::Path,
-};
+use std::{fs, io::Read, path::Path};
 use zip::ZipArchive;
 
 pub const MAX_WORD_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
@@ -77,7 +73,11 @@ fn preview_validated_docx(path: &Path) -> Result<WordPreview, String> {
     if !extension.eq_ignore_ascii_case("docx") {
         return Err(format!(
             "In-app Word preview currently supports DOCX files only, not .{}.",
-            if extension.is_empty() { "<none>" } else { extension }
+            if extension.is_empty() {
+                "<none>"
+            } else {
+                extension
+            }
         ));
     }
 
