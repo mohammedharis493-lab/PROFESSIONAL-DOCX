@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(after[0].document_id, before[0].document_id);
         assert_eq!(after[0].file_instance_id, before[0].file_instance_id);
         assert_eq!(after[0].name, "Revenue Apr.xlsx");
-        assert_eq!(after[0].availability_state, "AVAILABLE");
+        assert_eq!(after[0].availability_state, "CHANGED");
 
         let reasons = persistence::path_history_reasons_for_test(
             &test.database_path,
@@ -679,6 +679,26 @@ mod tests {
         )
         .expect("path history should load");
         assert_eq!(reasons, vec!["DISCOVERED", "RENAMED"]);
+
+        persistence::reconcile_linked_file_instance(
+            &test.database_path,
+            &after[0].file_instance_id,
+        )
+        .expect("renamed linked source should reconcile explicitly");
+
+        let reconciled =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("reconciled preview should load");
+        assert_eq!(reconciled[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RECONCILED",
+                &after[0].file_instance_id,
+            )
+            .expect("reconciliation audit event count should load"),
+            1
+        );
     }
 
     #[test]
@@ -752,6 +772,66 @@ mod tests {
             )
             .expect("version count should load"),
             2
+        );
+        assert_eq!(after[0].availability_state, "CHANGED");
+
+        let third_job = Uuid::new_v4().to_string();
+        let third_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &third_job,
+            &third_generation,
+        )
+        .expect("follow-up reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            third_job,
+            third_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("unchanged follow-up scan should complete");
+
+        let still_changed =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("follow-up preview should load");
+        assert_eq!(still_changed[0].availability_state, "CHANGED");
+        assert_eq!(
+            persistence::count_content_versions_for_test(
+                &test.database_path,
+                &still_changed[0].file_instance_id
+            )
+            .expect("version count should remain stable"),
+            2
+        );
+
+        persistence::reconcile_linked_file_instance(
+            &test.database_path,
+            &still_changed[0].file_instance_id,
+        )
+        .expect("changed linked source should require explicit reconciliation");
+
+        let reconciled =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("reconciled preview should load");
+        assert_eq!(reconciled[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            persistence::count_content_versions_for_test(
+                &test.database_path,
+                &reconciled[0].file_instance_id
+            )
+            .expect("reconciliation must preserve content history"),
+            2
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RECONCILED",
+                &reconciled[0].file_instance_id,
+            )
+            .expect("reconciliation audit event count should load"),
+            1
         );
     }
 
@@ -864,6 +944,63 @@ mod tests {
                 .expect("preview should load");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].availability_state, "MISSING");
+    }
+
+    #[test]
+    fn offline_root_surfaces_indexed_files_as_unavailable_without_marking_them_missing() {
+        let test = TestIndex::new();
+        let path = test.source_root.join("Network Support.pdf");
+        fs::write(&path, b"evidence").expect("test file should be written");
+
+        let root = test.register_root("root-offline");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        fs::remove_dir_all(&test.source_root).expect("source root should become unavailable");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("offline check should create a reconciliation job");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("offline reconciliation should close cleanly");
+
+        let job = persistence::get_index_job(&test.database_path, &second_job)
+            .expect("job lookup should succeed")
+            .expect("offline job should exist");
+        assert_eq!(job.status, "OFFLINE");
+
+        let files =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("offline preview should remain available from the index");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].availability_state, "UNAVAILABLE");
     }
 
     #[test]
