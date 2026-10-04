@@ -233,6 +233,9 @@ struct DocumentVersionHistoryDto {
     controlled_version_number: Option<u64>,
     captured_at_ms: Option<i64>,
     controlled_verification_state: Option<String>,
+    captured_by: Option<String>,
+    capture_reason: Option<String>,
+    capture_policy: Option<String>,
 }
 
 impl From<persistence::DocumentVersionHistoryRecord> for DocumentVersionHistoryDto {
@@ -249,6 +252,9 @@ impl From<persistence::DocumentVersionHistoryRecord> for DocumentVersionHistoryD
             controlled_version_number: value.controlled_version_number,
             captured_at_ms: value.captured_at_ms,
             controlled_verification_state: value.controlled_verification_state,
+            captured_by: value.captured_by,
+            capture_reason: value.capture_reason,
+            capture_policy: value.capture_policy,
         }
     }
 }
