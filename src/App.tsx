@@ -1169,6 +1169,7 @@ export default function App() {
   );
 
   const workbookSearchHits = workbookSearchResult?.hits ?? [];
+  const localSearchTruncated = localViewerMatches.length >= 500;
   const viewerMatchCount = activeWorkbookPreview
     ? workbookSearchHits.length
     : localViewerMatches.length;
@@ -1210,7 +1211,7 @@ export default function App() {
     const countLabel = !showCount
       ? "Find in preview"
       : viewerMatchCount
-        ? `${safeViewerSearchIndex + 1} of ${viewerMatchCount}${workbookSearchResult?.truncated ? "+" : ""}`
+        ? `${safeViewerSearchIndex + 1} of ${viewerMatchCount}${activeWorkbookPreview ? (workbookSearchResult?.truncated ? "+" : "") : (localSearchTruncated ? "+" : "")}`
         : "No matches";
 
     return (
@@ -2026,15 +2027,29 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={() => setActiveTextPreview(null)}
+                    onClick={() => {
+                      setActiveTextPreview(null);
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
 
+              {renderViewerSearchBar("local")}
+
               <div className="text-preview-body">
-                <pre>{activeTextPreview.preview.content || "This file is empty."}</pre>
+                <pre>
+                  {activeTextPreview.preview.content
+                    ? renderHighlightedText(
+                        activeTextPreview.preview.content,
+                        "text",
+                        localViewerMatches,
+                        safeViewerSearchIndex,
+                      )
+                    : "This file is empty."}
+                </pre>
               </div>
 
               <footer className="text-preview-footer">
@@ -2093,12 +2108,22 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closePdfPreview}
+                    onClick={() => {
+                      closePdfPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              <div className="viewer-search-bar viewer-search-native">
+                <strong>Find in PDF</strong>
+                <span>
+                  Click inside the PDF, then press Ctrl+F to use the native PDF find controls.
+                </span>
+              </div>
 
               <div className="pdf-preview-body">
                 <iframe
@@ -2157,12 +2182,17 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closeWorkbookPreview}
+                    onClick={() => {
+                      closeWorkbookPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              {renderViewerSearchBar("workbook")}
 
               <div className="workbook-sheet-tabs" aria-label="Workbook sheets">
                 {activeWorkbookPreview.preview.sheets.map((sheet) => (
@@ -2327,24 +2357,51 @@ export default function App() {
                                 workbookCellKey(row, column)
                               ];
 
+                            const searchKey =
+                              `${activeWorkbookPreview.preview.selectedSheet}:${row}:${column}`;
+                            const isSearchHit = workbookSearchHitKeys.has(searchKey);
+                            const isActiveSearchHit =
+                              activeWorkbookSearchHit?.sheetName ===
+                                activeWorkbookPreview.preview.selectedSheet &&
+                              activeWorkbookSearchHit.row === row &&
+                              activeWorkbookSearchHit.column === column;
+
                             return (
                               <td
                                 key={column}
-                                className={
-                                  cell?.formula
-                                    ? "workbook-cell workbook-cell-formula"
-                                    : "workbook-cell"
-                                }
+                                id={isActiveSearchHit ? "workbook-search-active" : undefined}
+                                className={[
+                                  "workbook-cell",
+                                  cell?.formula ? "workbook-cell-formula" : "",
+                                  isSearchHit ? "workbook-cell-search-hit" : "",
+                                  isActiveSearchHit ? "workbook-cell-search-active" : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
                                 title={cell?.address ?? `${columnLabel(column)}${row + 1}`}
                               >
                                 {cell ? (
                                   <>
-                                    <span>{cell.value || " "}</span>
+                                    <span>
+                                      {isSearchHit
+                                        ? renderInlineQueryHighlight(
+                                            cell.value || " ",
+                                            viewerSearchQuery,
+                                          )
+                                        : cell.value || " "}
+                                    </span>
                                     {cell.formula ? (
                                       <code>
-                                        {cell.formula.startsWith("=")
-                                          ? cell.formula
-                                          : `=${cell.formula}`}
+                                        {isSearchHit
+                                          ? renderInlineQueryHighlight(
+                                              cell.formula.startsWith("=")
+                                                ? cell.formula
+                                                : `=${cell.formula}`,
+                                              viewerSearchQuery,
+                                            )
+                                          : cell.formula.startsWith("=")
+                                            ? cell.formula
+                                            : `=${cell.formula}`}
                                       </code>
                                     ) : null}
                                   </>
@@ -2447,12 +2504,17 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closeWordPreview}
+                    onClick={() => {
+                      closeWordPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              {renderViewerSearchBar("local")}
 
               <div className="word-preview-notice">
                 Structural preview of the main DOCX document body. Exact Word pagination,
@@ -2471,7 +2533,14 @@ export default function App() {
                         {block.style ? (
                           <span className="word-style-label">{block.style}</span>
                         ) : null}
-                        <span>{block.text}</span>
+                        <span>
+                          {renderHighlightedText(
+                            block.text,
+                            `p:${blockIndex}`,
+                            localViewerMatches,
+                            safeViewerSearchIndex,
+                          )}
+                        </span>
                       </div>
                     ) : (
                       <div
@@ -2483,7 +2552,14 @@ export default function App() {
                             {block.rows.map((row, rowIndex) => (
                               <tr key={rowIndex}>
                                 {row.map((cell, cellIndex) => (
-                                  <td key={cellIndex}>{cell || " "}</td>
+                                  <td key={cellIndex}>
+                                    {renderHighlightedText(
+                                      cell || " ",
+                                      `t:${blockIndex}:${rowIndex}:${cellIndex}`,
+                                      localViewerMatches,
+                                      safeViewerSearchIndex,
+                                    )}
+                                  </td>
                                 ))}
                               </tr>
                             ))}
