@@ -182,7 +182,8 @@ mod tests {
         fs::write(&path, &first_content).expect("first content should be written");
         let first = quick_fingerprint(&path).expect("first fingerprint should succeed");
 
-        first_content[first_content.len() / 2] = 0x42;
+        let midpoint = first_content.len() / 2;
+        first_content[midpoint] = 0x42;
         fs::write(&path, &first_content).expect("second content should be written");
         let second = quick_fingerprint(&path).expect("second fingerprint should succeed");
 
