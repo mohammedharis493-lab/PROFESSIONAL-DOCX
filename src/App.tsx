@@ -1752,6 +1752,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -1825,6 +1826,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
@@ -1922,6 +1924,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
@@ -2033,6 +2036,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -2136,6 +2140,10 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeWordPreview.file)}
+                  {renderIntegrityAction(activeWorkbookPreview.file)}
+                  {renderIntegrityAction(activePdfPreview.file)}
+                  {renderIntegrityAction(activeTextPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
