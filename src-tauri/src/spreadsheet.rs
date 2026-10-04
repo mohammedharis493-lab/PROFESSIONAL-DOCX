@@ -168,8 +168,28 @@ fn preview_validated_workbook(
     let effective_row_offset = row_offset.unwrap_or(used_start_row);
     let effective_column_offset = column_offset.unwrap_or(used_start_column);
 
-    let row_end_exclusive = effective_row_offset.saturating_add(bounded_row_limit);
-    let column_end_exclusive = effective_column_offset.saturating_add(bounded_column_limit);
+    let actual_row_count = if range.is_empty() || effective_row_offset > used_end_row {
+        0
+    } else {
+        bounded_row_limit.min(
+            used_end_row
+                .saturating_sub(effective_row_offset)
+                .saturating_add(1),
+        )
+    };
+
+    let actual_column_count = if range.is_empty() || effective_column_offset > used_end_column {
+        0
+    } else {
+        bounded_column_limit.min(
+            used_end_column
+                .saturating_sub(effective_column_offset)
+                .saturating_add(1),
+        )
+    };
+
+    let row_end_exclusive = effective_row_offset.saturating_add(actual_row_count);
+    let column_end_exclusive = effective_column_offset.saturating_add(actual_column_count);
 
     let mut cells = Vec::new();
 
@@ -238,8 +258,8 @@ fn preview_validated_workbook(
         used_end_column,
         row_offset: effective_row_offset,
         column_offset: effective_column_offset,
-        row_count: bounded_row_limit,
-        column_count: bounded_column_limit,
+        row_count: actual_row_count,
+        column_count: actual_column_count,
         cells,
         merged_ranges,
         hyperlinks,
