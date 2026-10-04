@@ -1163,15 +1163,34 @@ export default function App() {
         fileInstanceId: file.fileInstanceId,
       });
 
-      const markReconciled = <T extends IndexedFile>(item: T): T =>
-        item.fileInstanceId === file.fileInstanceId
-          ? { ...item, availabilityState: "AVAILABLE" }
-          : item;
-
-      setSearchResults((current) => current.map(markReconciled));
-      setPreviewFiles((current) => current.map(markReconciled));
-      setRecentDocuments((current) => current.map(markReconciled));
-      setPinnedDocuments((current) => current.map(markReconciled));
+      setSearchResults((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setPreviewFiles((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setRecentDocuments((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setPinnedDocuments((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
     } catch (reconcileError) {
       setError(String(reconcileError));
     } finally {
