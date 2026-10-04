@@ -179,6 +179,34 @@ type ActiveWordPreview = {
   preview: WordPreview;
 };
 
+type WorkbookSearchHit = {
+  sheetName: string;
+  row: number;
+  column: number;
+  address: string;
+  value: string;
+  formula: string | null;
+  matchedField: string;
+};
+
+type WorkbookSearchResult = {
+  hits: WorkbookSearchHit[];
+  truncated: boolean;
+  scannedCells: number;
+};
+
+type ViewerTextSegment = {
+  key: string;
+  text: string;
+};
+
+type ViewerLocalMatch = {
+  segmentKey: string;
+  start: number;
+  end: number;
+  index: number;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -223,6 +251,117 @@ function wordParagraphClass(style: string | null) {
 
 function workbookCellKey(row: number, column: number) {
   return `${row}:${column}`;
+}
+
+function wordSearchSegments(preview: WordPreview): ViewerTextSegment[] {
+  const segments: ViewerTextSegment[] = [];
+
+  preview.blocks.forEach((block, blockIndex) => {
+    if (block.kind === "paragraph") {
+      segments.push({ key: `p:${blockIndex}`, text: block.text });
+      return;
+    }
+
+    block.rows.forEach((row, rowIndex) => {
+      row.forEach((cell, cellIndex) => {
+        segments.push({
+          key: `t:${blockIndex}:${rowIndex}:${cellIndex}`,
+          text: cell,
+        });
+      });
+    });
+  });
+
+  return segments;
+}
+
+function findViewerMatches(
+  segments: ViewerTextSegment[],
+  query: string,
+  limit = 500,
+): ViewerLocalMatch[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return [];
+
+  const matches: ViewerLocalMatch[] = [];
+
+  for (const segment of segments) {
+    const normalizedText = segment.text.toLocaleLowerCase();
+    let cursor = 0;
+
+    while (cursor <= normalizedText.length - normalizedQuery.length) {
+      const start = normalizedText.indexOf(normalizedQuery, cursor);
+      if (start < 0) break;
+
+      matches.push({
+        segmentKey: segment.key,
+        start,
+        end: start + normalizedQuery.length,
+        index: matches.length,
+      });
+
+      if (matches.length >= limit) return matches;
+      cursor = start + Math.max(1, normalizedQuery.length);
+    }
+  }
+
+  return matches;
+}
+
+function renderHighlightedText(
+  text: string,
+  segmentKey: string,
+  matches: ViewerLocalMatch[],
+  activeIndex: number,
+) {
+  const segmentMatches = matches.filter((match) => match.segmentKey === segmentKey);
+  if (!segmentMatches.length) return text;
+
+  const content = [];
+  let cursor = 0;
+
+  for (const match of segmentMatches) {
+    if (match.start > cursor) {
+      content.push(text.slice(cursor, match.start));
+    }
+
+    const isActive = match.index === activeIndex;
+    content.push(
+      <mark
+        className={isActive ? "viewer-search-mark viewer-search-mark-active" : "viewer-search-mark"}
+        id={isActive ? "viewer-search-active" : undefined}
+        key={`${segmentKey}:${match.start}:${match.index}`}
+      >
+        {text.slice(match.start, match.end)}
+      </mark>,
+    );
+
+    cursor = match.end;
+  }
+
+  if (cursor < text.length) {
+    content.push(text.slice(cursor));
+  }
+
+  return content;
+}
+
+function renderInlineQueryHighlight(text: string, query: string) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return text;
+
+  const normalizedText = text.toLocaleLowerCase();
+  const start = normalizedText.indexOf(normalizedQuery);
+  if (start < 0) return text;
+
+  const end = start + normalizedQuery.length;
+  return (
+    <>
+      {text.slice(0, start)}
+      <mark className="viewer-search-mark">{text.slice(start, end)}</mark>
+      {text.slice(end)}
+    </>
+  );
 }
 
 function columnLabel(column: number) {
@@ -289,6 +428,13 @@ export default function App() {
     useState<ActiveWordPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
     useState<string | null>(null);
+  const [viewerSearchQuery, setViewerSearchQuery] = useState("");
+  const [viewerSearchIndex, setViewerSearchIndex] = useState(0);
+  const [workbookSearchResult, setWorkbookSearchResult] =
+    useState<WorkbookSearchResult | null>(null);
+  const [activeWorkbookSearchHit, setActiveWorkbookSearchHit] =
+    useState<WorkbookSearchHit | null>(null);
+  const [isViewerSearching, setIsViewerSearching] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -316,6 +462,13 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const activeMatch = document.getElementById("viewer-search-active");
+    if (activeMatch) {
+      activeMatch.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+  }, [viewerSearchIndex, viewerSearchQuery, activeTextPreview, activeWordPreview]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -659,6 +812,21 @@ export default function App() {
     }
   }
 
+  function resetViewerSearch() {
+    setViewerSearchQuery("");
+    setViewerSearchIndex(0);
+    setWorkbookSearchResult(null);
+    setActiveWorkbookSearchHit(null);
+    setIsViewerSearching(false);
+  }
+
+  function updateViewerSearchQuery(value: string) {
+    setViewerSearchQuery(value);
+    setViewerSearchIndex(0);
+    setWorkbookSearchResult(null);
+    setActiveWorkbookSearchHit(null);
+  }
+
   function closeWordPreview() {
     setActiveWordPreview(null);
   }
@@ -668,6 +836,7 @@ export default function App() {
       return;
     }
 
+    resetViewerSearch();
     setError(null);
     setPreviewingFileInstanceId(file.fileInstanceId);
 
@@ -750,6 +919,7 @@ export default function App() {
   }
 
   async function previewWorkbookFileInstance(file: IndexedFile, usedQuery?: string) {
+    resetViewerSearch();
     const opened = await loadWorkbookPreview(file);
     if (!opened) return;
 
@@ -777,6 +947,7 @@ export default function App() {
       return;
     }
 
+    resetViewerSearch();
     setError(null);
     setPreviewingFileInstanceId(file.fileInstanceId);
 
@@ -823,6 +994,7 @@ export default function App() {
       return;
     }
 
+    resetViewerSearch();
     setError(null);
     setPreviewingFileInstanceId(file.fileInstanceId);
 
@@ -890,6 +1062,68 @@ export default function App() {
     }
   }
 
+  async function navigateToWorkbookSearchHit(
+    hit: WorkbookSearchHit,
+    index: number,
+  ) {
+    if (!activeWorkbookPreview) return;
+
+    const file = activeWorkbookPreview.file;
+    setViewerSearchIndex(index);
+    setActiveWorkbookSearchHit(hit);
+
+    const loaded = await loadWorkbookPreview(
+      file,
+      hit.sheetName,
+      hit.row,
+      hit.column,
+    );
+
+    if (loaded) {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          document
+            .getElementById("workbook-search-active")
+            ?.scrollIntoView({ block: "center", inline: "center" });
+        });
+      });
+    }
+  }
+
+  async function runWorkbookViewerSearch() {
+    if (!activeWorkbookPreview) return;
+
+    const trimmedQuery = viewerSearchQuery.trim();
+    setViewerSearchIndex(0);
+    setActiveWorkbookSearchHit(null);
+
+    if (!trimmedQuery) {
+      setWorkbookSearchResult(null);
+      return;
+    }
+
+    setIsViewerSearching(true);
+    setError(null);
+
+    try {
+      const result = await invoke<WorkbookSearchResult>("search_workbook_file_instance", {
+        fileInstanceId: activeWorkbookPreview.file.fileInstanceId,
+        query: trimmedQuery,
+      });
+
+      setWorkbookSearchResult(result);
+
+      if (result.hits.length) {
+        await navigateToWorkbookSearchHit(result.hits[0], 0);
+      }
+    } catch (viewerSearchError) {
+      setWorkbookSearchResult(null);
+      setError(String(viewerSearchError));
+    } finally {
+      setIsViewerSearching(false);
+    }
+  }
+
   async function captureEvidence(file: IndexedFile) {
     if (file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null) {
       return;
@@ -921,6 +1155,117 @@ export default function App() {
     } finally {
       setCapturingFileInstanceId(null);
     }
+  }
+
+  const localViewerSegments: ViewerTextSegment[] = activeTextPreview
+    ? [{ key: "text", text: activeTextPreview.preview.content }]
+    : activeWordPreview
+      ? wordSearchSegments(activeWordPreview.preview)
+      : [];
+
+  const localViewerMatches = findViewerMatches(
+    localViewerSegments,
+    viewerSearchQuery,
+  );
+
+  const workbookSearchHits = workbookSearchResult?.hits ?? [];
+  const localSearchTruncated = localViewerMatches.length >= 500;
+  const viewerMatchCount = activeWorkbookPreview
+    ? workbookSearchHits.length
+    : localViewerMatches.length;
+  const safeViewerSearchIndex =
+    viewerMatchCount > 0
+      ? Math.min(viewerSearchIndex, viewerMatchCount - 1)
+      : 0;
+
+  const workbookSearchHitKeys = new Set(
+    workbookSearchHits.map(
+      (hit) => `${hit.sheetName}:${hit.row}:${hit.column}`,
+    ),
+  );
+
+  function moveViewerSearch(delta: number) {
+    if (!viewerMatchCount) return;
+
+    const nextIndex =
+      (safeViewerSearchIndex + delta + viewerMatchCount) % viewerMatchCount;
+
+    if (activeWorkbookPreview) {
+      const hit = workbookSearchHits[nextIndex];
+      if (hit) {
+        void navigateToWorkbookSearchHit(hit, nextIndex);
+      }
+      return;
+    }
+
+    setViewerSearchIndex(nextIndex);
+  }
+
+  function renderViewerSearchBar(mode: "local" | "workbook") {
+    const hasQuery = Boolean(viewerSearchQuery.trim());
+    const hasExecutedWorkbookSearch = workbookSearchResult !== null;
+    const showCount =
+      mode === "local"
+        ? hasQuery
+        : hasQuery && hasExecutedWorkbookSearch;
+    const countLabel = !showCount
+      ? "Find in preview"
+      : viewerMatchCount
+        ? `${safeViewerSearchIndex + 1} of ${viewerMatchCount}${activeWorkbookPreview ? (workbookSearchResult?.truncated ? "+" : "") : (localSearchTruncated ? "+" : "")}`
+        : "No matches";
+
+    return (
+      <form
+        className="viewer-search-bar"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (mode === "workbook") {
+            void runWorkbookViewerSearch();
+          } else {
+            setViewerSearchIndex(0);
+          }
+        }}
+      >
+        <input
+          aria-label="Find in document"
+          placeholder="Find in document…"
+          value={viewerSearchQuery}
+          onChange={(event) => updateViewerSearchQuery(event.target.value)}
+        />
+        <button
+          className="file-action"
+          type="submit"
+          disabled={mode === "workbook" && isViewerSearching}
+        >
+          {mode === "workbook" && isViewerSearching ? "Searching…" : "Find"}
+        </button>
+        <span className="viewer-search-count">{countLabel}</span>
+        <button
+          className="file-action"
+          type="button"
+          onClick={() => moveViewerSearch(-1)}
+          disabled={!viewerMatchCount}
+          aria-label="Previous match"
+        >
+          ↑
+        </button>
+        <button
+          className="file-action"
+          type="button"
+          onClick={() => moveViewerSearch(1)}
+          disabled={!viewerMatchCount}
+          aria-label="Next match"
+        >
+          ↓
+        </button>
+        {mode === "workbook" && workbookSearchResult ? (
+          <span className="viewer-search-scope">
+            {workbookSearchResult.scannedCells.toLocaleString()} cells scanned
+            {workbookSearchResult.truncated ? " · result limit reached" : ""}
+          </span>
+        ) : null}
+      </form>
+    );
   }
 
   function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
@@ -1682,15 +2027,29 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={() => setActiveTextPreview(null)}
+                    onClick={() => {
+                      setActiveTextPreview(null);
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
 
+              {renderViewerSearchBar("local")}
+
               <div className="text-preview-body">
-                <pre>{activeTextPreview.preview.content || "This file is empty."}</pre>
+                <pre>
+                  {activeTextPreview.preview.content
+                    ? renderHighlightedText(
+                        activeTextPreview.preview.content,
+                        "text",
+                        localViewerMatches,
+                        safeViewerSearchIndex,
+                      )
+                    : "This file is empty."}
+                </pre>
               </div>
 
               <footer className="text-preview-footer">
@@ -1749,12 +2108,22 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closePdfPreview}
+                    onClick={() => {
+                      closePdfPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              <div className="viewer-search-bar viewer-search-native">
+                <strong>Find in PDF</strong>
+                <span>
+                  Click inside the PDF, then press Ctrl+F to use the native PDF find controls.
+                </span>
+              </div>
 
               <div className="pdf-preview-body">
                 <iframe
@@ -1813,12 +2182,17 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closeWorkbookPreview}
+                    onClick={() => {
+                      closeWorkbookPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              {renderViewerSearchBar("workbook")}
 
               <div className="workbook-sheet-tabs" aria-label="Workbook sheets">
                 {activeWorkbookPreview.preview.sheets.map((sheet) => (
@@ -1983,24 +2357,51 @@ export default function App() {
                                 workbookCellKey(row, column)
                               ];
 
+                            const searchKey =
+                              `${activeWorkbookPreview.preview.selectedSheet}:${row}:${column}`;
+                            const isSearchHit = workbookSearchHitKeys.has(searchKey);
+                            const isActiveSearchHit =
+                              activeWorkbookSearchHit?.sheetName ===
+                                activeWorkbookPreview.preview.selectedSheet &&
+                              activeWorkbookSearchHit.row === row &&
+                              activeWorkbookSearchHit.column === column;
+
                             return (
                               <td
                                 key={column}
-                                className={
-                                  cell?.formula
-                                    ? "workbook-cell workbook-cell-formula"
-                                    : "workbook-cell"
-                                }
+                                id={isActiveSearchHit ? "workbook-search-active" : undefined}
+                                className={[
+                                  "workbook-cell",
+                                  cell?.formula ? "workbook-cell-formula" : "",
+                                  isSearchHit ? "workbook-cell-search-hit" : "",
+                                  isActiveSearchHit ? "workbook-cell-search-active" : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
                                 title={cell?.address ?? `${columnLabel(column)}${row + 1}`}
                               >
                                 {cell ? (
                                   <>
-                                    <span>{cell.value || " "}</span>
+                                    <span>
+                                      {isSearchHit
+                                        ? renderInlineQueryHighlight(
+                                            cell.value || " ",
+                                            viewerSearchQuery,
+                                          )
+                                        : cell.value || " "}
+                                    </span>
                                     {cell.formula ? (
                                       <code>
-                                        {cell.formula.startsWith("=")
-                                          ? cell.formula
-                                          : `=${cell.formula}`}
+                                        {isSearchHit
+                                          ? renderInlineQueryHighlight(
+                                              cell.formula.startsWith("=")
+                                                ? cell.formula
+                                                : `=${cell.formula}`,
+                                              viewerSearchQuery,
+                                            )
+                                          : cell.formula.startsWith("=")
+                                            ? cell.formula
+                                            : `=${cell.formula}`}
                                       </code>
                                     ) : null}
                                   </>
@@ -2103,12 +2504,17 @@ export default function App() {
                   <button
                     className="file-action"
                     type="button"
-                    onClick={closeWordPreview}
+                    onClick={() => {
+                      closeWordPreview();
+                      resetViewerSearch();
+                    }}
                   >
                     Close
                   </button>
                 </div>
               </header>
+
+              {renderViewerSearchBar("local")}
 
               <div className="word-preview-notice">
                 Structural preview of the main DOCX document body. Exact Word pagination,
@@ -2127,7 +2533,14 @@ export default function App() {
                         {block.style ? (
                           <span className="word-style-label">{block.style}</span>
                         ) : null}
-                        <span>{block.text}</span>
+                        <span>
+                          {renderHighlightedText(
+                            block.text,
+                            `p:${blockIndex}`,
+                            localViewerMatches,
+                            safeViewerSearchIndex,
+                          )}
+                        </span>
                       </div>
                     ) : (
                       <div
@@ -2139,7 +2552,14 @@ export default function App() {
                             {block.rows.map((row, rowIndex) => (
                               <tr key={rowIndex}>
                                 {row.map((cell, cellIndex) => (
-                                  <td key={cellIndex}>{cell || " "}</td>
+                                  <td key={cellIndex}>
+                                    {renderHighlightedText(
+                                      cell || " ",
+                                      `t:${blockIndex}:${rowIndex}:${cellIndex}`,
+                                      localViewerMatches,
+                                      safeViewerSearchIndex,
+                                    )}
+                                  </td>
                                 ))}
                               </tr>
                             ))}
