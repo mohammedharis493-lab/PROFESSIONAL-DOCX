@@ -133,7 +133,8 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(start)) => {
-                let name = local_name(start.name().as_ref());
+                let qualified_name = start.name();
+                let name = local_name(qualified_name.as_ref());
 
                 match name {
                     b"tbl" => {
@@ -156,7 +157,7 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
                     }
                     b"pStyle" => {
                         if let Some(paragraph) = state.current_paragraph.as_mut() {
-                            paragraph.style = attribute_value(&reader, &start, b"val")?;
+                            paragraph.style = attribute_value(&start, b"val")?;
                         }
                     }
                     b"tab" => append_text(&mut state, "\t"),
@@ -165,11 +166,12 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
                 }
             }
             Ok(Event::Empty(empty)) => {
-                let name = local_name(empty.name().as_ref());
+                let qualified_name = empty.name();
+                let name = local_name(qualified_name.as_ref());
                 match name {
                     b"pStyle" => {
                         if let Some(paragraph) = state.current_paragraph.as_mut() {
-                            paragraph.style = attribute_value(&reader, &empty, b"val")?;
+                            paragraph.style = attribute_value(&empty, b"val")?;
                         }
                     }
                     b"tab" => append_text(&mut state, "\t"),
@@ -184,7 +186,8 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
                 append_text(&mut state, decoded.as_ref());
             }
             Ok(Event::End(end)) => {
-                let name = local_name(end.name().as_ref());
+                let qualified_name = end.name();
+                let name = local_name(qualified_name.as_ref());
 
                 match name {
                     b"p" => finish_paragraph(&mut state),
@@ -335,7 +338,6 @@ fn finish_table(state: &mut ParseState) {
 }
 
 fn attribute_value(
-    reader: &Reader<&[u8]>,
     start: &BytesStart<'_>,
     wanted_local_name: &[u8],
 ) -> Result<Option<String>, String> {
@@ -344,10 +346,9 @@ fn attribute_value(
             attribute.map_err(|error| format!("Unable to parse DOCX attribute: {error}"))?;
 
         if local_name(attribute.key.as_ref()) == wanted_local_name {
-            let value = attribute
-                .decode_and_unescape_value(reader.decoder())
-                .map_err(|error| format!("Unable to decode DOCX attribute: {error}"))?;
-            return Ok(Some(value.into_owned()));
+            return Ok(Some(
+                String::from_utf8_lossy(attribute.value.as_ref()).into_owned(),
+            ));
         }
     }
 
