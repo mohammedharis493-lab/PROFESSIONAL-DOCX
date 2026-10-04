@@ -42,6 +42,7 @@ struct ParseState {
     current_paragraph: Option<ParagraphBuilder>,
     current_table: Option<TableBuilder>,
     text_bytes: usize,
+    in_text_node: bool,
     truncated: bool,
 }
 
@@ -160,6 +161,7 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
                             paragraph.style = attribute_value(&start, b"val")?;
                         }
                     }
+                    b"t" => state.in_text_node = true,
                     b"tab" => append_text(&mut state, "\t"),
                     b"br" | b"cr" => append_text(&mut state, "\n"),
                     _ => {}
@@ -180,16 +182,19 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
                 }
             }
             Ok(Event::Text(text)) => {
-                let decoded = text
-                    .decode()
-                    .map_err(|error| format!("Unable to decode DOCX text: {error}"))?;
-                append_text(&mut state, decoded.as_ref());
+                if state.in_text_node {
+                    let decoded = text
+                        .decode()
+                        .map_err(|error| format!("Unable to decode DOCX text: {error}"))?;
+                    append_text(&mut state, decoded.as_ref());
+                }
             }
             Ok(Event::End(end)) => {
                 let qualified_name = end.name();
                 let name = local_name(qualified_name.as_ref());
 
                 match name {
+                    b"t" => state.in_text_node = false,
                     b"p" => finish_paragraph(&mut state),
                     b"tc" => finish_cell(&mut state),
                     b"tr" => finish_row(&mut state),
