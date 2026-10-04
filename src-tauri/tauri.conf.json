@@ -25,14 +25,15 @@
       "csp": {
         "default-src": "'self' customprotocol:",
         "script-src": "'self'",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "ipc: http://ipc.localhost pdx-preview: http://pdx-preview.localhost https://pdx-preview.localhost",
         "img-src": "'self' data: blob:",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
-        "frame-ancestors": "'none'"
+        "frame-ancestors": "'none'",
+        "frame-src": "'self' blob:"
       }
     }
   },
