@@ -5,6 +5,7 @@ mod launcher;
 mod persistence;
 mod preview;
 mod search;
+mod spreadsheet;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -555,6 +556,47 @@ async fn preview_text_file_instance(
 }
 
 #[tauri::command]
+async fn preview_workbook_file_instance(
+    file_instance_id: String,
+    sheet_name: Option<String>,
+    row_offset: Option<u32>,
+    column_offset: Option<u32>,
+    row_limit: Option<u32>,
+    column_limit: Option<u32>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<spreadsheet::WorkbookPreview, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+    let record_open = sheet_name.is_none() && row_offset.is_none() && column_offset.is_none();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
+
+        let preview = spreadsheet::preview_workbook_source(
+            &source,
+            sheet_name.as_deref(),
+            row_offset,
+            column_offset,
+            row_limit,
+            column_limit,
+        )?;
+
+        if record_open {
+            persistence::record_document_open(&database_path, &file_instance_id)
+                .map_err(|error| error.to_string())?;
+        }
+
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| format!("Workbook preview task failed to join: {error}"))?
+}
+
+#[tauri::command]
 async fn open_file_instance(
     file_instance_id: String,
     database: State<'_, persistence::DatabaseState>,
@@ -667,6 +709,7 @@ pub fn run() {
             search_documents,
             capture_controlled_evidence,
             preview_text_file_instance,
+            preview_workbook_file_instance,
             open_file_instance,
             reveal_file_instance,
             rebuild_search_index
