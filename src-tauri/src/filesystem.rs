@@ -1,7 +1,59 @@
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
+    io::{self, Read, Seek, SeekFrom},
     path::Path,
 };
+
+const QUICK_FINGERPRINT_CHUNK_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickFingerprint {
+    pub digest: Vec<u8>,
+    pub source_stable_during_read: bool,
+}
+
+pub fn quick_fingerprint(path: &Path) -> io::Result<QuickFingerprint> {
+    let mut file = File::open(path)?;
+    let before = file.metadata()?;
+    let size = before.len();
+    let modified_before = before.modified().ok();
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"PROFESSIONAL-DOCX-QUICK-FINGERPRINT-V1");
+    hasher.update(size.to_le_bytes());
+
+    let chunk = QUICK_FINGERPRINT_CHUNK_BYTES as u64;
+    if size <= chunk.saturating_mul(3) {
+        let mut buffer = Vec::with_capacity(size.min(usize::MAX as u64) as usize);
+        file.read_to_end(&mut buffer)?;
+        hasher.update(&buffer);
+    } else {
+        let middle = size / 2;
+        let offsets = [
+            0,
+            middle.saturating_sub(chunk / 2),
+            size.saturating_sub(chunk),
+        ];
+        let mut buffer = vec![0_u8; QUICK_FINGERPRINT_CHUNK_BYTES];
+
+        for offset in offsets {
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut buffer)?;
+            hasher.update(offset.to_le_bytes());
+            hasher.update(&buffer);
+        }
+    }
+
+    let after = file.metadata()?;
+    let source_stable_during_read =
+        before.len() == after.len() && modified_before == after.modified().ok();
+
+    Ok(QuickFingerprint {
+        digest: hasher.finalize().to_vec(),
+        source_stable_during_read,
+    })
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct PlatformFileMetadata {
