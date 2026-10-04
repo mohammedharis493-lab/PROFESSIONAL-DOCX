@@ -1514,3 +1514,40 @@ input:focus-visible {
     margin-left: 0;
   }
 }
+
+
+.integrity-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.integrity-state-alert {
+  border: 1px solid #e7b36c;
+  background: #fff2df;
+  color: #8a4f07;
+}
+
+.integrity-state-acknowledged {
+  border: 1px solid #b9c9dc;
+  background: #f0f4f8;
+  color: #52657d;
+}
+
+.file-action-integrity {
+  border-color: #d79a4e;
+  background: #fff8eb;
+  color: #7c4b0b;
+}
+
+.file-action-integrity:hover:not(:disabled) {
+  border-color: #bc7a2b;
+  background: #ffefd2;
+}
