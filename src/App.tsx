@@ -179,6 +179,34 @@ type ActiveWordPreview = {
   preview: WordPreview;
 };
 
+type WorkbookSearchHit = {
+  sheetName: string;
+  row: number;
+  column: number;
+  address: string;
+  value: string;
+  formula: string | null;
+  matchedField: string;
+};
+
+type WorkbookSearchResult = {
+  hits: WorkbookSearchHit[];
+  truncated: boolean;
+  scannedCells: number;
+};
+
+type ViewerTextSegment = {
+  key: string;
+  text: string;
+};
+
+type ViewerLocalMatch = {
+  segmentKey: string;
+  start: number;
+  end: number;
+  index: number;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -223,6 +251,117 @@ function wordParagraphClass(style: string | null) {
 
 function workbookCellKey(row: number, column: number) {
   return `${row}:${column}`;
+}
+
+function wordSearchSegments(preview: WordPreview): ViewerTextSegment[] {
+  const segments: ViewerTextSegment[] = [];
+
+  preview.blocks.forEach((block, blockIndex) => {
+    if (block.kind === "paragraph") {
+      segments.push({ key: `p:${blockIndex}`, text: block.text });
+      return;
+    }
+
+    block.rows.forEach((row, rowIndex) => {
+      row.forEach((cell, cellIndex) => {
+        segments.push({
+          key: `t:${blockIndex}:${rowIndex}:${cellIndex}`,
+          text: cell,
+        });
+      });
+    });
+  });
+
+  return segments;
+}
+
+function findViewerMatches(
+  segments: ViewerTextSegment[],
+  query: string,
+  limit = 500,
+): ViewerLocalMatch[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return [];
+
+  const matches: ViewerLocalMatch[] = [];
+
+  for (const segment of segments) {
+    const normalizedText = segment.text.toLocaleLowerCase();
+    let cursor = 0;
+
+    while (cursor <= normalizedText.length - normalizedQuery.length) {
+      const start = normalizedText.indexOf(normalizedQuery, cursor);
+      if (start < 0) break;
+
+      matches.push({
+        segmentKey: segment.key,
+        start,
+        end: start + normalizedQuery.length,
+        index: matches.length,
+      });
+
+      if (matches.length >= limit) return matches;
+      cursor = start + Math.max(1, normalizedQuery.length);
+    }
+  }
+
+  return matches;
+}
+
+function renderHighlightedText(
+  text: string,
+  segmentKey: string,
+  matches: ViewerLocalMatch[],
+  activeIndex: number,
+) {
+  const segmentMatches = matches.filter((match) => match.segmentKey === segmentKey);
+  if (!segmentMatches.length) return text;
+
+  const content = [];
+  let cursor = 0;
+
+  for (const match of segmentMatches) {
+    if (match.start > cursor) {
+      content.push(text.slice(cursor, match.start));
+    }
+
+    const isActive = match.index === activeIndex;
+    content.push(
+      <mark
+        className={isActive ? "viewer-search-mark viewer-search-mark-active" : "viewer-search-mark"}
+        id={isActive ? "viewer-search-active" : undefined}
+        key={`${segmentKey}:${match.start}:${match.index}`}
+      >
+        {text.slice(match.start, match.end)}
+      </mark>,
+    );
+
+    cursor = match.end;
+  }
+
+  if (cursor < text.length) {
+    content.push(text.slice(cursor));
+  }
+
+  return content;
+}
+
+function renderInlineQueryHighlight(text: string, query: string) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return text;
+
+  const normalizedText = text.toLocaleLowerCase();
+  const start = normalizedText.indexOf(normalizedQuery);
+  if (start < 0) return text;
+
+  const end = start + normalizedQuery.length;
+  return (
+    <>
+      {text.slice(0, start)}
+      <mark className="viewer-search-mark">{text.slice(start, end)}</mark>
+      {text.slice(end)}
+    </>
+  );
 }
 
 function columnLabel(column: number) {
@@ -289,6 +428,13 @@ export default function App() {
     useState<ActiveWordPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
     useState<string | null>(null);
+  const [viewerSearchQuery, setViewerSearchQuery] = useState("");
+  const [viewerSearchIndex, setViewerSearchIndex] = useState(0);
+  const [workbookSearchResult, setWorkbookSearchResult] =
+    useState<WorkbookSearchResult | null>(null);
+  const [activeWorkbookSearchHit, setActiveWorkbookSearchHit] =
+    useState<WorkbookSearchHit | null>(null);
+  const [isViewerSearching, setIsViewerSearching] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -316,6 +462,13 @@ export default function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const activeMatch = document.getElementById("viewer-search-active");
+    if (activeMatch) {
+      activeMatch.scrollIntoView({ block: "center", inline: "nearest" });
+    }
+  }, [viewerSearchIndex, viewerSearchQuery, activeTextPreview, activeWordPreview]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
