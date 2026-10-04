@@ -84,6 +84,9 @@ pub struct SearchResultRecord {
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
     pub availability_state: String,
+    pub integrity_state: String,
+    pub integrity_changed_at_ms: Option<i64>,
+    pub integrity_acknowledged_at_ms: Option<i64>,
     pub matched_field: String,
     pub score: f32,
 }
@@ -315,6 +318,9 @@ pub fn search_documents(
             size_bytes: file.size_bytes,
             modified_unix_ms: file.modified_unix_ms,
             availability_state: file.availability_state,
+            integrity_state: file.integrity_state,
+            integrity_changed_at_ms: file.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: file.integrity_acknowledged_at_ms,
             matched_field,
             score,
         });
