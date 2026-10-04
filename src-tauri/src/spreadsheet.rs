@@ -1,13 +1,7 @@
 use crate::{launcher, persistence::ResolvedFileSource};
-use calamine::{
-    open_workbook_auto, Data, Dimensions, Reader, SheetType, SheetVisible, Sheets,
-};
+use calamine::{open_workbook_auto, Data, Dimensions, Reader, SheetType, SheetVisible, Sheets};
 use serde::Serialize;
-use std::{
-    fs,
-    io::BufReader,
-    path::Path,
-};
+use std::{fs, io::BufReader, path::Path};
 
 pub const MAX_WORKBOOK_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_WORKBOOK_ROWS: u32 = 60;
@@ -477,15 +471,9 @@ mod tests {
         fs::write(fixture.root.join("notes.csv"), b"a,b\n1,2\n")
             .expect("CSV fixture should be written");
 
-        let error = preview_workbook_source(
-            &fixture.source("notes.csv"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect_err("CSV should not be parsed by Excel viewer");
+        let error =
+            preview_workbook_source(&fixture.source("notes.csv"), None, None, None, None, None)
+                .expect_err("CSV should not be parsed by Excel viewer");
 
         assert!(error.contains("not supported"));
     }
@@ -498,15 +486,9 @@ mod tests {
         file.set_len(MAX_WORKBOOK_PREVIEW_BYTES + 1)
             .expect("large workbook fixture should be sized");
 
-        let error = preview_workbook_source(
-            &fixture.source("huge.xlsx"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect_err("oversize workbook should fail before parsing");
+        let error =
+            preview_workbook_source(&fixture.source("huge.xlsx"), None, None, None, None, None)
+                .expect_err("oversize workbook should fail before parsing");
 
         assert!(error.contains("too large"));
     }
