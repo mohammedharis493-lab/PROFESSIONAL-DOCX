@@ -1053,7 +1053,10 @@ mod tests {
         )
         .expect("target preview should load");
         assert_eq!(target_preview.len(), 1);
-        assert_eq!(target_preview[0].file_instance_id, before[0].file_instance_id);
+        assert_eq!(
+            target_preview[0].file_instance_id,
+            before[0].file_instance_id
+        );
         assert_eq!(target_preview[0].availability_state, "CHANGED");
         assert_eq!(
             persistence::count_content_versions_for_test(
