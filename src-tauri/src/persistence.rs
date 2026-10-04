@@ -16,7 +16,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -44,6 +44,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "controlled_evidence",
         sql: include_str!("../migrations/0004_controlled_evidence.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "linked_file_integrity",
+        sql: include_str!("../migrations/0005_linked_file_integrity.sql"),
     },
 ];
 
@@ -137,6 +142,9 @@ pub struct IndexedFilePreviewRecord {
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
     pub availability_state: String,
+    pub integrity_state: String,
+    pub integrity_changed_at_ms: Option<i64>,
+    pub integrity_acknowledged_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +246,9 @@ struct HydratedIndexRow {
     size_bytes: i64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
     root_native: Vec<u8>,
     root_native_encoding: String,
 }
@@ -262,6 +273,9 @@ struct ExistingFileInstance {
     last_write_time_ms: Option<i64>,
     creation_time_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
 }
 
 struct ObservationContext<'a> {
