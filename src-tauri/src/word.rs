@@ -130,6 +130,7 @@ fn parse_document_xml(xml: &str) -> Result<(Vec<WordBlock>, bool), String> {
 
     let mut buffer = Vec::new();
     let mut state = ParseState::default();
+    let mut in_text_node = false;
 
     loop {
         match reader.read_event_into(&mut buffer) {
