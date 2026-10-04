@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 type ApprovedStorageRoot = {
   storageRootId: string;
@@ -91,6 +91,11 @@ type ActiveTextPreview = {
   preview: TextPreview;
 };
 
+type ActivePdfPreview = {
+  file: IndexedFile;
+  url: string;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -155,6 +160,8 @@ export default function App() {
     useState<EvidenceCaptureNotice | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
     useState<ActiveTextPreview | null>(null);
+  const [activePdfPreview, setActivePdfPreview] =
+    useState<ActivePdfPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
     useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
@@ -165,6 +172,7 @@ export default function App() {
   const [searchElapsedMs, setSearchElapsedMs] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const pdfBlobUrlRef = useRef<string | null>(null);
   const searchSequence = useRef(0);
   const navigationSequence = useRef(0);
   const backHistory = useRef<NavigationLocation[]>([]);
@@ -174,6 +182,14 @@ export default function App() {
   useEffect(() => {
     void refreshRoots();
     void refreshQuickAccess();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pdfBlobUrlRef.current) {
+        URL.revokeObjectURL(pdfBlobUrlRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -518,6 +534,58 @@ export default function App() {
     }
   }
 
+  function closePdfPreview() {
+    if (pdfBlobUrlRef.current) {
+      URL.revokeObjectURL(pdfBlobUrlRef.current);
+      pdfBlobUrlRef.current = null;
+    }
+    setActivePdfPreview(null);
+  }
+
+  async function previewPdfFileInstance(file: IndexedFile, usedQuery?: string) {
+    if (file.extension.toLowerCase() !== "pdf" || file.availabilityState === "MISSING") {
+      return;
+    }
+
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const protocolUrl = convertFileSrc(
+        `/pdf/${file.fileInstanceId}`,
+        "pdx-preview",
+      );
+      const response = await fetch(protocolUrl, { cache: "no-store" });
+
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(message || `PDF preview failed with status ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      closePdfPreview();
+      setActiveTextPreview(null);
+      pdfBlobUrlRef.current = blobUrl;
+      setActivePdfPreview({ file, url: blobUrl });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
+      await refreshQuickAccess();
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
+  }
+
   async function previewFileInstance(file: IndexedFile, usedQuery?: string) {
     if (!supportsTextPreview(file) || file.availabilityState === "MISSING") {
       return;
@@ -531,6 +599,7 @@ export default function App() {
         fileInstanceId: file.fileInstanceId,
       });
 
+      closePdfPreview();
       setActiveTextPreview({ file, preview });
 
       if (usedQuery?.trim()) {
@@ -621,7 +690,9 @@ export default function App() {
   }
 
   function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
-    if (!supportsTextPreview(file)) return null;
+    const isTextPreview = supportsTextPreview(file);
+    const isPdfPreview = file.extension.toLowerCase() === "pdf";
+    if (!isTextPreview && !isPdfPreview) return null;
 
     const isThisPreview = previewingFileInstanceId === file.fileInstanceId;
 
@@ -629,9 +700,17 @@ export default function App() {
       <button
         className="file-action file-action-preview"
         type="button"
-        onClick={() => void previewFileInstance(file, usedQuery)}
+        onClick={() =>
+          void (isPdfPreview
+            ? previewPdfFileInstance(file, usedQuery)
+            : previewFileInstance(file, usedQuery))
+        }
         disabled={file.availabilityState === "MISSING" || previewingFileInstanceId !== null}
-        title="Preview text safely inside Professional DocX"
+        title={
+          isPdfPreview
+            ? "Preview PDF safely inside Professional DocX"
+            : "Preview text safely inside Professional DocX"
+        }
       >
         {isThisPreview ? "Loading…" : "Preview"}
       </button>
@@ -1382,6 +1461,68 @@ export default function App() {
                 ) : (
                   <span>Original file remains at its approved source location.</span>
                 )}
+              </footer>
+            </section>
+          </div>
+        ) : null}
+        {activePdfPreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                closePdfPreview();
+              }
+            }}
+          >
+            <section
+              className="pdf-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="pdf-preview-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">IN-APP PREVIEW · PDF</p>
+                  <h2 id="pdf-preview-title">{activePdfPreview.file.name}</h2>
+                  <span>
+                    {activePdfPreview.file.availabilityState} ·{" "}
+                    {formatBytes(activePdfPreview.file.sizeBytes)}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activePdfPreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={closePdfPreview}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="pdf-preview-body">
+                <iframe
+                  src={activePdfPreview.url}
+                  title={`PDF preview: ${activePdfPreview.file.name}`}
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>
+                  PDF content is served only from the validated indexed source.
+                </span>
+                <span>Preview limit: 64 MB · Open original for larger files.</span>
               </footer>
             </section>
           </div>

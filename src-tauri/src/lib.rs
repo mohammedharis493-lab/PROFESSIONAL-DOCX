@@ -618,6 +618,17 @@ async fn rebuild_search_index(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("pdx-preview", |context, request, responder| {
+            let database_path = context
+                .app_handle()
+                .state::<persistence::DatabaseState>()
+                .path()
+                .to_path_buf();
+
+            std::thread::spawn(move || {
+                responder.respond(preview::pdf_preview_response(&database_path, request));
+            });
+        })
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?.join("data");
