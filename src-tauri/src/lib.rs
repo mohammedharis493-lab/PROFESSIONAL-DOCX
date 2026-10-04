@@ -569,6 +569,7 @@ async fn preview_workbook_file_instance(
         .map_err(|_| "Invalid file-instance identifier.".to_string())?;
 
     let database_path = database.path().to_path_buf();
+    let record_open = sheet_name.is_none() && row_offset.is_none() && column_offset.is_none();
 
     tauri::async_runtime::spawn_blocking(move || {
         let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
@@ -584,8 +585,10 @@ async fn preview_workbook_file_instance(
             column_limit,
         )?;
 
-        persistence::record_document_open(&database_path, &file_instance_id)
-            .map_err(|error| error.to_string())?;
+        if record_open {
+            persistence::record_document_open(&database_path, &file_instance_id)
+                .map_err(|error| error.to_string())?;
+        }
 
         Ok(preview)
     })
