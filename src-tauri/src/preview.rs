@@ -1,12 +1,21 @@
-use crate::{launcher, persistence::ResolvedFileSource};
+use crate::{
+    launcher,
+    persistence::{self, ResolvedFileSource},
+};
 use serde::Serialize;
 use std::{
     fs,
     io::{Read, Take},
     path::Path,
 };
+use tauri::http::{
+    header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
+    Request, Response, StatusCode,
+};
+use uuid::Uuid;
 
 pub const MAX_TEXT_PREVIEW_BYTES: u64 = 256 * 1024;
+pub const MAX_PDF_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
 
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &["txt", "csv", "xml"];
 
@@ -23,6 +32,122 @@ pub struct TextPreview {
 pub fn preview_text_source(source: &ResolvedFileSource) -> Result<TextPreview, String> {
     let path = launcher::validated_existing_path(source).map_err(|error| error.to_string())?;
     preview_validated_path(&path)
+}
+
+pub fn pdf_preview_response(database_path: &Path, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let Some(file_instance_id) = parse_pdf_preview_file_instance_id(request.uri().path()) else {
+        return pdf_error_response(StatusCode::BAD_REQUEST, "Invalid PDF preview request.");
+    };
+
+    let source = match persistence::resolve_file_instance_source(database_path, &file_instance_id) {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            return pdf_error_response(StatusCode::NOT_FOUND, "Indexed PDF no longer exists.");
+        }
+        Err(_) => {
+            return pdf_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to resolve PDF preview.",
+            );
+        }
+    };
+
+    let bytes = match read_pdf_source(&source) {
+        Ok(bytes) => bytes,
+        Err(PdfPreviewError::TooLarge) => {
+            return pdf_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "PDF is too large for in-app preview. Open the original instead.",
+            );
+        }
+        Err(PdfPreviewError::Unsupported) => {
+            return pdf_error_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "The indexed source is not a valid PDF preview target.",
+            );
+        }
+        Err(PdfPreviewError::Unavailable) => {
+            return pdf_error_response(
+                StatusCode::NOT_FOUND,
+                "The original PDF is currently unavailable.",
+            );
+        }
+    };
+
+    if persistence::record_document_open(database_path, &file_instance_id).is_err() {
+        return pdf_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PDF preview opened but recent-document history could not be updated.",
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/pdf")
+        .header(CONTENT_DISPOSITION, "inline")
+        .header(CACHE_CONTROL, "no-store, private")
+        .header(CONTENT_LENGTH, bytes.len().to_string())
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(bytes)
+        .expect("static PDF preview response headers are valid")
+}
+
+fn parse_pdf_preview_file_instance_id(path: &str) -> Option<String> {
+    let raw = path.strip_prefix("/pdf/")?;
+    if raw.is_empty() || raw.contains('/') {
+        return None;
+    }
+
+    Uuid::parse_str(raw).ok().map(|value| value.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PdfPreviewError {
+    TooLarge,
+    Unsupported,
+    Unavailable,
+}
+
+fn read_pdf_source(source: &ResolvedFileSource) -> Result<Vec<u8>, PdfPreviewError> {
+    let path = launcher::validated_existing_path(source).map_err(|_| PdfPreviewError::Unavailable)?;
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+
+    if !extension.eq_ignore_ascii_case("pdf") {
+        return Err(PdfPreviewError::Unsupported);
+    }
+
+    let metadata = fs::metadata(&path).map_err(|_| PdfPreviewError::Unavailable)?;
+    if metadata.len() > MAX_PDF_PREVIEW_BYTES {
+        return Err(PdfPreviewError::TooLarge);
+    }
+
+    let bytes = fs::read(path).map_err(|_| PdfPreviewError::Unavailable)?;
+    if !has_pdf_header(&bytes) {
+        return Err(PdfPreviewError::Unsupported);
+    }
+
+    Ok(bytes)
+}
+
+fn has_pdf_header(bytes: &[u8]) -> bool {
+    let header_window = &bytes[..bytes.len().min(1024)];
+    header_window.windows(5).any(|window| window == b"%PDF-")
+}
+
+fn pdf_error_response(status: StatusCode, message: &str) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(CACHE_CONTROL, "no-store, private")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(message.as_bytes().to_vec())
+        .expect("static PDF preview error response headers are valid")
 }
 
 fn preview_validated_path(path: &Path) -> Result<TextPreview, String> {
@@ -80,7 +205,6 @@ fn preview_validated_path(path: &Path) -> Result<TextPreview, String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use uuid::Uuid;
 
     struct PreviewFixture {
         root: PathBuf,
@@ -141,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_extension_is_rejected() {
+    fn unsupported_text_extension_is_rejected() {
         let fixture = PreviewFixture::new();
         fs::write(fixture.root.join("document.pdf"), b"%PDF-test")
             .expect("unsupported fixture should be written");
@@ -150,6 +274,56 @@ mod tests {
             .expect_err("unsupported preview should fail");
 
         assert!(error.contains("not supported"));
+    }
+
+    #[test]
+    fn reads_valid_pdf_inside_approved_root() {
+        let fixture = PreviewFixture::new();
+        let pdf = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
+        fs::write(fixture.root.join("sample.pdf"), pdf).expect("PDF fixture should be written");
+
+        let bytes = read_pdf_source(&fixture.source("sample.pdf"))
+            .expect("valid PDF preview should succeed");
+
+        assert_eq!(bytes, pdf);
+    }
+
+    #[test]
+    fn rejects_non_pdf_content_with_pdf_extension() {
+        let fixture = PreviewFixture::new();
+        fs::write(fixture.root.join("fake.pdf"), b"not a pdf")
+            .expect("fake PDF fixture should be written");
+
+        let error = read_pdf_source(&fixture.source("fake.pdf"))
+            .expect_err("invalid PDF signature should fail");
+
+        assert_eq!(error, PdfPreviewError::Unsupported);
+    }
+
+    #[test]
+    fn rejects_pdf_over_preview_size_limit() {
+        let fixture = PreviewFixture::new();
+        let path = fixture.root.join("huge.pdf");
+        let file = fs::File::create(&path).expect("large PDF fixture should be created");
+        file.set_len(MAX_PDF_PREVIEW_BYTES + 1)
+            .expect("large PDF fixture should be sized");
+
+        let error = read_pdf_source(&fixture.source("huge.pdf"))
+            .expect_err("oversize PDF preview should fail");
+
+        assert_eq!(error, PdfPreviewError::TooLarge);
+    }
+
+    #[test]
+    fn parses_only_uuid_pdf_preview_routes() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            parse_pdf_preview_file_instance_id(&format!("/pdf/{id}")),
+            Some(id.to_string())
+        );
+        assert!(parse_pdf_preview_file_instance_id("/pdf/not-a-uuid").is_none());
+        assert!(parse_pdf_preview_file_instance_id("/pdf/a/b").is_none());
+        assert!(parse_pdf_preview_file_instance_id("/other/value").is_none());
     }
 
     #[cfg(unix)]
@@ -171,6 +345,30 @@ mod tests {
             .expect_err("symlink escape should be rejected");
 
         assert!(error.contains("approved storage root"));
+
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pdf_preview_rejects_symlink_escape_from_approved_root() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = PreviewFixture::new();
+        let outside = std::env::temp_dir().join(format!(
+            "professional-docx-pdf-outside-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("secret.pdf"), b"%PDF-1.7\n%%EOF\n")
+            .expect("outside PDF should be written");
+        symlink(outside.join("secret.pdf"), fixture.root.join("linked.pdf"))
+            .expect("symlink should be created");
+
+        let error = read_pdf_source(&fixture.source("linked.pdf"))
+            .expect_err("PDF symlink escape should be rejected");
+
+        assert_eq!(error, PdfPreviewError::Unavailable);
 
         let _ = fs::remove_dir_all(outside);
     }
