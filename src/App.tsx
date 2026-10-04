@@ -618,6 +618,72 @@ export default function App() {
     }
   }
 
+  function closeWorkbookPreview() {
+    setActiveWorkbookPreview(null);
+  }
+
+  function activateWorkbookPreview(file: IndexedFile, preview: WorkbookPreview) {
+    const cellsByPosition = Object.fromEntries(
+      preview.cells.map((cell) => [workbookCellKey(cell.row, cell.column), cell]),
+    );
+
+    setActiveWorkbookPreview({
+      file,
+      preview,
+      cellsByPosition,
+    });
+  }
+
+  async function loadWorkbookPreview(
+    file: IndexedFile,
+    sheetName?: string,
+    rowOffset?: number,
+    columnOffset?: number,
+  ) {
+    if (!supportsWorkbookPreview(file) || file.availabilityState === "MISSING") {
+      return false;
+    }
+
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const preview = await invoke<WorkbookPreview>("preview_workbook_file_instance", {
+        fileInstanceId: file.fileInstanceId,
+        sheetName,
+        rowOffset,
+        columnOffset,
+        rowLimit: WORKBOOK_PAGE_ROWS,
+        columnLimit: WORKBOOK_PAGE_COLUMNS,
+      });
+
+      closePdfPreview();
+      setActiveTextPreview(null);
+      activateWorkbookPreview(file, preview);
+      return true;
+    } catch (previewError) {
+      setError(String(previewError));
+      return false;
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
+  }
+
+  async function previewWorkbookFileInstance(file: IndexedFile, usedQuery?: string) {
+    const opened = await loadWorkbookPreview(file);
+    if (!opened) return;
+
+    if (usedQuery?.trim()) {
+      try {
+        await invoke("record_recent_search", { query: usedQuery.trim() });
+      } catch (historyError) {
+        console.error("Unable to record recent search", historyError);
+      }
+    }
+
+    await refreshQuickAccess();
+  }
+
   function closePdfPreview() {
     if (pdfBlobUrlRef.current) {
       URL.revokeObjectURL(pdfBlobUrlRef.current);
@@ -650,6 +716,7 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
 
       closePdfPreview();
+      setActiveWorkbookPreview(null);
       setActiveTextPreview(null);
       pdfBlobUrlRef.current = blobUrl;
       setActivePdfPreview({ file, url: blobUrl });
@@ -684,6 +751,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      setActiveWorkbookPreview(null);
       setActiveTextPreview({ file, preview });
 
       if (usedQuery?.trim()) {
@@ -776,7 +844,8 @@ export default function App() {
   function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
     const isTextPreview = supportsTextPreview(file);
     const isPdfPreview = file.extension.toLowerCase() === "pdf";
-    if (!isTextPreview && !isPdfPreview) return null;
+    const isWorkbookPreview = supportsWorkbookPreview(file);
+    if (!isTextPreview && !isPdfPreview && !isWorkbookPreview) return null;
 
     const isThisPreview = previewingFileInstanceId === file.fileInstanceId;
 
@@ -787,13 +856,17 @@ export default function App() {
         onClick={() =>
           void (isPdfPreview
             ? previewPdfFileInstance(file, usedQuery)
-            : previewFileInstance(file, usedQuery))
+            : isWorkbookPreview
+              ? previewWorkbookFileInstance(file, usedQuery)
+              : previewFileInstance(file, usedQuery))
         }
         disabled={file.availabilityState === "MISSING" || previewingFileInstanceId !== null}
         title={
           isPdfPreview
             ? "Preview PDF safely inside Professional DocX"
-            : "Preview text safely inside Professional DocX"
+            : isWorkbookPreview
+              ? "Preview workbook safely inside Professional DocX"
+              : "Preview text safely inside Professional DocX"
         }
       >
         {isThisPreview ? "Loading…" : "Preview"}
