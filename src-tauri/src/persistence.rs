@@ -199,6 +199,9 @@ pub struct DocumentVersionHistoryRecord {
     pub controlled_version_number: Option<u64>,
     pub captured_at_ms: Option<i64>,
     pub controlled_verification_state: Option<String>,
+    pub captured_by: Option<String>,
+    pub capture_reason: Option<String>,
+    pub capture_policy: Option<String>,
 }
 
 pub struct EvidenceCaptureCompletion<'a> {
@@ -2377,7 +2380,10 @@ pub fn list_document_version_history(
             cev.controlled_evidence_version_id,
             cev.version_number,
             cev.captured_at_ms,
-            cev.verification_state
+            cev.verification_state,
+            cev.captured_by,
+            cev.capture_reason,
+            cev.capture_policy
          FROM content_versions cv
          LEFT JOIN controlled_evidence_versions cev
            ON cev.source_content_version_id = cv.content_version_id
@@ -2401,6 +2407,9 @@ pub fn list_document_version_history(
             controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
             captured_at_ms: row.get(9)?,
             controlled_verification_state: row.get(10)?,
+            captured_by: row.get(11)?,
+            capture_reason: row.get(12)?,
+            capture_policy: row.get(13)?,
         })
     })?;
 
