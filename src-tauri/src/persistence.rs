@@ -2610,6 +2610,75 @@ pub fn hydrate_search_files(
     Ok(result)
 }
 
+pub fn acknowledge_file_integrity(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<i64, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let row: Option<(String, String, Option<i64>)> = transaction
+        .query_row(
+            "SELECT document_id, integrity_state, integrity_acknowledged_at_ms
+             FROM file_instances
+             WHERE file_instance_id = ?1",
+            [file_instance_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    let Some((document_id, integrity_state, acknowledged_at_ms)) = row else {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    };
+
+    if integrity_state == "UNCHANGED" {
+        return Err(PersistenceError::Configuration(
+            "this linked file has no integrity change to acknowledge".to_string(),
+        ));
+    }
+
+    if let Some(acknowledged_at_ms) = acknowledged_at_ms {
+        return Ok(acknowledged_at_ms);
+    }
+
+    let acknowledged_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "UPDATE file_instances
+         SET integrity_acknowledged_at_ms = ?1
+         WHERE file_instance_id = ?2",
+        params![acknowledged_at_ms, file_instance_id],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_FILE_INTEGRITY_ACKNOWLEDGED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            document_id,
+            acknowledged_at_ms,
+            json!({
+                "integrityState": integrity_state
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(acknowledged_at_ms)
+}
+
 pub fn record_document_open(
     database_path: &Path,
     file_instance_id: &str,
@@ -3270,7 +3339,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -3334,7 +3403,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -3382,7 +3451,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_exists: i64 = connection
             .query_row(
@@ -3431,7 +3500,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(
