@@ -3888,6 +3888,165 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_baseline_does_not_create_false_change_but_mismatch_does() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let source_root = database.source_root("fingerprint-source");
+        fs::create_dir_all(&source_root).expect("source root should exist");
+        let canonical_root =
+            fs::canonicalize(&source_root).expect("source root should canonicalize");
+        let root = register_storage_root(
+            &database.path,
+            "fingerprint-root",
+            &source_root,
+            &canonical_root,
+        )
+        .expect("source root should register");
+
+        let index_job_id = Uuid::new_v4().to_string();
+        let scan_generation_id = Uuid::new_v4().to_string();
+        create_index_job(
+            &database.path,
+            &root.storage_root_id,
+            &index_job_id,
+            &scan_generation_id,
+        )
+        .expect("index job should be created");
+        mark_index_job_running(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+        )
+        .expect("index job should start");
+
+        let relative = Path::new("Ledger.xlsx");
+        let (relative_path_native, path_native_encoding) =
+            encode_native_path_for_storage(relative);
+        let base_observation = FileObservation {
+            relative_path_native,
+            path_native_encoding,
+            relative_path_display: "Ledger.xlsx".to_string(),
+            relative_path_search: normalize_search_text("Ledger.xlsx"),
+            display_name: "Ledger.xlsx".to_string(),
+            size_bytes: 128,
+            creation_time_ms: Some(1_000),
+            last_write_time_ms: Some(2_000),
+            filesystem_identity: None,
+            volume_identity: None,
+            file_attributes: None,
+            reparse_tag: None,
+            quick_fingerprint: None,
+            source_stable_during_read: None,
+        };
+
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&base_observation),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("metadata-only observation should persist");
+
+        let initial =
+            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+                .expect("initial preview should load");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &initial[0].file_instance_id)
+                .expect("initial version count should load"),
+            1
+        );
+
+        let mut fingerprinted = base_observation.clone();
+        fingerprinted.quick_fingerprint = Some(vec![0x11; 32]);
+        fingerprinted.source_stable_during_read = Some(true);
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&fingerprinted),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("fingerprint baseline should persist");
+
+        let seeded =
+            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+                .expect("seeded preview should load");
+        assert_eq!(seeded[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &seeded[0].file_instance_id)
+                .expect("seeded version count should load"),
+            2
+        );
+
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&fingerprinted),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("unchanged fingerprint should persist without another version");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &seeded[0].file_instance_id)
+                .expect("unchanged fingerprint version count should load"),
+            2
+        );
+
+        let mut changed = fingerprinted;
+        changed.quick_fingerprint = Some(vec![0x22; 32]);
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&changed),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("fingerprint change should persist");
+
+        let changed_preview =
+            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+                .expect("changed preview should load");
+        assert_eq!(changed_preview[0].availability_state, "CHANGED");
+        assert_eq!(
+            count_content_versions_for_test(
+                &database.path,
+                &changed_preview[0].file_instance_id,
+            )
+            .expect("changed fingerprint version count should load"),
+            3
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("configured connection should open");
+        let (verification_state, quick_fingerprint): (String, Option<Vec<u8>>) = connection
+            .query_row(
+                "SELECT verification_state, quick_fingerprint
+                 FROM content_versions
+                 WHERE file_instance_id = ?1
+                 ORDER BY observed_at_ms DESC, rowid DESC
+                 LIMIT 1",
+                [&changed_preview[0].file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("latest content version should load");
+        assert_eq!(verification_state, "FINGERPRINTED");
+        assert_eq!(quick_fingerprint, Some(vec![0x22; 32]));
+    }
+
+    #[test]
     fn fresh_database_applies_initial_migration() {
         let database = TestDatabase::new();
 
