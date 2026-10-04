@@ -1745,7 +1745,10 @@ pub fn list_indexed_file_preview(
             fi.path_native_encoding,
             fi.size_bytes,
             fi.last_write_time_ms,
-            fi.availability_state
+            fi.availability_state,
+            fi.integrity_state,
+            fi.integrity_changed_at_ms,
+            fi.integrity_acknowledged_at_ms
          FROM file_instances fi
          JOIN documents d ON d.document_id = fi.document_id
          WHERE fi.storage_root_id = ?1
@@ -1771,6 +1774,9 @@ pub fn list_indexed_file_preview(
         let size_bytes: i64 = row.get(5)?;
         let modified_unix_ms: Option<i64> = row.get(6)?;
         let availability_state: String = row.get(7)?;
+        let integrity_state: String = row.get(8)?;
+        let integrity_changed_at_ms: Option<i64> = row.get(9)?;
+        let integrity_acknowledged_at_ms: Option<i64> = row.get(10)?;
 
         Ok((
             document_id,
@@ -1781,6 +1787,9 @@ pub fn list_indexed_file_preview(
             size_bytes,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         ))
     })?;
 
@@ -1795,6 +1804,9 @@ pub fn list_indexed_file_preview(
             size_bytes,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         ) = row?;
 
         let relative = decode_native_path(&relative_native, &native_encoding)?;
@@ -1813,6 +1825,9 @@ pub fn list_indexed_file_preview(
             size_bytes: size_bytes.max(0) as u64,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         });
     }
 
@@ -2023,6 +2038,8 @@ pub fn begin_evidence_capture(
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         String,
+        String,
+        Option<i64>,
     );
 
     let row: Option<CaptureRow> = transaction
@@ -2038,7 +2055,9 @@ pub fn begin_evidence_capture(
                 fi.last_write_time_ms,
                 fi.filesystem_identity,
                 fi.volume_identity,
-                fi.availability_state
+                fi.availability_state,
+                fi.integrity_state,
+                fi.integrity_acknowledged_at_ms
              FROM file_instances fi
              JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
              JOIN documents d ON d.document_id = fi.document_id
@@ -2058,6 +2077,8 @@ pub fn begin_evidence_capture(
                     row.get(8)?,
                     row.get(9)?,
                     row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
                 ))
             },
         )
@@ -2075,6 +2096,8 @@ pub fn begin_evidence_capture(
         filesystem_identity,
         volume_identity,
         availability_state,
+        integrity_state,
+        integrity_acknowledged_at_ms,
     )) = row
     else {
         return Err(PersistenceError::Configuration(format!(
@@ -2085,6 +2108,12 @@ pub fn begin_evidence_capture(
     if availability_state != "AVAILABLE" {
         return Err(PersistenceError::Configuration(format!(
             "file instance {file_instance_id} is {availability_state}; reconcile it before controlled evidence capture"
+        )));
+    }
+
+    if integrity_state != "UNCHANGED" && integrity_acknowledged_at_ms.is_none() {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} has an unacknowledged integrity alert ({integrity_state}); review and acknowledge it before controlled evidence capture"
         )));
     }
 
@@ -2514,6 +2543,9 @@ pub fn hydrate_search_files(
             fi.size_bytes,
             fi.last_write_time_ms,
             fi.availability_state,
+            fi.integrity_state,
+            fi.integrity_changed_at_ms,
+            fi.integrity_acknowledged_at_ms,
             COALESCE(sr.canonical_native_locator, sr.native_locator),
             sr.native_locator_encoding
          FROM file_instances fi
@@ -2537,8 +2569,11 @@ pub fn hydrate_search_files(
                     size_bytes: row.get(5)?,
                     modified_unix_ms: row.get(6)?,
                     availability_state: row.get(7)?,
-                    root_native: row.get(8)?,
-                    root_native_encoding: row.get(9)?,
+                    integrity_state: row.get(8)?,
+                    integrity_changed_at_ms: row.get(9)?,
+                    integrity_acknowledged_at_ms: row.get(10)?,
+                    root_native: row.get(11)?,
+                    root_native_encoding: row.get(12)?,
                 })
             })
             .optional()?;
@@ -2566,6 +2601,9 @@ pub fn hydrate_search_files(
             size_bytes: row.size_bytes.max(0) as u64,
             modified_unix_ms: row.modified_unix_ms,
             availability_state: row.availability_state,
+            integrity_state: row.integrity_state,
+            integrity_changed_at_ms: row.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: row.integrity_acknowledged_at_ms,
         }));
     }
 
