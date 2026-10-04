@@ -672,6 +672,9 @@ mod tests {
         assert_eq!(after[0].file_instance_id, before[0].file_instance_id);
         assert_eq!(after[0].name, "Revenue Apr.xlsx");
         assert_eq!(after[0].availability_state, "AVAILABLE");
+        assert_eq!(after[0].integrity_state, "PATH_CHANGED");
+        assert!(after[0].integrity_changed_at_ms.is_some());
+        assert!(after[0].integrity_acknowledged_at_ms.is_none());
 
         let reasons = persistence::path_history_reasons_for_test(
             &test.database_path,
@@ -753,6 +756,89 @@ mod tests {
             .expect("version count should load"),
             2
         );
+        assert_eq!(after[0].integrity_state, "CONTENT_CHANGED");
+        assert!(after[0].integrity_changed_at_ms.is_some());
+        assert!(after[0].integrity_acknowledged_at_ms.is_none());
+
+        let capture_error = persistence::begin_evidence_capture(
+            &test.database_path,
+            &Uuid::new_v4().to_string(),
+            &after[0].file_instance_id,
+            "test capture",
+            "EXPLICIT",
+        )
+        .expect_err("unacknowledged change must block evidence capture");
+        assert!(capture_error
+            .to_string()
+            .contains("unacknowledged integrity alert"));
+
+        let acknowledged_at = persistence::acknowledge_file_integrity(
+            &test.database_path,
+            &after[0].file_instance_id,
+        )
+        .expect("integrity acknowledgement should succeed");
+
+        let acknowledged =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should reload after acknowledgement");
+        assert_eq!(
+            acknowledged[0].integrity_acknowledged_at_ms,
+            Some(acknowledged_at)
+        );
+
+        let third_job = Uuid::new_v4().to_string();
+        let third_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &third_job,
+            &third_generation,
+        )
+        .expect("third reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            third_job,
+            third_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("unchanged reconciliation should complete");
+
+        let still_acknowledged =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should reload after unchanged rescan");
+        assert_eq!(still_acknowledged[0].integrity_state, "CONTENT_CHANGED");
+        assert_eq!(
+            still_acknowledged[0].integrity_acknowledged_at_ms,
+            Some(acknowledged_at)
+        );
+
+        fs::write(&path, b"third version with another size change")
+            .expect("file should be modified again");
+
+        let fourth_job = Uuid::new_v4().to_string();
+        let fourth_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &fourth_job,
+            &fourth_generation,
+        )
+        .expect("fourth reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            fourth_job,
+            fourth_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("second modified-file reconciliation should complete");
+
+        let re_alerted =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("preview should reload after second modification");
+        assert_eq!(re_alerted[0].integrity_state, "CONTENT_CHANGED");
+        assert!(re_alerted[0].integrity_acknowledged_at_ms.is_none());
     }
 
     #[test]
