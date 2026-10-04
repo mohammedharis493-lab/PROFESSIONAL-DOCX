@@ -219,6 +219,40 @@ impl From<persistence::ControlledEvidenceVersionRecord> for ControlledEvidenceVe
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentVersionHistoryDto {
+    content_version_id: String,
+    observed_at_ms: i64,
+    size_bytes: u64,
+    last_write_time_ms: Option<i64>,
+    verification_state: String,
+    source_stable_during_read: Option<bool>,
+    sha256_hex: Option<String>,
+    controlled_evidence_version_id: Option<String>,
+    controlled_version_number: Option<u64>,
+    captured_at_ms: Option<i64>,
+    controlled_verification_state: Option<String>,
+}
+
+impl From<persistence::DocumentVersionHistoryRecord> for DocumentVersionHistoryDto {
+    fn from(value: persistence::DocumentVersionHistoryRecord) -> Self {
+        Self {
+            content_version_id: value.content_version_id,
+            observed_at_ms: value.observed_at_ms,
+            size_bytes: value.size_bytes,
+            last_write_time_ms: value.last_write_time_ms,
+            verification_state: value.verification_state,
+            source_stable_during_read: value.source_stable_during_read,
+            sha256_hex: value.sha256.map(|bytes| hex_bytes(&bytes)),
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            controlled_version_number: value.controlled_version_number,
+            captured_at_ms: value.captured_at_ms,
+            controlled_verification_state: value.controlled_verification_state,
+        }
+    }
+}
+
 fn hex_bytes(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -504,6 +538,18 @@ fn reconcile_linked_file_instance(
 }
 
 #[tauri::command]
+fn list_document_version_history(
+    document_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DocumentVersionHistoryDto>, String> {
+    Uuid::parse_str(&document_id).map_err(|_| "Invalid document identifier.".to_string())?;
+
+    persistence::list_document_version_history(database.path(), &document_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn search_documents(
     query: String,
     limit: Option<u32>,
@@ -766,6 +812,7 @@ pub fn run() {
             list_pinned_documents,
             set_document_pin,
             reconcile_linked_file_instance,
+            list_document_version_history,
             search_documents,
             capture_controlled_evidence,
             preview_text_file_instance,
