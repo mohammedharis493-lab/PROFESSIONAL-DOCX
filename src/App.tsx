@@ -1262,6 +1262,27 @@ export default function App() {
     }
   }
 
+  async function showVersionHistory(file: IndexedFile) {
+    if (versionHistoryLoadingDocumentId !== null) {
+      return;
+    }
+
+    setError(null);
+    setVersionHistoryLoadingDocumentId(file.documentId);
+
+    try {
+      const entries = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: file.documentId },
+      );
+      setActiveVersionHistory({ file, entries });
+    } catch (historyError) {
+      setError(String(historyError));
+    } finally {
+      setVersionHistoryLoadingDocumentId(null);
+    }
+  }
+
   const localViewerSegments: ViewerTextSegment[] = activeTextPreview
     ? [{ key: "text", text: activeTextPreview.preview.content }]
     : activeWordPreview
