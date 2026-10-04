@@ -1287,7 +1287,9 @@ fn insert_content_version(
             } else {
                 "METADATA_ONLY"
             },
-            observation.source_stable_during_read.map(i64::from)
+            observation
+                .source_stable_during_read
+                .map(|stable| if stable { 1_i64 } else { 0_i64 })
         ],
     )?;
 
