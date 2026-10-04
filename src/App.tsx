@@ -72,6 +72,28 @@ type ControlledEvidenceVersion = {
   verificationState: string;
 };
 
+type DocumentVersionHistoryEntry = {
+  contentVersionId: string;
+  observedAtMs: number;
+  sizeBytes: number;
+  lastWriteTimeMs: number | null;
+  verificationState: string;
+  sourceStableDuringRead: boolean | null;
+  sha256Hex: string | null;
+  controlledEvidenceVersionId: string | null;
+  controlledVersionNumber: number | null;
+  capturedAtMs: number | null;
+  controlledVerificationState: string | null;
+  capturedBy: string | null;
+  captureReason: string | null;
+  capturePolicy: string | null;
+};
+
+type ActiveDocumentVersionHistory = {
+  file: IndexedFile;
+  entries: DocumentVersionHistoryEntry[];
+};
+
 type EvidenceCaptureNotice = {
   fileName: string;
   versionNumber: number;
@@ -395,6 +417,11 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
+function formatTimestamp(timestampMs: number | null) {
+  if (timestampMs === null) return "Not recorded";
+  return new Date(timestampMs).toLocaleString();
+}
+
 function jobLabel(job: IndexJob | null | undefined) {
   if (!job) return "Not indexed";
   return job.status.replaceAll("_", " ");
@@ -435,6 +462,10 @@ export default function App() {
     useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
+  const [activeVersionHistory, setActiveVersionHistory] =
+    useState<ActiveDocumentVersionHistory | null>(null);
+  const [versionHistoryLoadingDocumentId, setVersionHistoryLoadingDocumentId] =
+    useState<string | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
     useState<ActiveTextPreview | null>(null);
   const [activePdfPreview, setActivePdfPreview] =
@@ -1231,6 +1262,27 @@ export default function App() {
     }
   }
 
+  async function showVersionHistory(file: IndexedFile) {
+    if (versionHistoryLoadingDocumentId !== null) {
+      return;
+    }
+
+    setError(null);
+    setVersionHistoryLoadingDocumentId(file.documentId);
+
+    try {
+      const entries = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: file.documentId },
+      );
+      setActiveVersionHistory({ file, entries });
+    } catch (historyError) {
+      setError(String(historyError));
+    } finally {
+      setVersionHistoryLoadingDocumentId(null);
+    }
+  }
+
   const localViewerSegments: ViewerTextSegment[] = activeTextPreview
     ? [{ key: "text", text: activeTextPreview.preview.content }]
     : activeWordPreview
@@ -1378,6 +1430,22 @@ export default function App() {
         }
       >
         {isThisPreview ? "Loading…" : "Preview"}
+      </button>
+    );
+  }
+
+  function renderHistoryAction(file: IndexedFile) {
+    const isThisHistory = versionHistoryLoadingDocumentId === file.documentId;
+
+    return (
+      <button
+        className="file-action file-action-history"
+        type="button"
+        onClick={() => void showVersionHistory(file)}
+        disabled={versionHistoryLoadingDocumentId !== null}
+        title="View persisted source observations and immutable controlled evidence versions"
+      >
+        {isThisHistory ? "Loading history…" : "History"}
       </button>
     );
   }
@@ -1725,6 +1793,7 @@ export default function App() {
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1797,6 +1866,7 @@ export default function App() {
                         {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1894,6 +1964,7 @@ export default function App() {
                         {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2006,6 +2077,7 @@ export default function App() {
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2078,6 +2150,149 @@ export default function App() {
               </p>
             </article>
           </section>
+        ) : null}
+        {activeVersionHistory ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                setActiveVersionHistory(null);
+              }
+            }}
+          >
+            <section
+              className="version-history-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="version-history-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">DOCUMENT VERSION HISTORY</p>
+                  <h2 id="version-history-title">{activeVersionHistory.file.name}</h2>
+                  <span title={activeVersionHistory.file.path}>
+                    {activeVersionHistory.file.path}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={() => setActiveVersionHistory(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="version-history-body">
+                {activeVersionHistory.entries.length ? (
+                  activeVersionHistory.entries.map((entry) => {
+                    const isControlled = entry.controlledVersionNumber !== null;
+                    const verification =
+                      entry.controlledVerificationState ?? entry.verificationState;
+
+                    return (
+                      <article
+                        className={
+                          isControlled
+                            ? "version-history-entry version-history-entry-controlled"
+                            : "version-history-entry"
+                        }
+                        key={entry.contentVersionId}
+                      >
+                        <div className="version-history-entry-heading">
+                          <div>
+                            <strong>
+                              {isControlled
+                                ? "Controlled evidence v" + entry.controlledVersionNumber
+                                : "Linked source observation"}
+                            </strong>
+                            <span>
+                              {formatTimestamp(entry.observedAtMs)} ·{" "}
+                              {formatBytes(entry.sizeBytes)}
+                            </span>
+                          </div>
+                          <span className="version-history-verification">
+                            {verification.replaceAll("_", " ")}
+                          </span>
+                        </div>
+
+                        <dl className="version-history-details">
+                          <div>
+                            <dt>Source modified</dt>
+                            <dd>{formatTimestamp(entry.lastWriteTimeMs)}</dd>
+                          </div>
+                          {isControlled ? (
+                            <>
+                              <div>
+                                <dt>Captured</dt>
+                                <dd>{formatTimestamp(entry.capturedAtMs)}</dd>
+                              </div>
+                              <div>
+                                <dt>Capture reason</dt>
+                                <dd>
+                                  {entry.captureReason?.replaceAll("_", " ") ??
+                                    "Not recorded"}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Capture policy</dt>
+                                <dd>
+                                  {entry.capturePolicy?.replaceAll("_", " ") ??
+                                    "Not recorded"}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>Captured by</dt>
+                                <dd>{entry.capturedBy ?? "Not recorded"}</dd>
+                              </div>
+                              <div>
+                                <dt>Stable during read</dt>
+                                <dd>
+                                  {entry.sourceStableDuringRead === true
+                                    ? "Yes"
+                                    : entry.sourceStableDuringRead === false
+                                      ? "No"
+                                      : "Not recorded"}
+                                </dd>
+                              </div>
+                            </>
+                          ) : null}
+                        </dl>
+
+                        {entry.sha256Hex ? (
+                          <code
+                            className="version-history-hash"
+                            title={entry.sha256Hex}
+                          >
+                            SHA-256 {entry.sha256Hex}
+                          </code>
+                        ) : (
+                          <span className="version-history-no-hash">
+                            Metadata observation · cryptographic hash not recorded
+                          </span>
+                        )}
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="empty-result">
+                    No persisted content-version records exist for this document.
+                  </div>
+                )}
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>Newest persisted record first.</span>
+                <span>
+                  Controlled evidence entries are immutable captures; linked-source
+                  observations describe the external working file at scan/capture time.
+                </span>
+              </footer>
+            </section>
+          </div>
         ) : null}
         {activeTextPreview ? (
           <div

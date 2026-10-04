@@ -186,6 +186,24 @@ pub struct ControlledEvidenceVersionRecord {
     pub verification_state: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DocumentVersionHistoryRecord {
+    pub content_version_id: String,
+    pub observed_at_ms: i64,
+    pub size_bytes: u64,
+    pub last_write_time_ms: Option<i64>,
+    pub verification_state: String,
+    pub source_stable_during_read: Option<bool>,
+    pub sha256: Option<Vec<u8>>,
+    pub controlled_evidence_version_id: Option<String>,
+    pub controlled_version_number: Option<u64>,
+    pub captured_at_ms: Option<i64>,
+    pub controlled_verification_state: Option<String>,
+    pub captured_by: Option<String>,
+    pub capture_reason: Option<String>,
+    pub capture_policy: Option<String>,
+}
+
 pub struct EvidenceCaptureCompletion<'a> {
     pub capture_job_id: &'a str,
     pub controlled_evidence_version_id: &'a str,
@@ -2326,6 +2344,80 @@ pub fn begin_evidence_capture(
         filesystem_identity,
         volume_identity,
     })
+}
+
+pub fn list_document_version_history(
+    database_path: &Path,
+    document_id: &str,
+) -> Result<Vec<DocumentVersionHistoryRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM documents
+            WHERE document_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [document_id],
+        |row| row.get(0),
+    )?;
+
+    if !exists {
+        return Err(PersistenceError::Configuration(format!(
+            "document {document_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            cv.content_version_id,
+            cv.observed_at_ms,
+            cv.size_bytes,
+            cv.last_write_time_ms,
+            cv.verification_state,
+            cv.source_stable_during_read,
+            cv.sha256,
+            cev.controlled_evidence_version_id,
+            cev.version_number,
+            cev.captured_at_ms,
+            cev.verification_state,
+            cev.captured_by,
+            cev.capture_reason,
+            cev.capture_policy
+         FROM content_versions cv
+         LEFT JOIN controlled_evidence_versions cev
+           ON cev.source_content_version_id = cv.content_version_id
+         WHERE cv.document_id = ?1
+         ORDER BY cv.observed_at_ms DESC, cv.rowid DESC",
+    )?;
+
+    let rows = statement.query_map([document_id], |row| {
+        let source_stable: Option<i64> = row.get(5)?;
+        let controlled_version_number: Option<i64> = row.get(8)?;
+
+        Ok(DocumentVersionHistoryRecord {
+            content_version_id: row.get(0)?,
+            observed_at_ms: row.get(1)?,
+            size_bytes: row.get::<_, i64>(2)?.max(0) as u64,
+            last_write_time_ms: row.get(3)?,
+            verification_state: row.get(4)?,
+            source_stable_during_read: source_stable.map(|value| value != 0),
+            sha256: row.get(6)?,
+            controlled_evidence_version_id: row.get(7)?,
+            controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
+            captured_at_ms: row.get(9)?,
+            controlled_verification_state: row.get(10)?,
+            captured_by: row.get(11)?,
+            capture_reason: row.get(12)?,
+            capture_policy: row.get(13)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
 }
 
 pub fn complete_evidence_capture(
