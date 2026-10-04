@@ -956,6 +956,219 @@ mod tests {
     }
 
     #[test]
+    fn missing_linked_file_can_be_relinked_to_an_approved_root_without_changing_identity() {
+        let test = TestIndex::new();
+        let source_path = test.source_root.join("Moved Support.pdf");
+        fs::write(&source_path, b"same evidence").expect("test file should be written");
+
+        let source_root = test.register_root("root-relink-source");
+        let target_directory = test.directory.join("target");
+        fs::create_dir_all(&target_directory).expect("target root should be created");
+        let target_canonical =
+            fs::canonicalize(&target_directory).expect("target root should canonicalize");
+        let target_root = persistence::register_storage_root(
+            &test.database_path,
+            "root-relink-target",
+            &target_directory,
+            &target_canonical,
+        )
+        .expect("target root should register");
+
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &source_root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            source_root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        let before = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &source_root.storage_root_id,
+            20,
+        )
+        .expect("source preview should load");
+        assert_eq!(before.len(), 1);
+
+        let target_path = target_directory.join("Moved Support.pdf");
+        fs::rename(&source_path, &target_path).expect("test file should move to approved target");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &source_root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("missing-file reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            source_root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("missing-file reconciliation should complete");
+
+        let missing = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &source_root.storage_root_id,
+            20,
+        )
+        .expect("missing preview should load");
+        assert_eq!(missing[0].availability_state, "MISSING");
+
+        let relinked = persistence::relink_linked_file_instance(
+            &test.database_path,
+            &missing[0].file_instance_id,
+            &target_path,
+        )
+        .expect("approved target should relink");
+        assert_eq!(relinked.document_id, before[0].document_id);
+        assert_eq!(relinked.file_instance_id, before[0].file_instance_id);
+        assert_eq!(relinked.availability_state, "CHANGED");
+        assert_eq!(relinked.path, target_canonical.join("Moved Support.pdf").to_string_lossy());
+
+        let target_preview = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &target_root.storage_root_id,
+            20,
+        )
+        .expect("target preview should load");
+        assert_eq!(target_preview.len(), 1);
+        assert_eq!(target_preview[0].file_instance_id, before[0].file_instance_id);
+        assert_eq!(target_preview[0].availability_state, "CHANGED");
+        assert_eq!(
+            persistence::path_history_reasons_for_test(
+                &test.database_path,
+                &before[0].file_instance_id,
+            )
+            .expect("path history should load"),
+            vec!["DISCOVERED".to_string(), "RELINKED".to_string()]
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RELINKED",
+                &before[0].file_instance_id,
+            )
+            .expect("relink audit event count should load"),
+            1
+        );
+
+        persistence::reconcile_linked_file_instance(
+            &test.database_path,
+            &before[0].file_instance_id,
+        )
+        .expect("relinked source should still require explicit reconciliation");
+
+        let reconciled = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &target_root.storage_root_id,
+            20,
+        )
+        .expect("reconciled target preview should load");
+        assert_eq!(reconciled[0].availability_state, "AVAILABLE");
+    }
+
+    #[test]
+    fn relink_rejects_a_selected_file_outside_approved_roots() {
+        let test = TestIndex::new();
+        let source_path = test.source_root.join("Missing Source.pdf");
+        fs::write(&source_path, b"original evidence").expect("test file should be written");
+
+        let root = test.register_root("root-relink-boundary");
+        let first_job = Uuid::new_v4().to_string();
+        let first_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &first_job,
+            &first_generation,
+        )
+        .expect("initial job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            first_job,
+            first_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial scan should complete");
+
+        let indexed =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("indexed preview should load");
+        fs::remove_file(&source_path).expect("indexed source should be removed");
+
+        let second_job = Uuid::new_v4().to_string();
+        let second_generation = Uuid::new_v4().to_string();
+        persistence::create_index_job(
+            &test.database_path,
+            &root.storage_root_id,
+            &second_job,
+            &second_generation,
+        )
+        .expect("reconciliation job should be created");
+        run_index_job(
+            test.database_path.clone(),
+            root.clone(),
+            second_job,
+            second_generation,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("missing-file reconciliation should complete");
+
+        let outside_directory = test.directory.join("outside");
+        fs::create_dir_all(&outside_directory).expect("outside directory should be created");
+        let outside_path = outside_directory.join("Unapproved.pdf");
+        fs::write(&outside_path, b"not approved").expect("outside file should be written");
+
+        let error = persistence::relink_linked_file_instance(
+            &test.database_path,
+            &indexed[0].file_instance_id,
+            &outside_path,
+        )
+        .expect_err("unapproved relink target must be rejected");
+        assert!(error
+            .to_string()
+            .contains("outside the approved available storage roots"));
+
+        let still_missing =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
+                .expect("source preview should still load");
+        assert_eq!(still_missing[0].availability_state, "MISSING");
+        assert_eq!(
+            persistence::path_history_reasons_for_test(
+                &test.database_path,
+                &indexed[0].file_instance_id,
+            )
+            .expect("path history should remain unchanged"),
+            vec!["DISCOVERED".to_string()]
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RELINKED",
+                &indexed[0].file_instance_id,
+            )
+            .expect("rejected relink must not emit audit event"),
+            0
+        );
+    }
+
+    #[test]
     fn offline_root_surfaces_indexed_files_as_unavailable_without_marking_them_missing() {
         let test = TestIndex::new();
         let path = test.source_root.join("Network Support.pdf");
