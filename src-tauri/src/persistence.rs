@@ -843,9 +843,23 @@ fn persist_file_observation(
         {
             transaction.execute(
                 "UPDATE file_instances
-                 SET availability_state = 'CHANGED'
+                 SET availability_state = 'CHANGED',
+                     integrity_state = 'REPLACED',
+                     integrity_changed_at_ms = ?2,
+                     integrity_acknowledged_at_ms = NULL
                  WHERE file_instance_id = ?1",
-                [&path_candidate.file_instance_id],
+                params![&path_candidate.file_instance_id, observed_at_ms],
+            )?;
+            record_file_integrity_event(
+                transaction,
+                &path_candidate.file_instance_id,
+                &path_candidate.document_id,
+                "REPLACED",
+                observed_at_ms,
+                json!({
+                    "reason": "PATH_IDENTITY_REPLACED",
+                    "relativePath": observation.relative_path_display
+                }),
             )?;
             enqueue_document_projection(
                 transaction,
@@ -882,7 +896,10 @@ fn find_existing_by_identity(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                integrity_state,
+                integrity_changed_at_ms,
+                integrity_acknowledged_at_ms
              FROM file_instances
              WHERE storage_root_id = ?1
                AND filesystem_identity = ?2
@@ -917,7 +934,10 @@ fn find_existing_by_path(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                integrity_state,
+                integrity_changed_at_ms,
+                integrity_acknowledged_at_ms
              FROM file_instances
              WHERE storage_root_id = ?1
                AND path_native_encoding = ?2
@@ -950,6 +970,9 @@ fn existing_file_instance_from_row(
         last_write_time_ms: row.get(8)?,
         creation_time_ms: row.get(9)?,
         availability_state: row.get(10)?,
+        integrity_state: row.get(11)?,
+        integrity_changed_at_ms: row.get(12)?,
+        integrity_acknowledged_at_ms: row.get(13)?,
     })
 }
 
@@ -995,6 +1018,30 @@ fn update_existing_file_instance(
             Some(current) if existing.last_write_time_ms != Some(current)
         );
     let availability_changed = existing.availability_state != "AVAILABLE";
+
+    let integrity_alert = if content_changed {
+        Some("CONTENT_CHANGED")
+    } else if path_changed
+        && (existing.integrity_state != "CONTENT_CHANGED"
+            || existing.integrity_acknowledged_at_ms.is_some())
+    {
+        Some("PATH_CHANGED")
+    } else {
+        None
+    };
+
+    let integrity_state = integrity_alert.unwrap_or(existing.integrity_state.as_str());
+    let integrity_changed_at_ms = if integrity_alert.is_some() {
+        Some(context.observed_at_ms)
+    } else {
+        existing.integrity_changed_at_ms
+    };
+    let integrity_acknowledged_at_ms = if integrity_alert.is_some() {
+        None
+    } else {
+        existing.integrity_acknowledged_at_ms
+    };
+
     let display_name_changed = Path::new(&existing.relative_path_display)
         .file_name()
         .map(|value| value.to_string_lossy().as_ref() != observation.display_name)
@@ -1055,8 +1102,11 @@ fn update_existing_file_instance(
              reparse_tag = COALESCE(?11, reparse_tag),
              last_seen_at_ms = ?12,
              last_seen_generation_id = ?13,
-             availability_state = 'AVAILABLE'
-         WHERE file_instance_id = ?14",
+             availability_state = 'AVAILABLE',
+             integrity_state = ?14,
+             integrity_changed_at_ms = ?15,
+             integrity_acknowledged_at_ms = ?16
+         WHERE file_instance_id = ?17",
         params![
             &observation.relative_path_native,
             &observation.path_native_encoding,
@@ -1071,6 +1121,9 @@ fn update_existing_file_instance(
             observation.reparse_tag,
             context.observed_at_ms,
             context.scan_generation_id,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
             &existing.file_instance_id
         ],
     )?;
@@ -1091,6 +1144,22 @@ fn update_existing_file_instance(
             &existing.file_instance_id,
             observation,
             context.observed_at_ms,
+        )?;
+    }
+
+    if let Some(integrity_state) = integrity_alert {
+        record_file_integrity_event(
+            transaction,
+            &existing.file_instance_id,
+            &existing.document_id,
+            integrity_state,
+            context.observed_at_ms,
+            json!({
+                "pathChanged": path_changed,
+                "contentChanged": content_changed,
+                "previousIntegrityState": existing.integrity_state,
+                "relativePath": observation.relative_path_display
+            }),
         )?;
     }
 
@@ -1208,6 +1277,42 @@ fn insert_new_file_instance(
         context.observed_at_ms,
     )?;
     enqueue_document_projection(transaction, &file_instance_id, context.observed_at_ms)?;
+
+    Ok(())
+}
+
+fn record_file_integrity_event(
+    transaction: &rusqlite::Transaction<'_>,
+    file_instance_id: &str,
+    document_id: &str,
+    integrity_state: &str,
+    occurred_at_ms: i64,
+    details: serde_json::Value,
+) -> Result<(), PersistenceError> {
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_FILE_INTEGRITY_CHANGED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            document_id,
+            occurred_at_ms,
+            json!({
+                "integrityState": integrity_state,
+                "details": details
+            })
+            .to_string()
+        ],
+    )?;
 
     Ok(())
 }
