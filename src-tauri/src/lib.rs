@@ -532,6 +532,30 @@ fn set_document_pin(
 }
 
 #[tauri::command]
+async fn choose_and_relink_file_instance(
+    app: AppHandle,
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Option<IndexedFilePreviewDto>, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let selected = app.dialog().file().blocking_pick_file();
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    let selected_path = selected
+        .into_path()
+        .map_err(|_| "Selected file could not be resolved to a native path.".to_string())?;
+
+    persistence::relink_linked_file_instance(database.path(), &file_instance_id, &selected_path)
+        .map(Into::into)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn reconcile_linked_file_instance(
     file_instance_id: String,
     database: State<'_, persistence::DatabaseState>,
@@ -817,6 +841,7 @@ pub fn run() {
             record_recent_search,
             list_pinned_documents,
             set_document_pin,
+            choose_and_relink_file_instance,
             reconcile_linked_file_instance,
             list_document_version_history,
             search_documents,
