@@ -1,3 +1,4 @@
+use crate::filesystem;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1714,10 +1715,27 @@ pub fn reconcile_linked_file_instance(
     database_path: &Path,
     file_instance_id: &str,
 ) -> Result<(), PersistenceError> {
+    type ReconcileRow = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Vec<u8>,
+        String,
+        Vec<u8>,
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    );
+
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    let row: Option<(String, String, String, String, Option<String>)> = transaction
+    let row: Option<ReconcileRow> = transaction
         .query_row(
             "SELECT
                 fi.document_id,
@@ -1730,7 +1748,16 @@ pub fn reconcile_linked_file_instance(
                     WHERE cv.file_instance_id = fi.file_instance_id
                     ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
                     LIMIT 1
-                )
+                ),
+                COALESCE(sr.canonical_native_locator, sr.native_locator),
+                sr.native_locator_encoding,
+                fi.relative_path_native,
+                fi.path_native_encoding,
+                fi.size_bytes,
+                fi.creation_time_ms,
+                fi.last_write_time_ms,
+                fi.filesystem_identity,
+                fi.volume_identity
              FROM file_instances fi
              JOIN documents d ON d.document_id = fi.document_id
              JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
@@ -1744,6 +1771,15 @@ pub fn reconcile_linked_file_instance(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
                 ))
             },
         )
@@ -1755,6 +1791,15 @@ pub fn reconcile_linked_file_instance(
         availability_state,
         root_availability_state,
         content_version_id,
+        root_native,
+        root_encoding,
+        relative_native,
+        relative_encoding,
+        size_bytes,
+        creation_time_ms,
+        last_write_time_ms,
+        filesystem_identity,
+        volume_identity,
     )) = row
     else {
         return Err(PersistenceError::Configuration(format!(
@@ -1780,6 +1825,85 @@ pub fn reconcile_linked_file_instance(
         )));
     }
 
+    let storage_root_path = decode_native_path(&root_native, &root_encoding)?;
+    let relative_path = decode_native_path(&relative_native, &relative_encoding)?;
+
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(PersistenceError::Configuration(
+            "stored file-instance path is not root-relative".to_string(),
+        ));
+    }
+
+    let canonical_root = fs::canonicalize(&storage_root_path).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "approved storage root became unavailable before reconciliation: {error}"
+        ))
+    })?;
+    let indexed_path = storage_root_path.join(&relative_path);
+    let canonical_source = fs::canonicalize(&indexed_path).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "linked source became unavailable before reconciliation: {error}"
+        ))
+    })?;
+
+    if !canonical_source.starts_with(&canonical_root) {
+        return Err(PersistenceError::Configuration(
+            "resolved linked source escaped its approved storage root".to_string(),
+        ));
+    }
+
+    if !canonical_source.is_file() {
+        return Err(PersistenceError::Configuration(
+            "linked source is no longer a regular file".to_string(),
+        ));
+    }
+
+    let source_file = fs::File::open(&canonical_source).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "linked source could not be opened for reconciliation validation: {error}"
+        ))
+    })?;
+    let metadata = source_file.metadata().map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "linked source metadata could not be read for reconciliation validation: {error}"
+        ))
+    })?;
+    let platform = filesystem::platform_file_metadata_from_open_file(&source_file, &metadata);
+
+    let system_time_to_ms = |value: SystemTime| {
+        value
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+    };
+    let current_creation_time_ms = metadata.created().ok().and_then(system_time_to_ms);
+    let current_last_write_time_ms = metadata.modified().ok().and_then(system_time_to_ms);
+    let indexed_size_bytes = u64::try_from(size_bytes).map_err(|_| {
+        PersistenceError::Configuration(
+            "stored linked-source size cannot be represented as an unsigned value".to_string(),
+        )
+    })?;
+
+    let metadata_matches_index = metadata.len() == indexed_size_bytes
+        && current_creation_time_ms == creation_time_ms
+        && current_last_write_time_ms == last_write_time_ms
+        && platform.filesystem_identity == filesystem_identity
+        && platform.volume_identity == volume_identity;
+
+    if !metadata_matches_index {
+        return Err(PersistenceError::Configuration(
+            "linked source changed again since the last successful scan; rescan before reconciliation"
+                .to_string(),
+        ));
+    }
+
     let reconciled_at_ms = now_unix_ms()?;
     transaction.execute(
         "UPDATE file_instances
@@ -1792,7 +1916,9 @@ pub fn reconcile_linked_file_instance(
         "previousAvailabilityState": "CHANGED",
         "newAvailabilityState": "AVAILABLE",
         "contentVersionId": content_version_id,
-        "reconciliationPolicy": "USER_ACCEPTED_CURRENT_INDEXED_SOURCE"
+        "reconciliationPolicy": "USER_ACCEPTED_REVALIDATED_INDEXED_SOURCE",
+        "validatedSizeBytes": indexed_size_bytes,
+        "validatedLastWriteTimeMs": current_last_write_time_ms
     });
 
     transaction.execute(
@@ -2043,6 +2169,7 @@ pub fn begin_evidence_capture(
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         String,
+        String,
     );
 
     let row: Option<CaptureRow> = transaction
@@ -2058,7 +2185,8 @@ pub fn begin_evidence_capture(
                 fi.last_write_time_ms,
                 fi.filesystem_identity,
                 fi.volume_identity,
-                fi.availability_state
+                fi.availability_state,
+                sr.availability_state
              FROM file_instances fi
              JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
              JOIN documents d ON d.document_id = fi.document_id
@@ -2078,6 +2206,7 @@ pub fn begin_evidence_capture(
                     row.get(8)?,
                     row.get(9)?,
                     row.get(10)?,
+                    row.get(11)?,
                 ))
             },
         )
@@ -2095,12 +2224,19 @@ pub fn begin_evidence_capture(
         filesystem_identity,
         volume_identity,
         availability_state,
+        root_availability_state,
     )) = row
     else {
         return Err(PersistenceError::Configuration(format!(
             "file instance {file_instance_id} does not exist"
         )));
     };
+
+    if root_availability_state != "AVAILABLE" {
+        return Err(PersistenceError::Configuration(format!(
+            "storage root is {root_availability_state}; controlled evidence capture requires an available approved source root"
+        )));
+    }
 
     if availability_state != "AVAILABLE" {
         return Err(PersistenceError::Configuration(format!(
