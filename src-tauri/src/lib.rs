@@ -3,6 +3,7 @@ mod filesystem;
 mod indexer;
 mod launcher;
 mod persistence;
+mod preview;
 mod search;
 
 use serde::Serialize;
@@ -530,6 +531,30 @@ async fn capture_controlled_evidence(
 }
 
 #[tauri::command]
+async fn preview_text_file_instance(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<preview::TextPreview, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
+
+        let preview = preview::preview_text_source(&source)?;
+        persistence::record_document_open(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?;
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| format!("Preview task failed to join: {error}"))?
+}
+
+#[tauri::command]
 async fn open_file_instance(
     file_instance_id: String,
     database: State<'_, persistence::DatabaseState>,
@@ -630,6 +655,7 @@ pub fn run() {
             set_document_pin,
             search_documents,
             capture_controlled_evidence,
+            preview_text_file_instance,
             open_file_instance,
             reveal_file_instance,
             rebuild_search_index
