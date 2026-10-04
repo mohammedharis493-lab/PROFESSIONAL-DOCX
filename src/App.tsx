@@ -78,6 +78,19 @@ type EvidenceCaptureNotice = {
   sha256Hex: string;
 };
 
+type TextPreview = {
+  content: string;
+  truncated: boolean;
+  totalSizeBytes: number;
+  previewedBytes: number;
+  extension: string;
+};
+
+type ActiveTextPreview = {
+  file: IndexedFile;
+  preview: TextPreview;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -96,6 +109,12 @@ const TERMINAL_JOB_STATUSES = new Set([
   "FAILED",
   "INTERRUPTED",
 ]);
+
+const TEXT_PREVIEW_EXTENSIONS = new Set(["txt", "csv", "xml"]);
+
+function supportsTextPreview(file: IndexedFile) {
+  return TEXT_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -134,6 +153,10 @@ export default function App() {
   const [capturingFileInstanceId, setCapturingFileInstanceId] = useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
+  const [activeTextPreview, setActiveTextPreview] =
+    useState<ActiveTextPreview | null>(null);
+  const [previewingFileInstanceId, setPreviewingFileInstanceId] =
+    useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
   const [selectedSearchIndex, setSelectedSearchIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -495,6 +518,37 @@ export default function App() {
     }
   }
 
+  async function previewFileInstance(file: IndexedFile, usedQuery?: string) {
+    if (!supportsTextPreview(file) || file.availabilityState === "MISSING") {
+      return;
+    }
+
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const preview = await invoke<TextPreview>("preview_text_file_instance", {
+        fileInstanceId: file.fileInstanceId,
+      });
+
+      setActiveTextPreview({ file, preview });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
+      await refreshQuickAccess();
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
+  }
+
   async function openFileInstance(fileInstanceId: string, usedQuery?: string) {
     setError(null);
     try {
@@ -564,6 +618,24 @@ export default function App() {
     } finally {
       setCapturingFileInstanceId(null);
     }
+  }
+
+  function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
+    if (!supportsTextPreview(file)) return null;
+
+    const isThisPreview = previewingFileInstanceId === file.fileInstanceId;
+
+    return (
+      <button
+        className="file-action file-action-preview"
+        type="button"
+        onClick={() => void previewFileInstance(file, usedQuery)}
+        disabled={file.availabilityState === "MISSING" || previewingFileInstanceId !== null}
+        title="Preview text safely inside Professional DocX"
+      >
+        {isThisPreview ? "Loading…" : "Preview"}
+      </button>
+    );
   }
 
   function renderCaptureAction(file: IndexedFile) {
@@ -890,6 +962,7 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -961,6 +1034,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1057,6 +1131,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1168,6 +1243,7 @@ export default function App() {
                         {file.availabilityState}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
+                      {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1240,6 +1316,75 @@ export default function App() {
               </p>
             </article>
           </section>
+        ) : null}
+        {activeTextPreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                setActiveTextPreview(null);
+              }
+            }}
+          >
+            <section
+              className="text-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="text-preview-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">
+                    IN-APP PREVIEW · {activeTextPreview.preview.extension.toUpperCase()}
+                  </p>
+                  <h2 id="text-preview-title">{activeTextPreview.file.name}</h2>
+                  <span>
+                    {activeTextPreview.file.availabilityState} ·{" "}
+                    {formatBytes(activeTextPreview.preview.totalSizeBytes)}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activeTextPreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={() => setActiveTextPreview(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="text-preview-body">
+                <pre>{activeTextPreview.preview.content || "This file is empty."}</pre>
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>
+                  Previewed {formatBytes(activeTextPreview.preview.previewedBytes)}
+                  {activeTextPreview.preview.truncated
+                    ? " of " + formatBytes(activeTextPreview.preview.totalSizeBytes)
+                    : ""}
+                </span>
+                {activeTextPreview.preview.truncated ? (
+                  <strong>
+                    Preview limited to the first 256 KB. Open the original for the complete file.
+                  </strong>
+                ) : (
+                  <span>Original file remains at its approved source location.</span>
+                )}
+              </footer>
+            </section>
+          </div>
         ) : null}
       </main>
     </div>
