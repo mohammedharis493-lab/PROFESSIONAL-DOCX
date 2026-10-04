@@ -404,6 +404,21 @@ function stateClass(availabilityState: string) {
   return `file-state file-state-${availabilityState.toLowerCase()}`;
 }
 
+function stateLabel(availabilityState: string) {
+  switch (availabilityState) {
+    case "CHANGED":
+      return "RECONCILIATION REQUIRED";
+    case "UNAVAILABLE":
+      return "SOURCE UNAVAILABLE";
+    default:
+      return availabilityState;
+  }
+}
+
+function sourceUnavailable(availabilityState: string) {
+  return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
@@ -416,6 +431,8 @@ export default function App() {
   const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDocument[]>([]);
   const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
   const [capturingFileInstanceId, setCapturingFileInstanceId] = useState<string | null>(null);
+  const [reconcilingFileInstanceId, setReconcilingFileInstanceId] =
+    useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
@@ -832,7 +849,7 @@ export default function App() {
   }
 
   async function previewWordFileInstance(file: IndexedFile, usedQuery?: string) {
-    if (!supportsWordPreview(file) || file.availabilityState === "MISSING") {
+    if (!supportsWordPreview(file) || sourceUnavailable(file.availabilityState)) {
       return;
     }
 
@@ -888,7 +905,7 @@ export default function App() {
     rowOffset?: number,
     columnOffset?: number,
   ) {
-    if (!supportsWorkbookPreview(file) || file.availabilityState === "MISSING") {
+    if (!supportsWorkbookPreview(file) || sourceUnavailable(file.availabilityState)) {
       return false;
     }
 
@@ -943,7 +960,7 @@ export default function App() {
   }
 
   async function previewPdfFileInstance(file: IndexedFile, usedQuery?: string) {
-    if (file.extension.toLowerCase() !== "pdf" || file.availabilityState === "MISSING") {
+    if (file.extension.toLowerCase() !== "pdf" || sourceUnavailable(file.availabilityState)) {
       return;
     }
 
@@ -990,7 +1007,7 @@ export default function App() {
   }
 
   async function previewFileInstance(file: IndexedFile, usedQuery?: string) {
-    if (!supportsTextPreview(file) || file.availabilityState === "MISSING") {
+    if (!supportsTextPreview(file) || sourceUnavailable(file.availabilityState)) {
       return;
     }
 
@@ -1121,6 +1138,63 @@ export default function App() {
       setError(String(viewerSearchError));
     } finally {
       setIsViewerSearching(false);
+    }
+  }
+
+  async function reconcileLinkedSource(file: IndexedFile) {
+    if (
+      file.availabilityState !== "CHANGED" ||
+      reconcilingFileInstanceId !== null
+    ) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Reconcile "${file.name}" as the current linked working source?\n\nThis accepts the current indexed source state for future linked-file checks. Historical content-version records and controlled evidence remain unchanged.`,
+    );
+
+    if (!confirmed) return;
+
+    setError(null);
+    setReconcilingFileInstanceId(file.fileInstanceId);
+
+    try {
+      await invoke("reconcile_linked_file_instance", {
+        fileInstanceId: file.fileInstanceId,
+      });
+
+      setSearchResults((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setPreviewFiles((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setRecentDocuments((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+      setPinnedDocuments((current) =>
+        current.map((item) =>
+          item.fileInstanceId === file.fileInstanceId
+            ? { ...item, availabilityState: "AVAILABLE" }
+            : item,
+        ),
+      );
+    } catch (reconcileError) {
+      setError(String(reconcileError));
+    } finally {
+      setReconcilingFileInstanceId(null);
     }
   }
 
@@ -1292,7 +1366,7 @@ export default function App() {
                 ? previewWordFileInstance(file, usedQuery)
                 : previewFileInstance(file, usedQuery))
         }
-        disabled={file.availabilityState === "MISSING" || previewingFileInstanceId !== null}
+        disabled={sourceUnavailable(file.availabilityState) || previewingFileInstanceId !== null}
         title={
           isPdfPreview
             ? "Preview PDF safely inside Professional DocX"
@@ -1310,23 +1384,41 @@ export default function App() {
 
   function renderCaptureAction(file: IndexedFile) {
     const isThisCapture = capturingFileInstanceId === file.fileInstanceId;
+    const isThisReconcile = reconcilingFileInstanceId === file.fileInstanceId;
     const captureUnavailable =
       file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null;
 
     return (
-      <button
-        className="file-action file-action-capture"
-        type="button"
-        onClick={() => void captureEvidence(file)}
-        disabled={captureUnavailable}
-        title={
-          file.availabilityState === "AVAILABLE"
-            ? "Preserve an immutable verified evidence copy"
-            : "Reconcile the source before evidence capture"
-        }
-      >
-        {isThisCapture ? "Capturing…" : "Capture evidence"}
-      </button>
+      <>
+        {file.availabilityState === "CHANGED" ? (
+          <button
+            className="file-action file-action-reconcile"
+            type="button"
+            onClick={() => void reconcileLinkedSource(file)}
+            disabled={
+              reconcilingFileInstanceId !== null || capturingFileInstanceId !== null
+            }
+            title="Accept the current indexed linked source without changing historical or controlled evidence"
+          >
+            {isThisReconcile ? "Reconciling…" : "Reconcile source"}
+          </button>
+        ) : null}
+        <button
+          className="file-action file-action-capture"
+          type="button"
+          onClick={() => void captureEvidence(file)}
+          disabled={captureUnavailable}
+          title={
+            file.availabilityState === "AVAILABLE"
+              ? "Preserve an immutable verified evidence copy"
+              : file.availabilityState === "CHANGED"
+                ? "Review and reconcile the changed linked source before evidence capture"
+                : "The linked source must be available before evidence capture"
+          }
+        >
+          {isThisCapture ? "Capturing…" : "Capture evidence"}
+        </button>
+      </>
     );
   }
 
@@ -1378,7 +1470,7 @@ export default function App() {
 
     if (event.key === "Enter") {
       const selected = searchResults[selectedSearchIndex];
-      if (!selected || selected.availabilityState === "MISSING") return;
+      if (!selected || sourceUnavailable(selected.availabilityState)) return;
       event.preventDefault();
       void openFileInstance(selected.fileInstanceId, query);
     }
@@ -1614,7 +1706,7 @@ export default function App() {
                     key={file.fileInstanceId}
                     onMouseEnter={() => setSelectedSearchIndex(index)}
                     onDoubleClick={() => {
-                      if (file.availabilityState !== "MISSING") {
+                      if (!sourceUnavailable(file.availabilityState)) {
                         void openFileInstance(file.fileInstanceId, query);
                       }
                     }}
@@ -1629,7 +1721,7 @@ export default function App() {
                     </div>
                     <div className="file-meta">
                       <span className={stateClass(file.availabilityState)}>
-                        {file.availabilityState}
+                        {stateLabel(file.availabilityState)}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
@@ -1638,7 +1730,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void openFileInstance(file.fileInstanceId, query)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Open
                       </button>
@@ -1646,7 +1738,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void revealFileInstance(file.fileInstanceId)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Location
                       </button>
@@ -1702,7 +1794,7 @@ export default function App() {
                     </div>
                     <div className="file-meta">
                       <span className={stateClass(file.availabilityState)}>
-                        {file.availabilityState}
+                        {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -1710,7 +1802,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void openFileInstance(file.fileInstanceId)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Open
                       </button>
@@ -1799,7 +1891,7 @@ export default function App() {
                     </div>
                     <div className="file-meta">
                       <span className={stateClass(file.availabilityState)}>
-                        {file.availabilityState}
+                        {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -1807,7 +1899,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void openFileInstance(file.fileInstanceId)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Open
                       </button>
@@ -1910,7 +2002,7 @@ export default function App() {
                     </div>
                     <div className="file-meta">
                       <span className={stateClass(file.availabilityState)}>
-                        {file.availabilityState}
+                        {stateLabel(file.availabilityState)}
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
@@ -1919,7 +2011,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void openFileInstance(file.fileInstanceId)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Open
                       </button>
@@ -1927,7 +2019,7 @@ export default function App() {
                         className="file-action"
                         type="button"
                         onClick={() => void revealFileInstance(file.fileInstanceId)}
-                        disabled={file.availabilityState === "MISSING"}
+                        disabled={sourceUnavailable(file.availabilityState)}
                       >
                         Location
                       </button>
@@ -2010,7 +2102,7 @@ export default function App() {
                   </p>
                   <h2 id="text-preview-title">{activeTextPreview.file.name}</h2>
                   <span>
-                    {activeTextPreview.file.availabilityState} ·{" "}
+                    {stateLabel(activeTextPreview.file.availabilityState)} ·{" "}
                     {formatBytes(activeTextPreview.preview.totalSizeBytes)}
                   </span>
                 </div>
@@ -2091,7 +2183,7 @@ export default function App() {
                   <p className="eyebrow">IN-APP PREVIEW · PDF</p>
                   <h2 id="pdf-preview-title">{activePdfPreview.file.name}</h2>
                   <span>
-                    {activePdfPreview.file.availabilityState} ·{" "}
+                    {stateLabel(activePdfPreview.file.availabilityState)} ·{" "}
                     {formatBytes(activePdfPreview.file.sizeBytes)}
                   </span>
                 </div>
@@ -2165,7 +2257,7 @@ export default function App() {
                   </p>
                   <h2 id="workbook-preview-title">{activeWorkbookPreview.file.name}</h2>
                   <span>
-                    {activeWorkbookPreview.file.availabilityState} ·{" "}
+                    {stateLabel(activeWorkbookPreview.file.availabilityState)} ·{" "}
                     {formatBytes(activeWorkbookPreview.preview.totalSizeBytes)}
                   </span>
                 </div>
@@ -2485,7 +2577,7 @@ export default function App() {
                   <p className="eyebrow">IN-APP PREVIEW · DOCX</p>
                   <h2 id="word-preview-title">{activeWordPreview.file.name}</h2>
                   <span>
-                    {activeWordPreview.file.availabilityState} ·{" "}
+                    {stateLabel(activeWordPreview.file.availabilityState)} ·{" "}
                     {formatBytes(activeWordPreview.preview.totalSizeBytes)} ·{" "}
                     {activeWordPreview.preview.blockCount} block
                     {activeWordPreview.preview.blockCount === 1 ? "" : "s"}

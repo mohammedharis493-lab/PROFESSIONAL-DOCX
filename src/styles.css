@@ -867,6 +867,16 @@ input:focus-visible {
   background: #eaf5eb;
 }
 
+.file-action-reconcile {
+  border-color: #f0c68c;
+  background: #fff8eb;
+  color: #8a4b12;
+}
+
+.file-action-reconcile:hover:not(:disabled) {
+  background: #fff1d6;
+}
+
 .evidence-success {
   display: grid;
   gap: 5px;

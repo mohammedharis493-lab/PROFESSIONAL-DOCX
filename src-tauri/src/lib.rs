@@ -492,6 +492,18 @@ fn set_document_pin(
 }
 
 #[tauri::command]
+fn reconcile_linked_file_instance(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    persistence::reconcile_linked_file_instance(database.path(), &file_instance_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn search_documents(
     query: String,
     limit: Option<u32>,
@@ -753,6 +765,7 @@ pub fn run() {
             record_recent_search,
             list_pinned_documents,
             set_document_pin,
+            reconcile_linked_file_instance,
             search_documents,
             capture_controlled_evidence,
             preview_text_file_instance,
