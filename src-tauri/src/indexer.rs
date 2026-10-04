@@ -817,11 +817,9 @@ mod tests {
             &still_changed[0].file_instance_id,
         )
         .expect_err("reconciliation must reject a source that changed again after scanning");
-        assert!(
-            reconcile_error
-                .to_string()
-                .contains("changed again since the last successful scan")
-        );
+        assert!(reconcile_error
+            .to_string()
+            .contains("changed again since the last successful scan"));
 
         let rejected =
             persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 20)
@@ -1021,7 +1019,9 @@ mod tests {
             "IMMUTABLE_SNAPSHOT",
         )
         .expect_err("offline approved roots must reject controlled evidence capture");
-        assert!(capture_error.to_string().contains("storage root is OFFLINE"));
+        assert!(capture_error
+            .to_string()
+            .contains("storage root is OFFLINE"));
     }
 
     #[test]
