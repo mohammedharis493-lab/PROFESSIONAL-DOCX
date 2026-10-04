@@ -110,7 +110,8 @@ enum PdfPreviewError {
 }
 
 fn read_pdf_source(source: &ResolvedFileSource) -> Result<Vec<u8>, PdfPreviewError> {
-    let path = launcher::validated_existing_path(source).map_err(|_| PdfPreviewError::Unavailable)?;
+    let path =
+        launcher::validated_existing_path(source).map_err(|_| PdfPreviewError::Unavailable)?;
 
     let extension = path
         .extension()
@@ -355,10 +356,8 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let fixture = PreviewFixture::new();
-        let outside = std::env::temp_dir().join(format!(
-            "professional-docx-pdf-outside-{}",
-            Uuid::new_v4()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("professional-docx-pdf-outside-{}", Uuid::new_v4()));
         fs::create_dir_all(&outside).expect("outside directory should be created");
         fs::write(outside.join("secret.pdf"), b"%PDF-1.7\n%%EOF\n")
             .expect("outside PDF should be written");
