@@ -1810,9 +1810,7 @@ pub fn relink_linked_file_instance(
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .ok_or_else(|| {
-            PersistenceError::Configuration(
-                "selected relink source has no file name".to_string(),
-            )
+            PersistenceError::Configuration("selected relink source has no file name".to_string())
         })?;
     let relative_path_search = normalize_search_text(&relative_path_display);
     let (relative_path_native, path_native_encoding) =
