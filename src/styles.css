@@ -877,6 +877,16 @@ input:focus-visible {
   background: #fff1d6;
 }
 
+.file-action-relink {
+  border-color: #d7c8ee;
+  background: #faf7ff;
+  color: #65458a;
+}
+
+.file-action-relink:hover:not(:disabled) {
+  background: #f2eaff;
+}
+
 .evidence-success {
   display: grid;
   gap: 5px;

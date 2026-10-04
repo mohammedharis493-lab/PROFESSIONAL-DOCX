@@ -1729,6 +1729,383 @@ pub fn list_indexed_file_preview(
     Ok(result)
 }
 
+pub fn relink_linked_file_instance(
+    database_path: &Path,
+    file_instance_id: &str,
+    selected_path: &Path,
+) -> Result<IndexedFilePreviewRecord, PersistenceError> {
+    let canonical_source = fs::canonicalize(selected_path).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "selected relink source could not be accessed: {error}"
+        ))
+    })?;
+    let source_file = fs::File::open(&canonical_source).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "selected relink source could not be opened: {error}"
+        ))
+    })?;
+    let metadata = source_file.metadata().map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "selected relink source metadata could not be read: {error}"
+        ))
+    })?;
+
+    if !metadata.is_file() {
+        return Err(PersistenceError::Configuration(
+            "selected relink source is not a regular file".to_string(),
+        ));
+    }
+
+    let mut matching_roots = Vec::new();
+    for root in list_storage_roots(database_path)? {
+        if root.availability_state != "AVAILABLE" {
+            continue;
+        }
+
+        let Ok(canonical_root) = fs::canonicalize(&root.canonical_path) else {
+            continue;
+        };
+
+        if canonical_source.starts_with(&canonical_root) {
+            matching_roots.push((root, canonical_root));
+        }
+    }
+
+    let (target_root, canonical_root) = matching_roots
+        .into_iter()
+        .max_by_key(|(_, root_path)| root_path.components().count())
+        .ok_or_else(|| {
+            PersistenceError::Configuration(
+                "selected relink source is outside the approved available storage roots"
+                    .to_string(),
+            )
+        })?;
+
+    let relative_path = canonical_source
+        .strip_prefix(&canonical_root)
+        .map_err(|error| {
+            PersistenceError::Configuration(format!(
+                "selected relink source could not be made root-relative: {error}"
+            ))
+        })?
+        .to_path_buf();
+
+    if relative_path.as_os_str().is_empty()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(PersistenceError::Configuration(
+            "selected relink source is not a valid root-relative file path".to_string(),
+        ));
+    }
+
+    let relative_path_display = relative_path.to_string_lossy().into_owned();
+    let display_name = relative_path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            PersistenceError::Configuration("selected relink source has no file name".to_string())
+        })?;
+    let relative_path_search = normalize_search_text(&relative_path_display);
+    let (relative_path_native, path_native_encoding) =
+        encode_native_path_for_storage(&relative_path);
+    let platform = filesystem::platform_file_metadata_from_open_file(&source_file, &metadata);
+    let system_time_to_ms = |value: SystemTime| {
+        value
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+    };
+    let creation_time_ms = metadata.created().ok().and_then(system_time_to_ms);
+    let last_write_time_ms = metadata.modified().ok().and_then(system_time_to_ms);
+    let size_bytes = metadata.len();
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    type RelinkRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    );
+
+    let row: Option<RelinkRow> = transaction
+        .query_row(
+            "SELECT
+                fi.document_id,
+                d.storage_state,
+                fi.availability_state,
+                sr.availability_state,
+                fi.storage_root_id,
+                fi.relative_path_display,
+                fi.size_bytes,
+                fi.last_write_time_ms,
+                fi.filesystem_identity,
+                fi.volume_identity
+             FROM file_instances fi
+             JOIN documents d ON d.document_id = fi.document_id
+             JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+             WHERE fi.file_instance_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [file_instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((
+        document_id,
+        storage_state,
+        availability_state,
+        source_root_availability_state,
+        previous_storage_root_id,
+        previous_relative_path_display,
+        previous_size_bytes,
+        previous_last_write_time_ms,
+        previous_filesystem_identity,
+        previous_volume_identity,
+    )) = row
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    };
+
+    if storage_state != "LINKED" {
+        return Err(PersistenceError::Configuration(
+            "only linked file instances can be relinked".to_string(),
+        ));
+    }
+
+    if availability_state != "MISSING" && source_root_availability_state == "AVAILABLE" {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} is {availability_state}; relinking is limited to missing or unavailable linked sources"
+        )));
+    }
+
+    let target_root_state: String = transaction.query_row(
+        "SELECT availability_state
+         FROM storage_roots
+         WHERE storage_root_id = ?1",
+        [&target_root.storage_root_id],
+        |row| row.get(0),
+    )?;
+
+    if target_root_state != "AVAILABLE" {
+        return Err(PersistenceError::Configuration(format!(
+            "selected approved storage root is {target_root_state}; rescan it before relinking"
+        )));
+    }
+
+    let target_conflict: Option<String> = transaction
+        .query_row(
+            "SELECT file_instance_id
+             FROM file_instances
+             WHERE storage_root_id = ?1
+               AND path_native_encoding = ?2
+               AND relative_path_native = ?3
+               AND file_instance_id <> ?4
+             ORDER BY last_seen_at_ms DESC
+             LIMIT 1",
+            params![
+                &target_root.storage_root_id,
+                &path_native_encoding,
+                &relative_path_native,
+                file_instance_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(conflicting_file_instance_id) = target_conflict {
+        return Err(PersistenceError::Configuration(format!(
+            "selected relink source is already indexed by file instance {conflicting_file_instance_id}"
+        )));
+    }
+
+    let content_changed = previous_size_bytes != u64_to_i64(size_bytes)?
+        || previous_last_write_time_ms != last_write_time_ms;
+    let identity_matches = previous_filesystem_identity == platform.filesystem_identity
+        && previous_volume_identity == platform.volume_identity;
+    let relinked_at_ms = now_unix_ms()?;
+
+    transaction.execute(
+        "UPDATE file_path_history
+         SET observed_until_ms = COALESCE(observed_until_ms, ?1)
+         WHERE file_instance_id = ?2
+           AND observed_until_ms IS NULL",
+        params![relinked_at_ms, file_instance_id],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO file_path_history (
+            file_path_history_id,
+            file_instance_id,
+            storage_root_id,
+            relative_path_native,
+            path_native_encoding,
+            relative_path_display,
+            observed_from_ms,
+            observed_until_ms,
+            change_reason,
+            actor_id,
+            scan_generation_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'RELINKED', NULL, NULL)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            &target_root.storage_root_id,
+            &relative_path_native,
+            &path_native_encoding,
+            &relative_path_display,
+            relinked_at_ms
+        ],
+    )?;
+
+    transaction.execute(
+        "UPDATE file_instances
+         SET storage_root_id = ?1,
+             relative_path_native = ?2,
+             path_native_encoding = ?3,
+             relative_path_display = ?4,
+             relative_path_search = ?5,
+             filesystem_identity = ?6,
+             volume_identity = ?7,
+             creation_time_ms = ?8,
+             last_write_time_ms = ?9,
+             size_bytes = ?10,
+             file_attributes = ?11,
+             reparse_tag = ?12,
+             last_seen_at_ms = ?13,
+             last_seen_generation_id = NULL,
+             availability_state = 'CHANGED'
+         WHERE file_instance_id = ?14",
+        params![
+            &target_root.storage_root_id,
+            &relative_path_native,
+            &path_native_encoding,
+            &relative_path_display,
+            &relative_path_search,
+            platform.filesystem_identity.as_deref(),
+            platform.volume_identity.as_deref(),
+            creation_time_ms,
+            last_write_time_ms,
+            u64_to_i64(size_bytes)?,
+            platform.file_attributes,
+            platform.reparse_tag,
+            relinked_at_ms,
+            file_instance_id
+        ],
+    )?;
+
+    transaction.execute(
+        "UPDATE documents
+         SET display_name = ?1
+         WHERE document_id = ?2",
+        params![&display_name, &document_id],
+    )?;
+
+    if content_changed {
+        let observation = FileObservation {
+            relative_path_native: relative_path_native.clone(),
+            path_native_encoding: path_native_encoding.clone(),
+            relative_path_display: relative_path_display.clone(),
+            relative_path_search: relative_path_search.clone(),
+            display_name: display_name.clone(),
+            size_bytes,
+            creation_time_ms,
+            last_write_time_ms,
+            filesystem_identity: platform.filesystem_identity.clone(),
+            volume_identity: platform.volume_identity.clone(),
+            file_attributes: platform.file_attributes,
+            reparse_tag: platform.reparse_tag,
+        };
+        insert_content_version(
+            &transaction,
+            &document_id,
+            file_instance_id,
+            &observation,
+            relinked_at_ms,
+        )?;
+    }
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_SOURCE_RELINKED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            &document_id,
+            relinked_at_ms,
+            json!({
+                "previousStorageRootId": previous_storage_root_id,
+                "newStorageRootId": target_root.storage_root_id,
+                "previousRelativePath": previous_relative_path_display,
+                "newRelativePath": relative_path_display,
+                "previousAvailabilityState": availability_state,
+                "newAvailabilityState": "CHANGED",
+                "identityMatchesPrevious": identity_matches,
+                "contentMetadataChanged": content_changed,
+                "reconciliationRequired": true
+            })
+            .to_string()
+        ],
+    )?;
+
+    enqueue_document_projection(&transaction, file_instance_id, relinked_at_ms)?;
+    transaction.commit()?;
+
+    let extension = relative_path
+        .extension()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    Ok(IndexedFilePreviewRecord {
+        document_id,
+        file_instance_id: file_instance_id.to_string(),
+        name: display_name,
+        path: canonical_source.to_string_lossy().into_owned(),
+        extension,
+        size_bytes,
+        modified_unix_ms: last_write_time_ms,
+        availability_state: "CHANGED".to_string(),
+    })
+}
+
 pub fn reconcile_linked_file_instance(
     database_path: &Path,
     file_instance_id: &str,

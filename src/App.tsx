@@ -460,6 +460,8 @@ export default function App() {
   const [capturingFileInstanceId, setCapturingFileInstanceId] = useState<string | null>(null);
   const [reconcilingFileInstanceId, setReconcilingFileInstanceId] =
     useState<string | null>(null);
+  const [relinkingFileInstanceId, setRelinkingFileInstanceId] =
+    useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
   const [activeVersionHistory, setActiveVersionHistory] =
@@ -1172,6 +1174,46 @@ export default function App() {
     }
   }
 
+  async function relinkLinkedSource(file: IndexedFile) {
+    if (
+      !sourceUnavailable(file.availabilityState) ||
+      relinkingFileInstanceId !== null
+    ) {
+      return;
+    }
+
+    setError(null);
+    setRelinkingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const relinked = await invoke<IndexedFile | null>(
+        "choose_and_relink_file_instance",
+        { fileInstanceId: file.fileInstanceId },
+      );
+
+      if (!relinked) {
+        return;
+      }
+
+      const mergeRelinked = <T extends IndexedFile>(item: T): T =>
+        item.fileInstanceId === relinked.fileInstanceId
+          ? { ...item, ...relinked }
+          : item;
+
+      setSearchResults((current) => current.map(mergeRelinked));
+      setRecentDocuments((current) => current.map(mergeRelinked));
+      setPinnedDocuments((current) => current.map(mergeRelinked));
+
+      if (selectedRoot) {
+        await loadPreview(selectedRoot);
+      }
+    } catch (relinkError) {
+      setError(String(relinkError));
+    } finally {
+      setRelinkingFileInstanceId(null);
+    }
+  }
+
   async function reconcileLinkedSource(file: IndexedFile) {
     if (
       file.availabilityState !== "CHANGED" ||
@@ -1453,18 +1495,36 @@ export default function App() {
   function renderCaptureAction(file: IndexedFile) {
     const isThisCapture = capturingFileInstanceId === file.fileInstanceId;
     const isThisReconcile = reconcilingFileInstanceId === file.fileInstanceId;
+    const isThisRelink = relinkingFileInstanceId === file.fileInstanceId;
     const captureUnavailable =
       file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null;
 
     return (
       <>
+        {sourceUnavailable(file.availabilityState) ? (
+          <button
+            className="file-action file-action-relink"
+            type="button"
+            onClick={() => void relinkLinkedSource(file)}
+            disabled={
+              relinkingFileInstanceId !== null ||
+              reconcilingFileInstanceId !== null ||
+              capturingFileInstanceId !== null
+            }
+            title="Select the current file from an approved available storage root; reconciliation will still be required"
+          >
+            {isThisRelink ? "Relinking…" : "Relink source"}
+          </button>
+        ) : null}
         {file.availabilityState === "CHANGED" ? (
           <button
             className="file-action file-action-reconcile"
             type="button"
             onClick={() => void reconcileLinkedSource(file)}
             disabled={
-              reconcilingFileInstanceId !== null || capturingFileInstanceId !== null
+              reconcilingFileInstanceId !== null ||
+              relinkingFileInstanceId !== null ||
+              capturingFileInstanceId !== null
             }
             title="Accept the current indexed linked source without changing historical or controlled evidence"
           >
