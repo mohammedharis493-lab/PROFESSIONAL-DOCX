@@ -3924,8 +3924,7 @@ mod tests {
         .expect("index job should start");
 
         let relative = Path::new("Ledger.xlsx");
-        let (relative_path_native, path_native_encoding) =
-            encode_native_path_for_storage(relative);
+        let (relative_path_native, path_native_encoding) = encode_native_path_for_storage(relative);
         let base_observation = FileObservation {
             relative_path_native,
             path_native_encoding,
@@ -3954,9 +3953,8 @@ mod tests {
         )
         .expect("metadata-only observation should persist");
 
-        let initial =
-            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
-                .expect("initial preview should load");
+        let initial = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("initial preview should load");
         assert_eq!(initial.len(), 1);
         assert_eq!(initial[0].availability_state, "AVAILABLE");
         assert_eq!(
@@ -3979,9 +3977,8 @@ mod tests {
         )
         .expect("fingerprint baseline should persist");
 
-        let seeded =
-            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
-                .expect("seeded preview should load");
+        let seeded = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("seeded preview should load");
         assert_eq!(seeded[0].availability_state, "AVAILABLE");
         assert_eq!(
             count_content_versions_for_test(&database.path, &seeded[0].file_instance_id)
@@ -4018,16 +4015,12 @@ mod tests {
         )
         .expect("fingerprint change should persist");
 
-        let changed_preview =
-            list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
-                .expect("changed preview should load");
+        let changed_preview = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("changed preview should load");
         assert_eq!(changed_preview[0].availability_state, "CHANGED");
         assert_eq!(
-            count_content_versions_for_test(
-                &database.path,
-                &changed_preview[0].file_instance_id,
-            )
-            .expect("changed fingerprint version count should load"),
+            count_content_versions_for_test(&database.path, &changed_preview[0].file_instance_id,)
+                .expect("changed fingerprint version count should load"),
             3
         );
 
