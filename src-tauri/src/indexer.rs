@@ -985,7 +985,7 @@ mod tests {
         run_index_job(
             test.database_path.clone(),
             root.clone(),
-            second_job,
+            second_job.clone(),
             second_generation,
             Arc::new(AtomicBool::new(false)),
         )
