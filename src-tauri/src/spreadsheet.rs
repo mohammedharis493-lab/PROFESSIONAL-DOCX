@@ -9,6 +9,8 @@ pub const DEFAULT_WORKBOOK_COLUMNS: u32 = 20;
 pub const MAX_WORKBOOK_ROWS: u32 = 200;
 pub const MAX_WORKBOOK_COLUMNS: u32 = 50;
 const MAX_SHEET_METADATA_ITEMS: usize = 500;
+const MAX_WORKBOOK_SEARCH_HITS: usize = 200;
+const MAX_WORKBOOK_SEARCH_CELLS: u64 = 500_000;
 
 const SUPPORTED_EXCEL_EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xls", "xlsb"];
 
@@ -54,6 +56,26 @@ pub struct WorkbookHyperlinkInfo {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkbookSearchHit {
+    pub sheet_name: String,
+    pub row: u32,
+    pub column: u32,
+    pub address: String,
+    pub value: String,
+    pub formula: Option<String>,
+    pub matched_field: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbookSearchResult {
+    pub hits: Vec<WorkbookSearchHit>,
+    pub truncated: bool,
+    pub scanned_cells: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbookPreview {
     pub sheets: Vec<WorkbookSheetInfo>,
     pub selected_sheet: String,
@@ -71,6 +93,144 @@ pub struct WorkbookPreview {
     pub metadata_truncated: bool,
     pub total_size_bytes: u64,
     pub extension: String,
+}
+
+pub fn search_workbook_source(
+    source: &ResolvedFileSource,
+    query: &str,
+) -> Result<WorkbookSearchResult, String> {
+    let path = launcher::validated_existing_path(source).map_err(|error| error.to_string())?;
+    search_validated_workbook(&path, query)
+}
+
+fn search_validated_workbook(path: &Path, query: &str) -> Result<WorkbookSearchResult, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(WorkbookSearchResult {
+            hits: Vec::new(),
+            truncated: false,
+            scanned_cells: 0,
+        });
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if !SUPPORTED_EXCEL_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "In-document workbook search is not supported for .{} files.",
+            if extension.is_empty() {
+                "<none>"
+            } else {
+                &extension
+            }
+        ));
+    }
+
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Unable to inspect workbook: {error}"))?;
+
+    if metadata.len() > MAX_WORKBOOK_PREVIEW_BYTES {
+        return Err(format!(
+            "Workbook is too large for in-app search (limit: {} MB). Open the original instead.",
+            MAX_WORKBOOK_PREVIEW_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let mut workbook =
+        open_workbook_auto(path).map_err(|error| format!("Unable to read workbook: {error}"))?;
+
+    let sheet_names = workbook
+        .sheets_metadata()
+        .iter()
+        .filter(|sheet| sheet.typ == SheetType::WorkSheet)
+        .map(|sheet| sheet.name.clone())
+        .collect::<Vec<_>>();
+
+    let normalized_query = query.to_lowercase();
+    let mut hits = Vec::new();
+    let mut scanned_cells = 0_u64;
+    let mut truncated = false;
+
+    'sheets: for sheet_name in sheet_names {
+        let range = workbook
+            .worksheet_range(&sheet_name)
+            .map_err(|error| format!("Unable to read worksheet '{sheet_name}': {error}"))?;
+        let formulas = workbook
+            .worksheet_formula(&sheet_name)
+            .map_err(|error| format!("Unable to read formulas from '{sheet_name}': {error}"))?;
+
+        let Some((start_row, start_column)) = range.start() else {
+            continue;
+        };
+        let Some((end_row, end_column)) = range.end() else {
+            continue;
+        };
+
+        for row in start_row..=end_row {
+            for column in start_column..=end_column {
+                if scanned_cells >= MAX_WORKBOOK_SEARCH_CELLS {
+                    truncated = true;
+                    break 'sheets;
+                }
+                scanned_cells += 1;
+
+                let value_text = range
+                    .get_value((row, column))
+                    .filter(|value| !matches!(value, Data::Empty))
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+
+                let formula_text = formulas
+                    .get_value((row, column))
+                    .filter(|formula| !formula.is_empty())
+                    .cloned();
+
+                let matched_field = if contains_normalized(&value_text, &normalized_query) {
+                    Some("VALUE")
+                } else if formula_text
+                    .as_deref()
+                    .is_some_and(|formula| contains_normalized(formula, &normalized_query))
+                {
+                    Some("FORMULA")
+                } else {
+                    None
+                };
+
+                let Some(matched_field) = matched_field else {
+                    continue;
+                };
+
+                hits.push(WorkbookSearchHit {
+                    sheet_name: sheet_name.clone(),
+                    row,
+                    column,
+                    address: cell_address(row, column),
+                    value: value_text,
+                    formula: formula_text,
+                    matched_field: matched_field.to_string(),
+                });
+
+                if hits.len() >= MAX_WORKBOOK_SEARCH_HITS {
+                    truncated = true;
+                    break 'sheets;
+                }
+            }
+        }
+    }
+
+    Ok(WorkbookSearchResult {
+        hits,
+        truncated,
+        scanned_cells,
+    })
+}
+
+fn contains_normalized(value: &str, normalized_query: &str) -> bool {
+    value.to_lowercase().contains(normalized_query)
 }
 
 pub fn preview_workbook_source(
@@ -410,6 +570,13 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn matches_workbook_search_case_insensitively() {
+        assert!(contains_normalized("Revenue Recognition", "revenue"));
+        assert!(contains_normalized("=SUM(A1:A3)", "sum("));
+        assert!(!contains_normalized("Cash", "inventory"));
     }
 
     #[test]
