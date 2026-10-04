@@ -90,6 +90,9 @@ struct IndexedFilePreviewDto {
     size_bytes: u64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
 }
 
 impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
@@ -103,6 +106,9 @@ impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
             size_bytes: value.size_bytes,
             modified_unix_ms: value.modified_unix_ms,
             availability_state: value.availability_state,
+            integrity_state: value.integrity_state,
+            integrity_changed_at_ms: value.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: value.integrity_acknowledged_at_ms,
         }
     }
 }
@@ -118,6 +124,9 @@ struct RecentDocumentDto {
     size_bytes: u64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
     last_opened_at_ms: i64,
     open_count: u64,
 }
@@ -133,6 +142,9 @@ impl From<persistence::RecentDocumentRecord> for RecentDocumentDto {
             size_bytes: value.file.size_bytes,
             modified_unix_ms: value.file.modified_unix_ms,
             availability_state: value.file.availability_state,
+            integrity_state: value.file.integrity_state,
+            integrity_changed_at_ms: value.file.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: value.file.integrity_acknowledged_at_ms,
             last_opened_at_ms: value.last_opened_at_ms,
             open_count: value.open_count,
         }
@@ -150,6 +162,9 @@ struct PinnedDocumentDto {
     size_bytes: u64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
     pinned_at_ms: i64,
 }
 
@@ -164,6 +179,9 @@ impl From<persistence::PinnedDocumentRecord> for PinnedDocumentDto {
             size_bytes: value.file.size_bytes,
             modified_unix_ms: value.file.modified_unix_ms,
             availability_state: value.file.availability_state,
+            integrity_state: value.file.integrity_state,
+            integrity_changed_at_ms: value.file.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: value.file.integrity_acknowledged_at_ms,
             pinned_at_ms: value.pinned_at_ms,
         }
     }
@@ -239,6 +257,9 @@ struct SearchResultDto {
     size_bytes: u64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
     matched_field: String,
     score: f32,
 }
@@ -254,6 +275,9 @@ impl From<search::SearchResultRecord> for SearchResultDto {
             size_bytes: value.size_bytes,
             modified_unix_ms: value.modified_unix_ms,
             availability_state: value.availability_state,
+            integrity_state: value.integrity_state,
+            integrity_changed_at_ms: value.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: value.integrity_acknowledged_at_ms,
             matched_field: value.matched_field,
             score: value.score,
         }
@@ -467,6 +491,18 @@ fn record_recent_search(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<(), String> {
     persistence::record_recent_search(database.path(), &query).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn acknowledge_linked_file_integrity(
+    file_instance_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<i64, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    persistence::acknowledge_file_integrity(database.path(), &file_instance_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -751,6 +787,7 @@ pub fn run() {
             list_recent_documents,
             list_recent_searches,
             record_recent_search,
+            acknowledge_linked_file_integrity,
             list_pinned_documents,
             set_document_pin,
             search_documents,
