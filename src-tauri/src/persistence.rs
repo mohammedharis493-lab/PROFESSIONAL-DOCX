@@ -16,7 +16,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -44,6 +44,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "controlled_evidence",
         sql: include_str!("../migrations/0004_controlled_evidence.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "linked_file_integrity",
+        sql: include_str!("../migrations/0005_linked_file_integrity.sql"),
     },
 ];
 
@@ -137,6 +142,9 @@ pub struct IndexedFilePreviewRecord {
     pub size_bytes: u64,
     pub modified_unix_ms: Option<i64>,
     pub availability_state: String,
+    pub integrity_state: String,
+    pub integrity_changed_at_ms: Option<i64>,
+    pub integrity_acknowledged_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +246,9 @@ struct HydratedIndexRow {
     size_bytes: i64,
     modified_unix_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
     root_native: Vec<u8>,
     root_native_encoding: String,
 }
@@ -262,6 +273,9 @@ struct ExistingFileInstance {
     last_write_time_ms: Option<i64>,
     creation_time_ms: Option<i64>,
     availability_state: String,
+    integrity_state: String,
+    integrity_changed_at_ms: Option<i64>,
+    integrity_acknowledged_at_ms: Option<i64>,
 }
 
 struct ObservationContext<'a> {
@@ -829,9 +843,23 @@ fn persist_file_observation(
         {
             transaction.execute(
                 "UPDATE file_instances
-                 SET availability_state = 'CHANGED'
+                 SET availability_state = 'CHANGED',
+                     integrity_state = 'REPLACED',
+                     integrity_changed_at_ms = ?2,
+                     integrity_acknowledged_at_ms = NULL
                  WHERE file_instance_id = ?1",
-                [&path_candidate.file_instance_id],
+                params![&path_candidate.file_instance_id, observed_at_ms],
+            )?;
+            record_file_integrity_event(
+                transaction,
+                &path_candidate.file_instance_id,
+                &path_candidate.document_id,
+                "REPLACED",
+                observed_at_ms,
+                json!({
+                    "reason": "PATH_IDENTITY_REPLACED",
+                    "relativePath": observation.relative_path_display
+                }),
             )?;
             enqueue_document_projection(
                 transaction,
@@ -868,7 +896,10 @@ fn find_existing_by_identity(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                integrity_state,
+                integrity_changed_at_ms,
+                integrity_acknowledged_at_ms
              FROM file_instances
              WHERE storage_root_id = ?1
                AND filesystem_identity = ?2
@@ -903,7 +934,10 @@ fn find_existing_by_path(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                integrity_state,
+                integrity_changed_at_ms,
+                integrity_acknowledged_at_ms
              FROM file_instances
              WHERE storage_root_id = ?1
                AND path_native_encoding = ?2
@@ -936,6 +970,9 @@ fn existing_file_instance_from_row(
         last_write_time_ms: row.get(8)?,
         creation_time_ms: row.get(9)?,
         availability_state: row.get(10)?,
+        integrity_state: row.get(11)?,
+        integrity_changed_at_ms: row.get(12)?,
+        integrity_acknowledged_at_ms: row.get(13)?,
     })
 }
 
@@ -981,6 +1018,30 @@ fn update_existing_file_instance(
             Some(current) if existing.last_write_time_ms != Some(current)
         );
     let availability_changed = existing.availability_state != "AVAILABLE";
+
+    let integrity_alert = if content_changed {
+        Some("CONTENT_CHANGED")
+    } else if path_changed
+        && (existing.integrity_state != "CONTENT_CHANGED"
+            || existing.integrity_acknowledged_at_ms.is_some())
+    {
+        Some("PATH_CHANGED")
+    } else {
+        None
+    };
+
+    let integrity_state = integrity_alert.unwrap_or(existing.integrity_state.as_str());
+    let integrity_changed_at_ms = if integrity_alert.is_some() {
+        Some(context.observed_at_ms)
+    } else {
+        existing.integrity_changed_at_ms
+    };
+    let integrity_acknowledged_at_ms = if integrity_alert.is_some() {
+        None
+    } else {
+        existing.integrity_acknowledged_at_ms
+    };
+
     let display_name_changed = Path::new(&existing.relative_path_display)
         .file_name()
         .map(|value| value.to_string_lossy().as_ref() != observation.display_name)
@@ -1041,8 +1102,11 @@ fn update_existing_file_instance(
              reparse_tag = COALESCE(?11, reparse_tag),
              last_seen_at_ms = ?12,
              last_seen_generation_id = ?13,
-             availability_state = 'AVAILABLE'
-         WHERE file_instance_id = ?14",
+             availability_state = 'AVAILABLE',
+             integrity_state = ?14,
+             integrity_changed_at_ms = ?15,
+             integrity_acknowledged_at_ms = ?16
+         WHERE file_instance_id = ?17",
         params![
             &observation.relative_path_native,
             &observation.path_native_encoding,
@@ -1057,6 +1121,9 @@ fn update_existing_file_instance(
             observation.reparse_tag,
             context.observed_at_ms,
             context.scan_generation_id,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
             &existing.file_instance_id
         ],
     )?;
@@ -1077,6 +1144,22 @@ fn update_existing_file_instance(
             &existing.file_instance_id,
             observation,
             context.observed_at_ms,
+        )?;
+    }
+
+    if let Some(integrity_state) = integrity_alert {
+        record_file_integrity_event(
+            transaction,
+            &existing.file_instance_id,
+            &existing.document_id,
+            integrity_state,
+            context.observed_at_ms,
+            json!({
+                "pathChanged": path_changed,
+                "contentChanged": content_changed,
+                "previousIntegrityState": existing.integrity_state,
+                "relativePath": observation.relative_path_display
+            }),
         )?;
     }
 
@@ -1194,6 +1277,42 @@ fn insert_new_file_instance(
         context.observed_at_ms,
     )?;
     enqueue_document_projection(transaction, &file_instance_id, context.observed_at_ms)?;
+
+    Ok(())
+}
+
+fn record_file_integrity_event(
+    transaction: &rusqlite::Transaction<'_>,
+    file_instance_id: &str,
+    document_id: &str,
+    integrity_state: &str,
+    occurred_at_ms: i64,
+    details: serde_json::Value,
+) -> Result<(), PersistenceError> {
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_FILE_INTEGRITY_CHANGED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            document_id,
+            occurred_at_ms,
+            json!({
+                "integrityState": integrity_state,
+                "details": details
+            })
+            .to_string()
+        ],
+    )?;
 
     Ok(())
 }
@@ -1626,7 +1745,10 @@ pub fn list_indexed_file_preview(
             fi.path_native_encoding,
             fi.size_bytes,
             fi.last_write_time_ms,
-            fi.availability_state
+            fi.availability_state,
+            fi.integrity_state,
+            fi.integrity_changed_at_ms,
+            fi.integrity_acknowledged_at_ms
          FROM file_instances fi
          JOIN documents d ON d.document_id = fi.document_id
          WHERE fi.storage_root_id = ?1
@@ -1652,6 +1774,9 @@ pub fn list_indexed_file_preview(
         let size_bytes: i64 = row.get(5)?;
         let modified_unix_ms: Option<i64> = row.get(6)?;
         let availability_state: String = row.get(7)?;
+        let integrity_state: String = row.get(8)?;
+        let integrity_changed_at_ms: Option<i64> = row.get(9)?;
+        let integrity_acknowledged_at_ms: Option<i64> = row.get(10)?;
 
         Ok((
             document_id,
@@ -1662,6 +1787,9 @@ pub fn list_indexed_file_preview(
             size_bytes,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         ))
     })?;
 
@@ -1676,6 +1804,9 @@ pub fn list_indexed_file_preview(
             size_bytes,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         ) = row?;
 
         let relative = decode_native_path(&relative_native, &native_encoding)?;
@@ -1694,6 +1825,9 @@ pub fn list_indexed_file_preview(
             size_bytes: size_bytes.max(0) as u64,
             modified_unix_ms,
             availability_state,
+            integrity_state,
+            integrity_changed_at_ms,
+            integrity_acknowledged_at_ms,
         });
     }
 
@@ -1904,6 +2038,8 @@ pub fn begin_evidence_capture(
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         String,
+        String,
+        Option<i64>,
     );
 
     let row: Option<CaptureRow> = transaction
@@ -1919,7 +2055,9 @@ pub fn begin_evidence_capture(
                 fi.last_write_time_ms,
                 fi.filesystem_identity,
                 fi.volume_identity,
-                fi.availability_state
+                fi.availability_state,
+                fi.integrity_state,
+                fi.integrity_acknowledged_at_ms
              FROM file_instances fi
              JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
              JOIN documents d ON d.document_id = fi.document_id
@@ -1939,6 +2077,8 @@ pub fn begin_evidence_capture(
                     row.get(8)?,
                     row.get(9)?,
                     row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
                 ))
             },
         )
@@ -1956,6 +2096,8 @@ pub fn begin_evidence_capture(
         filesystem_identity,
         volume_identity,
         availability_state,
+        integrity_state,
+        integrity_acknowledged_at_ms,
     )) = row
     else {
         return Err(PersistenceError::Configuration(format!(
@@ -1966,6 +2108,12 @@ pub fn begin_evidence_capture(
     if availability_state != "AVAILABLE" {
         return Err(PersistenceError::Configuration(format!(
             "file instance {file_instance_id} is {availability_state}; reconcile it before controlled evidence capture"
+        )));
+    }
+
+    if integrity_state != "UNCHANGED" && integrity_acknowledged_at_ms.is_none() {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} has an unacknowledged integrity alert ({integrity_state}); review and acknowledge it before controlled evidence capture"
         )));
     }
 
@@ -2395,6 +2543,9 @@ pub fn hydrate_search_files(
             fi.size_bytes,
             fi.last_write_time_ms,
             fi.availability_state,
+            fi.integrity_state,
+            fi.integrity_changed_at_ms,
+            fi.integrity_acknowledged_at_ms,
             COALESCE(sr.canonical_native_locator, sr.native_locator),
             sr.native_locator_encoding
          FROM file_instances fi
@@ -2418,8 +2569,11 @@ pub fn hydrate_search_files(
                     size_bytes: row.get(5)?,
                     modified_unix_ms: row.get(6)?,
                     availability_state: row.get(7)?,
-                    root_native: row.get(8)?,
-                    root_native_encoding: row.get(9)?,
+                    integrity_state: row.get(8)?,
+                    integrity_changed_at_ms: row.get(9)?,
+                    integrity_acknowledged_at_ms: row.get(10)?,
+                    root_native: row.get(11)?,
+                    root_native_encoding: row.get(12)?,
                 })
             })
             .optional()?;
@@ -2447,10 +2601,82 @@ pub fn hydrate_search_files(
             size_bytes: row.size_bytes.max(0) as u64,
             modified_unix_ms: row.modified_unix_ms,
             availability_state: row.availability_state,
+            integrity_state: row.integrity_state,
+            integrity_changed_at_ms: row.integrity_changed_at_ms,
+            integrity_acknowledged_at_ms: row.integrity_acknowledged_at_ms,
         }));
     }
 
     Ok(result)
+}
+
+pub fn acknowledge_file_integrity(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<i64, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let row: Option<(String, String, Option<i64>)> = transaction
+        .query_row(
+            "SELECT document_id, integrity_state, integrity_acknowledged_at_ms
+             FROM file_instances
+             WHERE file_instance_id = ?1",
+            [file_instance_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    let Some((document_id, integrity_state, acknowledged_at_ms)) = row else {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    };
+
+    if integrity_state == "UNCHANGED" {
+        return Err(PersistenceError::Configuration(
+            "this linked file has no integrity change to acknowledge".to_string(),
+        ));
+    }
+
+    if let Some(acknowledged_at_ms) = acknowledged_at_ms {
+        return Ok(acknowledged_at_ms);
+    }
+
+    let acknowledged_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "UPDATE file_instances
+         SET integrity_acknowledged_at_ms = ?1
+         WHERE file_instance_id = ?2",
+        params![acknowledged_at_ms, file_instance_id],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_FILE_INTEGRITY_ACKNOWLEDGED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            document_id,
+            acknowledged_at_ms,
+            json!({
+                "integrityState": integrity_state
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(acknowledged_at_ms)
 }
 
 pub fn record_document_open(
@@ -3113,7 +3339,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -3177,7 +3403,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -3225,7 +3451,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_exists: i64 = connection
             .query_row(
@@ -3274,7 +3500,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(

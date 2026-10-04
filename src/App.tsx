@@ -37,6 +37,9 @@ type IndexedFile = {
   sizeBytes: number;
   modifiedUnixMs: number | null;
   availabilityState: string;
+  integrityState: string;
+  integrityChangedAtMs: number | null;
+  integrityAcknowledgedAtMs: number | null;
 };
 
 type SearchResult = IndexedFile & {
@@ -404,6 +407,29 @@ function stateClass(availabilityState: string) {
   return `file-state file-state-${availabilityState.toLowerCase()}`;
 }
 
+function hasPendingIntegrityAlert(file: IndexedFile) {
+  return file.integrityState !== "UNCHANGED" && file.integrityAcknowledgedAtMs === null;
+}
+
+function integrityLabel(integrityState: string) {
+  switch (integrityState) {
+    case "CONTENT_CHANGED":
+      return "Content changed";
+    case "PATH_CHANGED":
+      return "Moved / renamed";
+    case "REPLACED":
+      return "Source replaced";
+    default:
+      return "Unchanged";
+  }
+}
+
+function integrityClass(file: IndexedFile) {
+  return hasPendingIntegrityAlert(file)
+    ? "integrity-state integrity-state-alert"
+    : "integrity-state integrity-state-acknowledged";
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
@@ -416,6 +442,8 @@ export default function App() {
   const [pinnedDocuments, setPinnedDocuments] = useState<PinnedDocument[]>([]);
   const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
   const [capturingFileInstanceId, setCapturingFileInstanceId] = useState<string | null>(null);
+  const [acknowledgingFileInstanceId, setAcknowledgingFileInstanceId] =
+    useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
@@ -1124,8 +1152,64 @@ export default function App() {
     }
   }
 
+  function applyIntegrityAcknowledgement(fileInstanceId: string, acknowledgedAtMs: number) {
+    const update = <T extends IndexedFile>(file: T): T =>
+      file.fileInstanceId === fileInstanceId
+        ? { ...file, integrityAcknowledgedAtMs: acknowledgedAtMs }
+        : file;
+
+    setPreviewFiles((current) => current.map(update));
+    setSearchResults((current) => current.map(update));
+    setRecentDocuments((current) => current.map(update));
+    setPinnedDocuments((current) => current.map(update));
+
+    setActiveTextPreview((current) =>
+      current ? { ...current, file: update(current.file) } : current,
+    );
+    setActivePdfPreview((current) =>
+      current ? { ...current, file: update(current.file) } : current,
+    );
+    setActiveWorkbookPreview((current) =>
+      current ? { ...current, file: update(current.file) } : current,
+    );
+    setActiveWordPreview((current) =>
+      current ? { ...current, file: update(current.file) } : current,
+    );
+  }
+
+  async function acknowledgeIntegrity(file: IndexedFile) {
+    if (!hasPendingIntegrityAlert(file) || acknowledgingFileInstanceId !== null) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Acknowledge "${file.name}" integrity change (${integrityLabel(file.integrityState)})?\n\nThis records that the linked-source change was reviewed. It does not restore prior content, alter controlled evidence, or merge different file identities.`,
+    );
+
+    if (!confirmed) return;
+
+    setError(null);
+    setAcknowledgingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const acknowledgedAtMs = await invoke<number>(
+        "acknowledge_linked_file_integrity",
+        { fileInstanceId: file.fileInstanceId },
+      );
+      applyIntegrityAcknowledgement(file.fileInstanceId, acknowledgedAtMs);
+    } catch (acknowledgeError) {
+      setError(String(acknowledgeError));
+    } finally {
+      setAcknowledgingFileInstanceId(null);
+    }
+  }
+
   async function captureEvidence(file: IndexedFile) {
-    if (file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null) {
+    if (
+      file.availabilityState !== "AVAILABLE" ||
+      hasPendingIntegrityAlert(file) ||
+      capturingFileInstanceId !== null
+    ) {
       return;
     }
 
@@ -1308,10 +1392,45 @@ export default function App() {
     );
   }
 
+  function renderIntegrityAction(file: IndexedFile) {
+    if (file.integrityState === "UNCHANGED") return null;
+
+    const pending = hasPendingIntegrityAlert(file);
+    const isAcknowledging = acknowledgingFileInstanceId === file.fileInstanceId;
+
+    return (
+      <>
+        <span
+          className={integrityClass(file)}
+          title={
+            pending
+              ? "Linked source changed after its prior indexed state and requires explicit review."
+              : `Reviewed ${file.integrityAcknowledgedAtMs ? new Date(file.integrityAcknowledgedAtMs).toLocaleString() : ""}`
+          }
+        >
+          {integrityLabel(file.integrityState)}
+          {pending ? " · REVIEW" : " · ACK"}
+        </span>
+        {pending ? (
+          <button
+            className="file-action file-action-integrity"
+            type="button"
+            onClick={() => void acknowledgeIntegrity(file)}
+            disabled={acknowledgingFileInstanceId !== null}
+          >
+            {isAcknowledging ? "Acknowledging…" : "Acknowledge"}
+          </button>
+        ) : null}
+      </>
+    );
+  }
+
   function renderCaptureAction(file: IndexedFile) {
     const isThisCapture = capturingFileInstanceId === file.fileInstanceId;
     const captureUnavailable =
-      file.availabilityState !== "AVAILABLE" || capturingFileInstanceId !== null;
+      file.availabilityState !== "AVAILABLE" ||
+      hasPendingIntegrityAlert(file) ||
+      capturingFileInstanceId !== null;
 
     return (
       <button
@@ -1320,9 +1439,11 @@ export default function App() {
         onClick={() => void captureEvidence(file)}
         disabled={captureUnavailable}
         title={
-          file.availabilityState === "AVAILABLE"
-            ? "Preserve an immutable verified evidence copy"
-            : "Reconcile the source before evidence capture"
+          file.availabilityState !== "AVAILABLE"
+            ? "Reconcile the source before evidence capture"
+            : hasPendingIntegrityAlert(file)
+              ? "Review and acknowledge the linked-file integrity change before evidence capture"
+              : "Preserve an immutable verified evidence copy"
         }
       >
         {isThisCapture ? "Capturing…" : "Capture evidence"}
@@ -1631,6 +1752,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -1704,6 +1826,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
@@ -1801,6 +1924,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
                       <button
@@ -1912,6 +2036,7 @@ export default function App() {
                       <span className={stateClass(file.availabilityState)}>
                         {file.availabilityState}
                       </span>
+                      {renderIntegrityAction(file)}
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderCaptureAction(file)}
@@ -2015,6 +2140,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeTextPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2096,6 +2222,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activePdfPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2170,6 +2297,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeWorkbookPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2492,6 +2620,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="text-preview-actions">
+                  {renderIntegrityAction(activeWordPreview.file)}
                   <button
                     className="secondary-button"
                     type="button"
