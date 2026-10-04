@@ -1434,6 +1434,22 @@ export default function App() {
     );
   }
 
+  function renderHistoryAction(file: IndexedFile) {
+    const isThisHistory = versionHistoryLoadingDocumentId === file.documentId;
+
+    return (
+      <button
+        className="file-action file-action-history"
+        type="button"
+        onClick={() => void showVersionHistory(file)}
+        disabled={versionHistoryLoadingDocumentId !== null}
+        title="View persisted source observations and immutable controlled evidence versions"
+      >
+        {isThisHistory ? "Loading history…" : "History"}
+      </button>
+    );
+  }
+
   function renderCaptureAction(file: IndexedFile) {
     const isThisCapture = capturingFileInstanceId === file.fileInstanceId;
     const isThisReconcile = reconcilingFileInstanceId === file.fileInstanceId;
@@ -1777,6 +1793,7 @@ export default function App() {
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1849,6 +1866,7 @@ export default function App() {
                         {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -1946,6 +1964,7 @@ export default function App() {
                         {stateLabel(file.availabilityState)}
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2058,6 +2077,7 @@ export default function App() {
                       </span>
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
+                      {renderHistoryAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
