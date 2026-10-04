@@ -980,7 +980,13 @@ fn update_existing_file_instance(
             observation.last_write_time_ms,
             Some(current) if existing.last_write_time_ms != Some(current)
         );
-    let availability_changed = existing.availability_state != "AVAILABLE";
+    let next_availability_state =
+        if existing.availability_state == "CHANGED" || path_changed || content_changed {
+            "CHANGED"
+        } else {
+            "AVAILABLE"
+        };
+    let availability_changed = existing.availability_state != next_availability_state;
     let display_name_changed = Path::new(&existing.relative_path_display)
         .file_name()
         .map(|value| value.to_string_lossy().as_ref() != observation.display_name)
@@ -1041,8 +1047,8 @@ fn update_existing_file_instance(
              reparse_tag = COALESCE(?11, reparse_tag),
              last_seen_at_ms = ?12,
              last_seen_generation_id = ?13,
-             availability_state = 'AVAILABLE'
-         WHERE file_instance_id = ?14",
+             availability_state = ?14
+         WHERE file_instance_id = ?15",
         params![
             &observation.relative_path_native,
             &observation.path_native_encoding,
@@ -1057,6 +1063,7 @@ fn update_existing_file_instance(
             observation.reparse_tag,
             context.observed_at_ms,
             context.scan_generation_id,
+            next_availability_state,
             &existing.file_instance_id
         ],
     )?;
@@ -1693,11 +1700,125 @@ pub fn list_indexed_file_preview(
             extension,
             size_bytes: size_bytes.max(0) as u64,
             modified_unix_ms,
-            availability_state,
+            availability_state: effective_file_availability_state(
+                &availability_state,
+                &root.availability_state,
+            ),
         });
     }
 
     Ok(result)
+}
+
+pub fn reconcile_linked_file_instance(
+    database_path: &Path,
+    file_instance_id: &str,
+) -> Result<(), PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let row: Option<(String, String, String, String, Option<String>)> = transaction
+        .query_row(
+            "SELECT
+                fi.document_id,
+                d.storage_state,
+                fi.availability_state,
+                sr.availability_state,
+                (
+                    SELECT cv.content_version_id
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = fi.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
+             FROM file_instances fi
+             JOIN documents d ON d.document_id = fi.document_id
+             JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+             WHERE fi.file_instance_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [file_instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((
+        document_id,
+        storage_state,
+        availability_state,
+        root_availability_state,
+        content_version_id,
+    )) = row
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} does not exist"
+        )));
+    };
+
+    if storage_state != "LINKED" {
+        return Err(PersistenceError::Configuration(
+            "only linked file instances can be reconciled".to_string(),
+        ));
+    }
+
+    if root_availability_state != "AVAILABLE" {
+        return Err(PersistenceError::Configuration(format!(
+            "storage root is {root_availability_state}; complete a successful rescan before reconciliation"
+        )));
+    }
+
+    if availability_state != "CHANGED" {
+        return Err(PersistenceError::Configuration(format!(
+            "file instance {file_instance_id} is {availability_state}; only CHANGED linked sources require reconciliation"
+        )));
+    }
+
+    let reconciled_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "UPDATE file_instances
+         SET availability_state = 'AVAILABLE'
+         WHERE file_instance_id = ?1",
+        [file_instance_id],
+    )?;
+
+    let details = json!({
+        "previousAvailabilityState": "CHANGED",
+        "newAvailabilityState": "AVAILABLE",
+        "contentVersionId": content_version_id,
+        "reconciliationPolicy": "USER_ACCEPTED_CURRENT_INDEXED_SOURCE"
+    });
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'LINKED_SOURCE_RECONCILED', 'FILE_INSTANCE', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            file_instance_id,
+            document_id,
+            reconciled_at_ms,
+            details.to_string()
+        ],
+    )?;
+
+    enqueue_document_projection(&transaction, file_instance_id, reconciled_at_ms)?;
+    transaction.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1711,6 +1832,24 @@ pub(crate) fn count_content_versions_for_test(
          FROM content_versions
          WHERE file_instance_id = ?1",
         [file_instance_id],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
+#[cfg(test)]
+pub(crate) fn count_audit_events_for_test(
+    database_path: &Path,
+    event_type: &str,
+    entity_id: &str,
+) -> Result<u64, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM audit_events
+         WHERE event_type = ?1
+           AND entity_id = ?2",
+        params![event_type, entity_id],
         |row| row.get(0),
     )?;
     Ok(count.max(0) as u64)
@@ -2394,7 +2533,10 @@ pub fn hydrate_search_files(
             fi.path_native_encoding,
             fi.size_bytes,
             fi.last_write_time_ms,
-            fi.availability_state,
+            CASE
+                WHEN sr.availability_state = 'OFFLINE' THEN 'UNAVAILABLE'
+                ELSE fi.availability_state
+            END,
             COALESCE(sr.canonical_native_locator, sr.native_locator),
             sr.native_locator_encoding
          FROM file_instances fi
@@ -2764,6 +2906,17 @@ pub fn normalize_search_text(value: &str) -> String {
     }
 
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn effective_file_availability_state(
+    file_availability_state: &str,
+    root_availability_state: &str,
+) -> String {
+    if root_availability_state == "OFFLINE" {
+        "UNAVAILABLE".to_string()
+    } else {
+        file_availability_state.to_string()
+    }
 }
 
 fn u64_to_i64(value: u64) -> Result<i64, PersistenceError> {
