@@ -72,6 +72,28 @@ type ControlledEvidenceVersion = {
   verificationState: string;
 };
 
+type DocumentVersionHistoryEntry = {
+  contentVersionId: string;
+  observedAtMs: number;
+  sizeBytes: number;
+  lastWriteTimeMs: number | null;
+  verificationState: string;
+  sourceStableDuringRead: boolean | null;
+  sha256Hex: string | null;
+  controlledEvidenceVersionId: string | null;
+  controlledVersionNumber: number | null;
+  capturedAtMs: number | null;
+  controlledVerificationState: string | null;
+  capturedBy: string | null;
+  captureReason: string | null;
+  capturePolicy: string | null;
+};
+
+type ActiveDocumentVersionHistory = {
+  file: IndexedFile;
+  entries: DocumentVersionHistoryEntry[];
+};
+
 type EvidenceCaptureNotice = {
   fileName: string;
   versionNumber: number;
@@ -395,6 +417,11 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
+function formatTimestamp(timestampMs: number | null) {
+  if (timestampMs === null) return "Not recorded";
+  return new Date(timestampMs).toLocaleString();
+}
+
 function jobLabel(job: IndexJob | null | undefined) {
   if (!job) return "Not indexed";
   return job.status.replaceAll("_", " ");
@@ -435,6 +462,10 @@ export default function App() {
     useState<string | null>(null);
   const [evidenceCaptureNotice, setEvidenceCaptureNotice] =
     useState<EvidenceCaptureNotice | null>(null);
+  const [activeVersionHistory, setActiveVersionHistory] =
+    useState<ActiveDocumentVersionHistory | null>(null);
+  const [versionHistoryLoadingDocumentId, setVersionHistoryLoadingDocumentId] =
+    useState<string | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
     useState<ActiveTextPreview | null>(null);
   const [activePdfPreview, setActivePdfPreview] =
