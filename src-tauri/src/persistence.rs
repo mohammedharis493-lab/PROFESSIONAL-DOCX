@@ -116,6 +116,8 @@ pub struct FileObservation {
     pub volume_identity: Option<Vec<u8>>,
     pub file_attributes: Option<i64>,
     pub reparse_tag: Option<i64>,
+    pub quick_fingerprint: Option<Vec<u8>>,
+    pub source_stable_during_read: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +283,7 @@ struct ExistingFileInstance {
     last_write_time_ms: Option<i64>,
     creation_time_ms: Option<i64>,
     availability_state: String,
+    latest_quick_fingerprint: Option<Vec<u8>>,
 }
 
 struct ObservationContext<'a> {
@@ -887,7 +890,14 @@ fn find_existing_by_identity(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                (
+                    SELECT cv.quick_fingerprint
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = file_instances.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
              FROM file_instances
              WHERE storage_root_id = ?1
                AND filesystem_identity = ?2
@@ -922,7 +932,14 @@ fn find_existing_by_path(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                (
+                    SELECT cv.quick_fingerprint
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = file_instances.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
              FROM file_instances
              WHERE storage_root_id = ?1
                AND path_native_encoding = ?2
@@ -955,6 +972,7 @@ fn existing_file_instance_from_row(
         last_write_time_ms: row.get(8)?,
         creation_time_ms: row.get(9)?,
         availability_state: row.get(10)?,
+        latest_quick_fingerprint: row.get(11)?,
     })
 }
 
@@ -994,11 +1012,21 @@ fn update_existing_file_instance(
     let observation = context.observation;
     let path_changed = existing.path_native_encoding != observation.path_native_encoding
         || existing.relative_path_native != observation.relative_path_native;
+    let fingerprint_changed = matches!(
+        (
+            existing.latest_quick_fingerprint.as_deref(),
+            observation.quick_fingerprint.as_deref(),
+        ),
+        (Some(previous), Some(current)) if previous != current
+    );
     let content_changed = existing.size_bytes != u64_to_i64(observation.size_bytes)?
         || matches!(
             observation.last_write_time_ms,
             Some(current) if existing.last_write_time_ms != Some(current)
-        );
+        )
+        || fingerprint_changed;
+    let should_seed_fingerprint =
+        existing.latest_quick_fingerprint.is_none() && observation.quick_fingerprint.is_some();
     let next_availability_state =
         if existing.availability_state == "CHANGED" || path_changed || content_changed {
             "CHANGED"
@@ -1096,7 +1124,7 @@ fn update_existing_file_instance(
         )?;
     }
 
-    if content_changed {
+    if content_changed || should_seed_fingerprint {
         insert_content_version(
             transaction,
             &existing.document_id,
@@ -1245,14 +1273,21 @@ fn insert_content_version(
             sha256,
             verification_state,
             source_stable_during_read
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, 'METADATA_ONLY', NULL)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
         params![
             &content_version_id,
             document_id,
             file_instance_id,
             observed_at_ms,
             u64_to_i64(observation.size_bytes)?,
-            observation.last_write_time_ms
+            observation.last_write_time_ms,
+            observation.quick_fingerprint.as_deref(),
+            if observation.quick_fingerprint.is_some() {
+                "FINGERPRINTED"
+            } else {
+                "METADATA_ONLY"
+            },
+            observation.source_stable_during_read.map(i64::from)
         ],
     )?;
 
@@ -2044,6 +2079,8 @@ pub fn relink_linked_file_instance(
             volume_identity: platform.volume_identity.clone(),
             file_attributes: platform.file_attributes,
             reparse_tag: platform.reparse_tag,
+            quick_fingerprint: None,
+            source_stable_during_read: None,
         };
         insert_content_version(
             &transaction,
