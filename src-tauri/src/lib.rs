@@ -557,6 +557,28 @@ async fn preview_text_file_instance(
 }
 
 #[tauri::command]
+async fn search_workbook_file_instance(
+    file_instance_id: String,
+    query: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<spreadsheet::WorkbookSearchResult, String> {
+    Uuid::parse_str(&file_instance_id)
+        .map_err(|_| "Invalid file-instance identifier.".to_string())?;
+
+    let database_path = database.path().to_path_buf();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = persistence::resolve_file_instance_source(&database_path, &file_instance_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Indexed file instance no longer exists.".to_string())?;
+
+        spreadsheet::search_workbook_source(&source, &query)
+    })
+    .await
+    .map_err(|error| format!("Workbook search task failed to join: {error}"))?
+}
+
+#[tauri::command]
 async fn preview_workbook_file_instance(
     file_instance_id: String,
     sheet_name: Option<String>,
@@ -734,6 +756,7 @@ pub fn run() {
             search_documents,
             capture_controlled_evidence,
             preview_text_file_instance,
+            search_workbook_file_instance,
             preview_workbook_file_instance,
             preview_word_file_instance,
             open_file_instance,
