@@ -162,3 +162,36 @@ pub fn platform_file_metadata_from_open_file(
     result.volume_identity = Some(information.volume_serial_number.to_le_bytes().to_vec());
     result
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn quick_fingerprint_changes_for_same_size_content_changes() {
+        let directory = std::env::temp_dir().join(format!(
+            "professional-docx-fingerprint-test-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).expect("test directory should exist");
+        let path = directory.join("sample.bin");
+
+        let mut first_content = vec![0x41_u8; QUICK_FINGERPRINT_CHUNK_BYTES * 4];
+        fs::write(&path, &first_content).expect("first content should be written");
+        let first = quick_fingerprint(&path).expect("first fingerprint should succeed");
+
+        first_content[first_content.len() / 2] = 0x42;
+        fs::write(&path, &first_content).expect("second content should be written");
+        let second = quick_fingerprint(&path).expect("second fingerprint should succeed");
+
+        assert!(first.source_stable_during_read);
+        assert!(second.source_stable_during_read);
+        assert_eq!(first.digest.len(), 32);
+        assert_eq!(second.digest.len(), 32);
+        assert_ne!(first.digest, second.digest);
+
+        let _ = fs::remove_dir_all(directory);
+    }
+}
