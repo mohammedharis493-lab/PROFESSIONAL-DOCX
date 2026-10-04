@@ -153,6 +153,32 @@ type ActiveWorkbookPreview = {
   cellsByPosition: Record<string, WorkbookCell>;
 };
 
+type WordParagraphBlock = {
+  kind: "paragraph";
+  text: string;
+  style: string | null;
+};
+
+type WordTableBlock = {
+  kind: "table";
+  rows: string[][];
+  truncated: boolean;
+};
+
+type WordBlock = WordParagraphBlock | WordTableBlock;
+
+type WordPreview = {
+  blocks: WordBlock[];
+  truncated: boolean;
+  totalSizeBytes: number;
+  blockCount: number;
+};
+
+type ActiveWordPreview = {
+  file: IndexedFile;
+  preview: WordPreview;
+};
+
 type ViewMode = "home" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
@@ -175,11 +201,24 @@ const TERMINAL_JOB_STATUSES = new Set([
 const TEXT_PREVIEW_EXTENSIONS = new Set(["txt", "csv", "xml"]);
 
 const EXCEL_PREVIEW_EXTENSIONS = new Set(["xlsx", "xlsm", "xls", "xlsb"]);
+const WORD_PREVIEW_EXTENSIONS = new Set(["docx"]);
 const WORKBOOK_PAGE_ROWS = 60;
 const WORKBOOK_PAGE_COLUMNS = 20;
 
 function supportsWorkbookPreview(file: IndexedFile) {
   return EXCEL_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
+function supportsWordPreview(file: IndexedFile) {
+  return WORD_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
+function wordParagraphClass(style: string | null) {
+  const match = style?.match(/^Heading\s*([1-6])$/i);
+  if (!match) return "word-paragraph";
+
+  const level = Number(match[1]);
+  return `word-paragraph word-heading word-heading-${level}`;
 }
 
 function workbookCellKey(row: number, column: number) {
@@ -246,6 +285,8 @@ export default function App() {
     useState<ActivePdfPreview | null>(null);
   const [activeWorkbookPreview, setActiveWorkbookPreview] =
     useState<ActiveWorkbookPreview | null>(null);
+  const [activeWordPreview, setActiveWordPreview] =
+    useState<ActiveWordPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
     useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("home");
@@ -618,6 +659,44 @@ export default function App() {
     }
   }
 
+  function closeWordPreview() {
+    setActiveWordPreview(null);
+  }
+
+  async function previewWordFileInstance(file: IndexedFile, usedQuery?: string) {
+    if (!supportsWordPreview(file) || file.availabilityState === "MISSING") {
+      return;
+    }
+
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const preview = await invoke<WordPreview>("preview_word_file_instance", {
+        fileInstanceId: file.fileInstanceId,
+      });
+
+      closePdfPreview();
+      closeWorkbookPreview();
+      setActiveTextPreview(null);
+      setActiveWordPreview({ file, preview });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
+      await refreshQuickAccess();
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
+  }
+
   function closeWorkbookPreview() {
     setActiveWorkbookPreview(null);
   }
@@ -658,6 +737,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeWordPreview();
       setActiveTextPreview(null);
       activateWorkbookPreview(file, preview);
       return true;
@@ -716,7 +796,8 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
 
       closePdfPreview();
-      setActiveWorkbookPreview(null);
+      closeWorkbookPreview();
+      closeWordPreview();
       setActiveTextPreview(null);
       pdfBlobUrlRef.current = blobUrl;
       setActivePdfPreview({ file, url: blobUrl });
@@ -751,7 +832,8 @@ export default function App() {
       });
 
       closePdfPreview();
-      setActiveWorkbookPreview(null);
+      closeWorkbookPreview();
+      closeWordPreview();
       setActiveTextPreview({ file, preview });
 
       if (usedQuery?.trim()) {
@@ -845,7 +927,10 @@ export default function App() {
     const isTextPreview = supportsTextPreview(file);
     const isPdfPreview = file.extension.toLowerCase() === "pdf";
     const isWorkbookPreview = supportsWorkbookPreview(file);
-    if (!isTextPreview && !isPdfPreview && !isWorkbookPreview) return null;
+    const isWordPreview = supportsWordPreview(file);
+    if (!isTextPreview && !isPdfPreview && !isWorkbookPreview && !isWordPreview) {
+      return null;
+    }
 
     const isThisPreview = previewingFileInstanceId === file.fileInstanceId;
 
@@ -858,7 +943,9 @@ export default function App() {
             ? previewPdfFileInstance(file, usedQuery)
             : isWorkbookPreview
               ? previewWorkbookFileInstance(file, usedQuery)
-              : previewFileInstance(file, usedQuery))
+              : isWordPreview
+                ? previewWordFileInstance(file, usedQuery)
+                : previewFileInstance(file, usedQuery))
         }
         disabled={file.availabilityState === "MISSING" || previewingFileInstanceId !== null}
         title={
@@ -866,7 +953,9 @@ export default function App() {
             ? "Preview PDF safely inside Professional DocX"
             : isWorkbookPreview
               ? "Preview workbook safely inside Professional DocX"
-              : "Preview text safely inside Professional DocX"
+              : isWordPreview
+                ? "Preview DOCX safely inside Professional DocX"
+                : "Preview text safely inside Professional DocX"
         }
       >
         {isThisPreview ? "Loading…" : "Preview"}
