@@ -1422,3 +1422,95 @@ input:focus-visible {
     padding: 24px 20px 36px;
   }
 }
+
+
+.viewer-search-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #e5eaf0;
+  background: #f8fafc;
+}
+
+.viewer-search-bar input {
+  width: min(360px, 42vw);
+  min-width: 180px;
+  border: 1px solid #cfd8e4;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: #ffffff;
+  color: #273447;
+  font: inherit;
+}
+
+.viewer-search-bar input:focus {
+  border-color: #7596c7;
+  outline: 2px solid rgba(90, 128, 184, 0.15);
+}
+
+.viewer-search-count {
+  min-width: 76px;
+  color: #5f6d80;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.viewer-search-scope {
+  margin-left: auto;
+  color: #7a8799;
+  font-size: 10px;
+}
+
+.viewer-search-native {
+  align-items: baseline;
+  color: #617085;
+  font-size: 11px;
+}
+
+.viewer-search-native strong {
+  color: #334155;
+}
+
+.viewer-search-mark {
+  border-radius: 2px;
+  background: #fff0a6;
+  color: inherit;
+  padding: 0 1px;
+}
+
+.viewer-search-mark-active {
+  outline: 2px solid #d28c16;
+  background: #ffd66d;
+}
+
+.workbook-cell-search-hit {
+  background: #fffbea;
+}
+
+.workbook-cell-search-active {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid #d28c16;
+  outline-offset: -3px;
+  background: #fff3c4;
+}
+
+@media (max-width: 760px) {
+  .viewer-search-bar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .viewer-search-bar input {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .viewer-search-scope {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+}
