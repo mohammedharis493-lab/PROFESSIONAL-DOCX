@@ -25,7 +25,7 @@ pub fn quick_fingerprint(path: &Path) -> io::Result<QuickFingerprint> {
 
     let chunk = QUICK_FINGERPRINT_CHUNK_BYTES as u64;
     if size <= chunk.saturating_mul(3) {
-        let mut buffer = Vec::with_capacity(size.min(usize::MAX as u64) as usize);
+        let mut buffer = Vec::with_capacity(size as usize);
         file.read_to_end(&mut buffer)?;
         hasher.update(&buffer);
     } else {
@@ -162,7 +162,6 @@ pub fn platform_file_metadata_from_open_file(
     result.volume_identity = Some(information.volume_serial_number.to_le_bytes().to_vec());
     result
 }
-
 
 #[cfg(test)]
 mod tests {
