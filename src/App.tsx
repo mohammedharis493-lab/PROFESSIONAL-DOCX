@@ -1201,9 +1201,12 @@ export default function App() {
           : item;
 
       setSearchResults((current) => current.map(mergeRelinked));
-      setPreviewFiles((current) => current.map(mergeRelinked));
       setRecentDocuments((current) => current.map(mergeRelinked));
       setPinnedDocuments((current) => current.map(mergeRelinked));
+
+      if (selectedRoot) {
+        await loadPreview(selectedRoot);
+      }
     } catch (relinkError) {
       setError(String(relinkError));
     } finally {
