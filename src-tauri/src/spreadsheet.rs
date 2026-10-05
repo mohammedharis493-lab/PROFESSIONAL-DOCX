@@ -847,7 +847,7 @@ fn local_xml_name(name: &[u8]) -> &[u8] {
 }
 
 fn normalize_package_target(base_part: &str, target: &str) -> Option<String> {
-    if target.contains("://") || target.contains('\') {
+    if target.contains("://") || target.contains(char::from(92_u8)) {
         return None;
     }
 
