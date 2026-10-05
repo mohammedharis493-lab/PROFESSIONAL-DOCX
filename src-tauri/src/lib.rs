@@ -567,9 +567,7 @@ fn create_client(
 }
 
 #[tauri::command]
-fn list_clients(
-    database: State<'_, persistence::DatabaseState>,
-) -> Result<Vec<ClientDto>, String> {
+fn list_clients(database: State<'_, persistence::DatabaseState>) -> Result<Vec<ClientDto>, String> {
     persistence::list_clients(database.path())
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
