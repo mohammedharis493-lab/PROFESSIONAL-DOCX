@@ -5709,7 +5709,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5731,14 +5731,22 @@ mod tests {
                        'evidence_capture_jobs',
                        'controlled_evidence_versions',
                        'audit_events',
-                       'document_relationships'
+                       'document_relationships',
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas',
+                       'procedures',
+                       'workpapers',
+                       'workpaper_revisions',
+                       'workpaper_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 16);
+        assert_eq!(table_count, 24);
     }
 
     #[test]
@@ -5774,7 +5782,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5815,14 +5823,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: i64 = connection
             .query_row(
@@ -5864,14 +5872,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5916,14 +5924,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 5");
+        initialize_database(&database.path).expect("database should upgrade to version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: bool = connection
             .query_row(
@@ -5936,6 +5944,63 @@ mod tests {
             )
             .expect("document relationship table should exist");
         assert!(table_exists);
+    }
+
+    #[test]
+    fn sixth_migration_upgrades_existing_v5_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..5] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 5);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 6");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 6);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas',
+                       'procedures',
+                       'workpapers',
+                       'workpaper_revisions',
+                       'workpaper_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("engagement and workpaper tables should exist");
+        assert_eq!(table_count, 8);
     }
 
     #[test]
