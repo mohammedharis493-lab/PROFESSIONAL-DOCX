@@ -6004,6 +6004,337 @@ mod tests {
     }
 
     #[test]
+    fn engagement_workpapers_use_immutable_revisions_and_exact_evidence_versions() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Northwind Advisory Client")
+            .expect("client should be created");
+        let service = create_service_type(&database.path, "Custom Assurance Review")
+            .expect("custom service type should be created");
+        let second_service = create_service_type(&database.path, "Operational Review")
+            .expect("second custom service type should be created");
+
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Northwind Custom Review 2026",
+            Some("2026-04-01"),
+            Some("2027-03-31"),
+            "ACTIVE",
+        )
+        .expect("engagement should be created");
+        let second_engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &second_service.service_type_id,
+            "Northwind Operations 2026",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("second engagement should be created");
+
+        let root_area = create_engagement_area(
+            &database.path,
+            &engagement.engagement_id,
+            None,
+            "Process Assurance",
+            Some("PA"),
+            10,
+            "ACTIVE",
+        )
+        .expect("root area should be created");
+        let child_area = create_engagement_area(
+            &database.path,
+            &engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            "Vendor Onboarding",
+            Some("VO"),
+            20,
+            "ACTIVE",
+        )
+        .expect("nested custom area should be created");
+
+        let cross_engagement_error = create_engagement_area(
+            &database.path,
+            &second_engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            "Invalid Child",
+            None,
+            0,
+            "ACTIVE",
+        )
+        .expect_err("parent area from another engagement must be rejected");
+        assert!(cross_engagement_error
+            .to_string()
+            .contains("parent area must belong to the same engagement"));
+
+        let procedure = create_procedure(
+            &database.path,
+            &engagement.engagement_id,
+            Some(&child_area.engagement_area_id),
+            Some("PROC-01"),
+            "Inspect vendor onboarding evidence",
+            Some("Review the configured onboarding control and supporting records."),
+            "ACTIVE",
+        )
+        .expect("procedure should be created");
+
+        let workpaper = create_workpaper(
+            &database.path,
+            &engagement.engagement_id,
+            Some(&child_area.engagement_area_id),
+            Some(&procedure.procedure_id),
+            "WP-01",
+            "Vendor onboarding workpaper",
+            "IN_PROGRESS",
+        )
+        .expect("workpaper should be created");
+
+        let revision_one = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Initial documentation"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Inspected selected onboarding records.",
+                population: "All vendors added during the period.",
+                sample: "Five judgmentally selected vendors.",
+                exceptions: "",
+                management_explanation: "",
+                conclusion: "No exception identified in the initial sample.",
+            },
+        )
+        .expect("first revision should be created");
+        assert_eq!(revision_one.revision_number, 1);
+        assert_eq!(revision_one.supersedes_revision_id, None);
+        assert_eq!(revision_one.content_hash.as_ref().map(Vec::len), Some(32));
+
+        let revision_two = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Expanded sample after preparer review"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Inspected expanded onboarding records.",
+                population: "All vendors added during the period.",
+                sample: "Eight judgmentally selected vendors.",
+                exceptions: "One delayed approval noted.",
+                management_explanation: "Approval was completed the following business day.",
+                conclusion: "Control operated with one timing exception.",
+            },
+        )
+        .expect("second revision should be created");
+        assert_eq!(revision_two.revision_number, 2);
+        assert_eq!(
+            revision_two.supersedes_revision_id.as_deref(),
+            Some(revision_one.workpaper_revision_id.as_str())
+        );
+
+        let revisions = list_workpaper_revisions(&database.path, &workpaper.workpaper_id)
+            .expect("revision history should load");
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].revision_number, 2);
+        assert_eq!(revisions[1].revision_number, 1);
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE workpaper_revisions
+                 SET conclusion = 'tampered'
+                 WHERE workpaper_revision_id = ?1",
+                [&revision_one.workpaper_revision_id],
+            )
+            .expect_err("immutable revision update must be rejected");
+        assert!(mutation_error
+            .to_string()
+            .contains("workpaper revisions are immutable"));
+
+        let source_root = database.source_root("workpaper-evidence-source");
+        fs::create_dir_all(&source_root).expect("evidence source root should exist");
+        let canonical_root =
+            fs::canonicalize(&source_root).expect("evidence source root should canonicalize");
+        let storage_root = register_storage_root(
+            &database.path,
+            "workpaper-evidence-root",
+            &source_root,
+            &canonical_root,
+        )
+        .expect("evidence root should register");
+        let index_job_id = Uuid::new_v4().to_string();
+        let scan_generation_id = Uuid::new_v4().to_string();
+        create_index_job(
+            &database.path,
+            &storage_root.storage_root_id,
+            &index_job_id,
+            &scan_generation_id,
+        )
+        .expect("index job should be created");
+        mark_index_job_running(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &storage_root.storage_root_id,
+        )
+        .expect("index job should start");
+
+        let observation = |name: &str, fingerprint: u8| {
+            let relative = Path::new(name);
+            let (relative_path_native, path_native_encoding) =
+                encode_native_path_for_storage(relative);
+            FileObservation {
+                relative_path_native,
+                path_native_encoding,
+                relative_path_display: name.to_string(),
+                relative_path_search: normalize_search_text(name),
+                display_name: name.to_string(),
+                size_bytes: 64,
+                creation_time_ms: Some(1_000),
+                last_write_time_ms: Some(2_000),
+                filesystem_identity: None,
+                volume_identity: None,
+                file_attributes: None,
+                reparse_tag: None,
+                quick_fingerprint: Some(vec![fingerprint; 32]),
+                source_stable_during_read: Some(true),
+            }
+        };
+        let observations = [
+            observation("Support A.pdf", 0x31),
+            observation("Support B.pdf", 0x42),
+        ];
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &storage_root.storage_root_id,
+            &observations,
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("evidence documents should persist");
+
+        let files = list_indexed_file_preview(
+            &database.path,
+            &storage_root.storage_root_id,
+            10,
+        )
+        .expect("evidence files should list");
+        let support_a = files
+            .iter()
+            .find(|file| file.name == "Support A.pdf")
+            .expect("support A should exist");
+        let support_b = files
+            .iter()
+            .find(|file| file.name == "Support B.pdf")
+            .expect("support B should exist");
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let version_a: String = connection
+            .query_row(
+                "SELECT content_version_id
+                 FROM content_versions
+                 WHERE document_id = ?1
+                 ORDER BY observed_at_ms DESC, rowid DESC
+                 LIMIT 1",
+                [&support_a.document_id],
+                |row| row.get(0),
+            )
+            .expect("support A content version should load");
+
+        let evidence_link = create_workpaper_evidence_link(
+            &database.path,
+            &revision_two.workpaper_revision_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            Some("Primary onboarding support"),
+        )
+        .expect("exact-version evidence link should be created");
+        assert_eq!(
+            evidence_link.content_version_id.as_deref(),
+            Some(version_a.as_str())
+        );
+        assert_eq!(evidence_link.controlled_evidence_version_id, None);
+
+        let mismatch = create_workpaper_evidence_link(
+            &database.path,
+            &revision_two.workpaper_revision_id,
+            &support_b.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            None,
+        )
+        .expect_err("version from another document must be rejected");
+        assert!(mismatch
+            .to_string()
+            .contains("content version does not belong to the selected document"));
+
+        let links =
+            list_workpaper_evidence_links(&database.path, &revision_two.workpaper_revision_id)
+                .expect("evidence links should load");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].evidence_link_id, evidence_link.evidence_link_id);
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let delete_error = connection
+            .execute(
+                "DELETE FROM workpaper_evidence_links
+                 WHERE evidence_link_id = ?1",
+                [&evidence_link.evidence_link_id],
+            )
+            .expect_err("immutable evidence link deletion must be rejected");
+        assert!(delete_error
+            .to_string()
+            .contains("workpaper evidence links are immutable"));
+
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_CREATED",
+                &workpaper.workpaper_id,
+            )
+            .expect("workpaper audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_REVISION_CREATED",
+                &revision_one.workpaper_revision_id,
+            )
+            .expect("revision audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_EVIDENCE_LINK_ADDED",
+                &evidence_link.evidence_link_id,
+            )
+            .expect("evidence-link audit count should load"),
+            1
+        );
+
+        let workpapers = list_workpapers(&database.path, &engagement.engagement_id)
+            .expect("workpapers should list");
+        assert_eq!(workpapers.len(), 1);
+        assert_eq!(workpapers[0].latest_revision_number, Some(2));
+
+        let areas = list_engagement_areas(&database.path, &engagement.engagement_id)
+            .expect("engagement areas should list");
+        assert_eq!(areas.len(), 2);
+        assert!(areas.iter().any(|area| area.name == "Vendor Onboarding"));
+    }
+
+    #[test]
     fn document_relationships_are_bidirectional_in_context_and_audited() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
