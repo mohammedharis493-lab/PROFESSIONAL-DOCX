@@ -3270,11 +3270,11 @@ export default function App() {
                 </div>
                 <div>
                   <strong>
-                    Comments / notes ({activeWorkbookPreview.preview.comments.length})
+                    Notes / legacy comments ({activeWorkbookPreview.preview.comments.length})
                   </strong>
                   <span>
                     {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
-                      ? "OOXML comment metadata is unavailable for this workbook format."
+                      ? "OOXML note metadata is unavailable for this workbook format."
                       : activeWorkbookPreview.preview.comments.length
                         ? activeWorkbookPreview.preview.comments
                             .slice(0, 6)
@@ -3327,8 +3327,8 @@ export default function App() {
                     ? "Sheet metadata list truncated for safety. "
                     : ""}
                   {activeWorkbookPreview.preview.ooxmlMetadataAvailable
-                    ? "OOXML comments/notes and hidden row/column indicators are preserved for this sheet."
-                    : "Comments/notes and hidden row/column indicators are not available for this workbook format."}
+                    ? "OOXML notes and hidden row/column indicators are preserved for this sheet; threaded comments are not yet surfaced."
+                    : "Notes and hidden row/column indicators are not available for this workbook format."}
                 </span>
               </footer>
             </section>
