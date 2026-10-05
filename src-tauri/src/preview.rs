@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 pub const MAX_TEXT_PREVIEW_BYTES: u64 = 256 * 1024;
 pub const MAX_PDF_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_IMAGE_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
 
 const SUPPORTED_TEXT_EXTENSIONS: &[&str] = &["txt", "csv", "xml"];
 
@@ -32,6 +33,68 @@ pub struct TextPreview {
 pub fn preview_text_source(source: &ResolvedFileSource) -> Result<TextPreview, String> {
     let path = launcher::validated_existing_path(source).map_err(|error| error.to_string())?;
     preview_validated_path(&path)
+}
+
+pub fn image_preview_response(
+    database_path: &Path,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Some(file_instance_id) = parse_image_preview_file_instance_id(request.uri().path()) else {
+        return image_error_response(StatusCode::BAD_REQUEST, "Invalid image preview request.");
+    };
+
+    let source = match persistence::resolve_file_instance_source(database_path, &file_instance_id) {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            return image_error_response(StatusCode::NOT_FOUND, "Indexed image no longer exists.");
+        }
+        Err(_) => {
+            return image_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to resolve image preview.",
+            );
+        }
+    };
+
+    let (bytes, content_type) = match read_image_source(&source) {
+        Ok(result) => result,
+        Err(ImagePreviewError::TooLarge) => {
+            return image_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Image is too large for in-app preview. Open the original instead.",
+            );
+        }
+        Err(ImagePreviewError::Unsupported) => {
+            return image_error_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "The indexed source is not a supported raster image preview target.",
+            );
+        }
+        Err(ImagePreviewError::Unavailable) => {
+            return image_error_response(
+                StatusCode::NOT_FOUND,
+                "The original image is currently unavailable.",
+            );
+        }
+    };
+
+    if persistence::record_document_open(database_path, &file_instance_id).is_err() {
+        return image_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Image preview opened but recent-document history could not be updated.",
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_DISPOSITION, "inline")
+        .header(CACHE_CONTROL, "no-store, private")
+        .header(CONTENT_LENGTH, bytes.len().to_string())
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(bytes)
+        .expect("static image preview response headers are valid")
 }
 
 pub fn pdf_preview_response(database_path: &Path, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -93,6 +156,15 @@ pub fn pdf_preview_response(database_path: &Path, request: Request<Vec<u8>>) -> 
         .expect("static PDF preview response headers are valid")
 }
 
+fn parse_image_preview_file_instance_id(path: &str) -> Option<String> {
+    let raw = path.strip_prefix("/image/")?;
+    if raw.is_empty() || raw.contains('/') {
+        return None;
+    }
+
+    Uuid::parse_str(raw).ok().map(|value| value.to_string())
+}
+
 fn parse_pdf_preview_file_instance_id(path: &str) -> Option<String> {
     let raw = path.strip_prefix("/pdf/")?;
     if raw.is_empty() || raw.contains('/') {
@@ -100,6 +172,93 @@ fn parse_pdf_preview_file_instance_id(path: &str) -> Option<String> {
     }
 
     Uuid::parse_str(raw).ok().map(|value| value.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImagePreviewError {
+    TooLarge,
+    Unsupported,
+    Unavailable,
+}
+
+fn read_image_source(
+    source: &ResolvedFileSource,
+) -> Result<(Vec<u8>, &'static str), ImagePreviewError> {
+    let path =
+        launcher::validated_existing_path(source).map_err(|_| ImagePreviewError::Unavailable)?;
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let expected_content_type = image_content_type_for_extension(&extension)
+        .ok_or(ImagePreviewError::Unsupported)?;
+
+    let metadata = fs::metadata(&path).map_err(|_| ImagePreviewError::Unavailable)?;
+    if metadata.len() > MAX_IMAGE_PREVIEW_BYTES {
+        return Err(ImagePreviewError::TooLarge);
+    }
+
+    let bytes = fs::read(path).map_err(|_| ImagePreviewError::Unavailable)?;
+    let detected_content_type =
+        detect_image_content_type(&bytes).ok_or(ImagePreviewError::Unsupported)?;
+
+    if detected_content_type != expected_content_type {
+        return Err(ImagePreviewError::Unsupported);
+    }
+
+    Ok((bytes, detected_content_type))
+}
+
+fn image_content_type_for_extension(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+fn detect_image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+
+    if bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff] {
+        return Some("image/jpeg");
+    }
+
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+
+    if bytes.len() >= 12
+        && bytes.starts_with(b"RIFF")
+        && bytes.get(8..12) == Some(b"WEBP".as_slice())
+    {
+        return Some("image/webp");
+    }
+
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+
+    None
+}
+
+fn image_error_response(status: StatusCode, message: &str) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(CACHE_CONTROL, "no-store, private")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(message.as_bytes().to_vec())
+        .expect("static image preview error response headers are valid")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +437,75 @@ mod tests {
     }
 
     #[test]
+    fn reads_supported_raster_image_inside_approved_root() {
+        let fixture = PreviewFixture::new();
+        let png = b"\x89PNG\r\n\x1a\nminimal-png-fixture";
+        fs::write(fixture.root.join("sample.png"), png).expect("PNG fixture should be written");
+
+        let (bytes, content_type) = read_image_source(&fixture.source("sample.png"))
+            .expect("valid raster image preview should succeed");
+
+        assert_eq!(bytes, png);
+        assert_eq!(content_type, "image/png");
+    }
+
+    #[test]
+    fn rejects_image_content_that_does_not_match_extension() {
+        let fixture = PreviewFixture::new();
+        fs::write(
+            fixture.root.join("fake.jpg"),
+            b"\x89PNG\r\n\x1a\nactually-png",
+        )
+        .expect("mismatched image fixture should be written");
+
+        let error = read_image_source(&fixture.source("fake.jpg"))
+            .expect_err("mismatched raster image should fail");
+
+        assert_eq!(error, ImagePreviewError::Unsupported);
+    }
+
+    #[test]
+    fn rejects_svg_from_raster_image_preview() {
+        let fixture = PreviewFixture::new();
+        fs::write(
+            fixture.root.join("active.svg"),
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script/></svg>",
+        )
+        .expect("SVG fixture should be written");
+
+        let error = read_image_source(&fixture.source("active.svg"))
+            .expect_err("SVG must not use raster image preview");
+
+        assert_eq!(error, ImagePreviewError::Unsupported);
+    }
+
+    #[test]
+    fn rejects_image_over_preview_size_limit() {
+        let fixture = PreviewFixture::new();
+        let path = fixture.root.join("huge.png");
+        let file = fs::File::create(&path).expect("large image fixture should be created");
+        file.set_len(MAX_IMAGE_PREVIEW_BYTES + 1)
+            .expect("large image fixture should be sized");
+
+        let error = read_image_source(&fixture.source("huge.png"))
+            .expect_err("oversize image preview should fail");
+
+        assert_eq!(error, ImagePreviewError::TooLarge);
+    }
+
+    #[test]
+    fn parses_only_uuid_image_preview_routes() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            parse_image_preview_file_instance_id(&format!("/image/{id}")),
+            Some(id.to_string())
+        );
+        assert!(parse_image_preview_file_instance_id("/image/not-a-uuid").is_none());
+        assert!(parse_image_preview_file_instance_id("/image/a/b").is_none());
+        assert!(parse_image_preview_file_instance_id("/pdf/value").is_none());
+    }
+
+    #[test]
     fn reads_valid_pdf_inside_approved_root() {
         let fixture = PreviewFixture::new();
         let pdf = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
@@ -346,6 +574,28 @@ mod tests {
             .expect_err("symlink escape should be rejected");
 
         assert!(error.contains("approved storage root"));
+
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_preview_rejects_symlink_escape_from_approved_root() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = PreviewFixture::new();
+        let outside =
+            std::env::temp_dir().join(format!("professional-docx-image-outside-{}", Uuid::new_v4()));
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("secret.png"), b"\x89PNG\r\n\x1a\nsecret")
+            .expect("outside image should be written");
+        symlink(outside.join("secret.png"), fixture.root.join("linked.png"))
+            .expect("symlink should be created");
+
+        let error = read_image_source(&fixture.source("linked.png"))
+            .expect_err("image symlink escape should be rejected");
+
+        assert_eq!(error, ImagePreviewError::Unavailable);
 
         let _ = fs::remove_dir_all(outside);
     }
