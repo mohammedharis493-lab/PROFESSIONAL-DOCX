@@ -946,6 +946,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       setActiveTextPreview(null);
       setActiveWordPreview({ file, preview });
@@ -1006,6 +1007,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWordPreview();
       setActiveTextPreview(null);
       activateWorkbookPreview(file, preview);
@@ -1040,6 +1042,63 @@ export default function App() {
       pdfBlobUrlRef.current = null;
     }
     setActivePdfPreview(null);
+  }
+
+  function closeImagePreview() {
+    if (imageBlobUrlRef.current) {
+      URL.revokeObjectURL(imageBlobUrlRef.current);
+      imageBlobUrlRef.current = null;
+    }
+    setActiveImagePreview(null);
+  }
+
+  async function previewImageFileInstance(file: IndexedFile, usedQuery?: string) {
+    if (!supportsImagePreview(file) || sourceUnavailable(file.availabilityState)) {
+      return;
+    }
+
+    resetViewerSearch();
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const protocolUrl = convertFileSrc(
+        `/image/${file.fileInstanceId}`,
+        "pdx-preview",
+      );
+      const response = await fetch(protocolUrl, { cache: "no-store" });
+
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(message || `Image preview failed with status ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      closeImagePreview();
+      closePdfPreview();
+      closeImagePreview();
+      closeWorkbookPreview();
+      closeWordPreview();
+      setActiveTextPreview(null);
+      imageBlobUrlRef.current = blobUrl;
+      setActiveImagePreview({ file, url: blobUrl });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
+      await refreshQuickAccess();
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
   }
 
   async function previewPdfFileInstance(file: IndexedFile, usedQuery?: string) {
@@ -1104,6 +1163,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       closeWordPreview();
       setActiveTextPreview({ file, preview });
