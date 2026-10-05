@@ -1,7 +1,7 @@
 use crate::{launcher, persistence::ResolvedFileSource};
 use calamine::{open_workbook_auto, Data, Dimensions, Reader, SheetType, SheetVisible, Sheets};
 use quick_xml::{
-    escape::unescape,
+    escape::{resolve_xml_entity, unescape},
     events::{BytesStart, Event},
     Reader as XmlReader,
 };
@@ -753,26 +753,37 @@ fn parse_comments_xml(xml: &str) -> Result<(Vec<WorkbookCommentInfo>, bool), Str
                     .map_err(|error| format!("Unable to decode OOXML text: {error}"))?;
                 let decoded = unescape(decoded.as_ref())
                     .map_err(|error| format!("Unable to unescape OOXML text: {error}"))?;
-
-                if in_author {
-                    if let Some(author) = current_author.as_mut() {
-                        author.push_str(decoded.as_ref());
-                    }
-                } else if in_comment_text {
-                    if let Some((_, _, comment_text)) = current_comment.as_mut() {
-                        let remaining =
-                            MAX_COMMENT_TEXT_CHARS.saturating_sub(comment_text.chars().count());
-                        if remaining == 0 {
-                            truncated = true;
-                        } else {
-                            let fragment: String = decoded.chars().take(remaining).collect();
-                            comment_text.push_str(&fragment);
-                            if fragment.chars().count() < decoded.chars().count() {
-                                truncated = true;
-                            }
-                        }
-                    }
-                }
+                append_comment_fragment(
+                    &mut current_author,
+                    &mut current_comment,
+                    in_author,
+                    in_comment_text,
+                    decoded.as_ref(),
+                    &mut truncated,
+                );
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                let resolved = if let Some(character) = reference
+                    .resolve_char_ref()
+                    .map_err(|error| format!("Unable to resolve OOXML character reference: {error}"))?
+                {
+                    character.to_string()
+                } else {
+                    let entity_name = String::from_utf8_lossy(reference.as_ref());
+                    resolve_xml_entity(entity_name.as_ref())
+                        .ok_or_else(|| {
+                            format!("Unsupported OOXML entity reference '&{entity_name};'.")
+                        })?
+                        .to_string()
+                };
+                append_comment_fragment(
+                    &mut current_author,
+                    &mut current_comment,
+                    in_author,
+                    in_comment_text,
+                    &resolved,
+                    &mut truncated,
+                );
             }
             Ok(Event::End(end)) => match local_xml_name(end.name().as_ref()) {
                 b"author" => {
@@ -807,6 +818,42 @@ fn parse_comments_xml(xml: &str) -> Result<(Vec<WorkbookCommentInfo>, bool), Str
     }
 
     Ok((comments, truncated))
+}
+
+fn append_comment_fragment(
+    current_author: &mut Option<String>,
+    current_comment: &mut Option<(String, Option<usize>, String)>,
+    in_author: bool,
+    in_comment_text: bool,
+    fragment: &str,
+    truncated: &mut bool,
+) {
+    if in_author {
+        if let Some(author) = current_author.as_mut() {
+            author.push_str(fragment);
+        }
+        return;
+    }
+
+    if !in_comment_text {
+        return;
+    }
+
+    let Some((_, _, comment_text)) = current_comment.as_mut() else {
+        return;
+    };
+
+    let remaining = MAX_COMMENT_TEXT_CHARS.saturating_sub(comment_text.chars().count());
+    if remaining == 0 {
+        *truncated = true;
+        return;
+    }
+
+    let bounded: String = fragment.chars().take(remaining).collect();
+    comment_text.push_str(&bounded);
+    if bounded.chars().count() < fragment.chars().count() {
+        *truncated = true;
+    }
 }
 
 fn xml_attribute_value(
