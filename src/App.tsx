@@ -170,6 +170,14 @@ type WorkbookHyperlinkInfo = {
   tooltip: string | null;
 };
 
+type WorkbookCommentInfo = {
+  row: number;
+  column: number;
+  address: string;
+  author: string | null;
+  text: string;
+};
+
 type WorkbookPreview = {
   sheets: WorkbookSheetInfo[];
   selectedSheet: string;
@@ -184,6 +192,10 @@ type WorkbookPreview = {
   cells: WorkbookCell[];
   mergedRanges: WorkbookRangeInfo[];
   hyperlinks: WorkbookHyperlinkInfo[];
+  comments: WorkbookCommentInfo[];
+  hiddenRows: number[];
+  hiddenColumns: number[];
+  ooxmlMetadataAvailable: boolean;
   metadataTruncated: boolean;
   totalSizeBytes: number;
   extension: string;
@@ -193,6 +205,7 @@ type ActiveWorkbookPreview = {
   file: IndexedFile;
   preview: WorkbookPreview;
   cellsByPosition: Record<string, WorkbookCell>;
+  commentsByPosition: Record<string, WorkbookCommentInfo>;
 };
 
 type WordParagraphBlock = {
@@ -975,11 +988,18 @@ export default function App() {
     const cellsByPosition = Object.fromEntries(
       preview.cells.map((cell) => [workbookCellKey(cell.row, cell.column), cell]),
     );
+    const commentsByPosition = Object.fromEntries(
+      preview.comments.map((comment) => [
+        workbookCellKey(comment.row, comment.column),
+        comment,
+      ]),
+    );
 
     setActiveWorkbookPreview({
       file,
       preview,
       cellsByPosition,
+      commentsByPosition,
     });
   }
 
@@ -1593,6 +1613,12 @@ export default function App() {
     workbookSearchHits.map(
       (hit) => `${hit.sheetName}:${hit.row}:${hit.column}`,
     ),
+  );
+  const workbookHiddenRows = new Set(
+    activeWorkbookPreview?.preview.hiddenRows ?? [],
+  );
+  const workbookHiddenColumns = new Set(
+    activeWorkbookPreview?.preview.hiddenColumns ?? [],
   );
 
   function moveViewerSearch(delta: number) {
