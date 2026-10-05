@@ -8,7 +8,7 @@ mod search;
 mod spreadsheet;
 mod word;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -207,6 +207,18 @@ struct EngagementDto {
     period_end: Option<String>,
     status: String,
     created_at_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateEngagementInput {
+    firm_id: String,
+    client_id: String,
+    service_type_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: String,
 }
 
 impl From<persistence::EngagementRecord> for EngagementDto {
@@ -698,29 +710,25 @@ fn list_service_types(
 
 #[tauri::command]
 fn create_engagement(
-    firm_id: String,
-    client_id: String,
-    service_type_id: String,
-    name: String,
-    period_start: Option<String>,
-    period_end: Option<String>,
-    status: String,
+    input: CreateEngagementInput,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<EngagementDto, String> {
-    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
-    Uuid::parse_str(&client_id).map_err(|_| "Invalid client identifier.".to_string())?;
-    Uuid::parse_str(&service_type_id)
+    Uuid::parse_str(&input.firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+    Uuid::parse_str(&input.client_id).map_err(|_| "Invalid client identifier.".to_string())?;
+    Uuid::parse_str(&input.service_type_id)
         .map_err(|_| "Invalid service-type identifier.".to_string())?;
 
     persistence::create_engagement(
         database.path(),
-        &firm_id,
-        &client_id,
-        &service_type_id,
-        &name,
-        period_start.as_deref(),
-        period_end.as_deref(),
-        &status,
+        persistence::EngagementCreation {
+            firm_id: &input.firm_id,
+            client_id: &input.client_id,
+            service_type_id: &input.service_type_id,
+            name: &input.name,
+            period_start: input.period_start.as_deref(),
+            period_end: input.period_end.as_deref(),
+            status: &input.status,
+        },
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
