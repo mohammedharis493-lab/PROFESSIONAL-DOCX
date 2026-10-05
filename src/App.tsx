@@ -133,6 +133,11 @@ type ActivePdfPreview = {
   url: string;
 };
 
+type ActiveImagePreview = {
+  file: IndexedFile;
+  url: string;
+};
+
 type WorkbookSheetInfo = {
   name: string;
   visibility: string;
@@ -264,6 +269,15 @@ const TERMINAL_JOB_STATUSES = new Set([
 ]);
 
 const TEXT_PREVIEW_EXTENSIONS = new Set(["txt", "csv", "xml"]);
+
+const IMAGE_PREVIEW_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+]);
 
 const EXCEL_PREVIEW_EXTENSIONS = new Set(["xlsx", "xlsm", "xls", "xlsb"]);
 const WORD_PREVIEW_EXTENSIONS = new Set(["docx"]);
@@ -418,6 +432,10 @@ function supportsTextPreview(file: IndexedFile) {
   return TEXT_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
 }
 
+function supportsImagePreview(file: IndexedFile) {
+  return IMAGE_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -498,6 +516,8 @@ export default function App() {
     useState<ActiveTextPreview | null>(null);
   const [activePdfPreview, setActivePdfPreview] =
     useState<ActivePdfPreview | null>(null);
+  const [activeImagePreview, setActiveImagePreview] =
+    useState<ActiveImagePreview | null>(null);
   const [activeWorkbookPreview, setActiveWorkbookPreview] =
     useState<ActiveWorkbookPreview | null>(null);
   const [activeWordPreview, setActiveWordPreview] =
@@ -520,6 +540,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const pdfBlobUrlRef = useRef<string | null>(null);
+  const imageBlobUrlRef = useRef<string | null>(null);
   const searchSequence = useRef(0);
   const navigationSequence = useRef(0);
   const backHistory = useRef<NavigationLocation[]>([]);
@@ -535,6 +556,9 @@ export default function App() {
     return () => {
       if (pdfBlobUrlRef.current) {
         URL.revokeObjectURL(pdfBlobUrlRef.current);
+      }
+      if (imageBlobUrlRef.current) {
+        URL.revokeObjectURL(imageBlobUrlRef.current);
       }
     };
   }, []);
@@ -922,6 +946,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       setActiveTextPreview(null);
       setActiveWordPreview({ file, preview });
@@ -982,6 +1007,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWordPreview();
       setActiveTextPreview(null);
       activateWorkbookPreview(file, preview);
@@ -1018,6 +1044,62 @@ export default function App() {
     setActivePdfPreview(null);
   }
 
+  function closeImagePreview() {
+    if (imageBlobUrlRef.current) {
+      URL.revokeObjectURL(imageBlobUrlRef.current);
+      imageBlobUrlRef.current = null;
+    }
+    setActiveImagePreview(null);
+  }
+
+  async function previewImageFileInstance(file: IndexedFile, usedQuery?: string) {
+    if (!supportsImagePreview(file) || sourceUnavailable(file.availabilityState)) {
+      return;
+    }
+
+    resetViewerSearch();
+    setError(null);
+    setPreviewingFileInstanceId(file.fileInstanceId);
+
+    try {
+      const protocolUrl = convertFileSrc(
+        `/image/${file.fileInstanceId}`,
+        "pdx-preview",
+      );
+      const response = await fetch(protocolUrl, { cache: "no-store" });
+
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(message || `Image preview failed with status ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      closeImagePreview();
+      closePdfPreview();
+      closeWorkbookPreview();
+      closeWordPreview();
+      setActiveTextPreview(null);
+      imageBlobUrlRef.current = blobUrl;
+      setActiveImagePreview({ file, url: blobUrl });
+
+      if (usedQuery?.trim()) {
+        try {
+          await invoke("record_recent_search", { query: usedQuery.trim() });
+        } catch (historyError) {
+          console.error("Unable to record recent search", historyError);
+        }
+      }
+
+      await refreshQuickAccess();
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingFileInstanceId(null);
+    }
+  }
+
   async function previewPdfFileInstance(file: IndexedFile, usedQuery?: string) {
     if (file.extension.toLowerCase() !== "pdf" || sourceUnavailable(file.availabilityState)) {
       return;
@@ -1043,6 +1125,7 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       closeWordPreview();
       setActiveTextPreview(null);
@@ -1080,6 +1163,7 @@ export default function App() {
       });
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       closeWordPreview();
       setActiveTextPreview({ file, preview });
@@ -1598,9 +1682,16 @@ export default function App() {
   function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
     const isTextPreview = supportsTextPreview(file);
     const isPdfPreview = file.extension.toLowerCase() === "pdf";
+    const isImagePreview = supportsImagePreview(file);
     const isWorkbookPreview = supportsWorkbookPreview(file);
     const isWordPreview = supportsWordPreview(file);
-    if (!isTextPreview && !isPdfPreview && !isWorkbookPreview && !isWordPreview) {
+    if (
+      !isTextPreview &&
+      !isPdfPreview &&
+      !isImagePreview &&
+      !isWorkbookPreview &&
+      !isWordPreview
+    ) {
       return null;
     }
 
@@ -1613,21 +1704,25 @@ export default function App() {
         onClick={() =>
           void (isPdfPreview
             ? previewPdfFileInstance(file, usedQuery)
-            : isWorkbookPreview
-              ? previewWorkbookFileInstance(file, usedQuery)
-              : isWordPreview
-                ? previewWordFileInstance(file, usedQuery)
-                : previewFileInstance(file, usedQuery))
+            : isImagePreview
+              ? previewImageFileInstance(file, usedQuery)
+              : isWorkbookPreview
+                ? previewWorkbookFileInstance(file, usedQuery)
+                : isWordPreview
+                  ? previewWordFileInstance(file, usedQuery)
+                  : previewFileInstance(file, usedQuery))
         }
         disabled={sourceUnavailable(file.availabilityState) || previewingFileInstanceId !== null}
         title={
           isPdfPreview
             ? "Preview PDF safely inside Professional DocX"
-            : isWorkbookPreview
-              ? "Preview workbook safely inside Professional DocX"
-              : isWordPreview
-                ? "Preview DOCX safely inside Professional DocX"
-                : "Preview text safely inside Professional DocX"
+            : isImagePreview
+              ? "Preview raster image safely inside Professional DocX"
+              : isWorkbookPreview
+                ? "Preview workbook safely inside Professional DocX"
+                : isWordPreview
+                  ? "Preview DOCX safely inside Professional DocX"
+                  : "Preview text safely inside Professional DocX"
         }
       >
         {isThisPreview ? "Loading…" : "Preview"}
@@ -2704,6 +2799,84 @@ export default function App() {
                   PDF content is served only from the validated indexed source.
                 </span>
                 <span>Preview limit: 64 MB · Open original for larger files.</span>
+              </footer>
+            </section>
+          </div>
+        ) : null}
+        {activeImagePreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                closeImagePreview();
+              }
+            }}
+          >
+            <section
+              className="image-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="image-preview-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">
+                    IN-APP PREVIEW · {activeImagePreview.file.extension.toUpperCase()}
+                  </p>
+                  <h2 id="image-preview-title">{activeImagePreview.file.name}</h2>
+                  <span>
+                    {stateLabel(activeImagePreview.file.availabilityState)} ·{" "}
+                    {formatBytes(activeImagePreview.file.sizeBytes)}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activeImagePreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activeImagePreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId ===
+                    activeImagePreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={closeImagePreview}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="image-preview-body">
+                <img
+                  src={activeImagePreview.url}
+                  alt={activeImagePreview.file.name}
+                  draggable={false}
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>
+                  Raster image bytes are served only from the validated indexed source.
+                </span>
+                <span>
+                  PNG, JPEG, GIF, WebP, BMP · Preview limit: 32 MB · SVG is intentionally excluded.
+                </span>
               </footer>
             </section>
           </div>
