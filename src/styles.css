@@ -1367,6 +1367,49 @@ input:focus-visible {
 }
 
 
+.image-preview-dialog {
+  display: flex;
+  width: min(1180px, 100%);
+  height: min(900px, 92vh);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #d7dee8;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(20, 31, 47, 0.22);
+}
+
+.image-preview-body {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  background:
+    linear-gradient(45deg, #eef1f5 25%, transparent 25%),
+    linear-gradient(-45deg, #eef1f5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #eef1f5 75%),
+    linear-gradient(-45deg, transparent 75%, #eef1f5 75%),
+    #f8fafc;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.image-preview-body img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
 .pdf-preview-dialog {
   display: flex;
   width: min(1180px, 100%);
