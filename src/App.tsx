@@ -94,6 +94,21 @@ type ActiveDocumentVersionHistory = {
   entries: DocumentVersionHistoryEntry[];
 };
 
+type DocumentRelationship = {
+  documentRelationshipId: string;
+  relationshipType: string;
+  direction: string;
+  createdAtMs: number;
+  relatedDocumentId: string;
+  relatedDocumentName: string;
+  relatedFile: IndexedFile | null;
+};
+
+type ActiveRelationshipContext = {
+  file: IndexedFile;
+  relationships: DocumentRelationship[];
+};
+
 type EvidenceCaptureNotice = {
   fileName: string;
   versionNumber: number;
@@ -467,6 +482,17 @@ export default function App() {
   const [activeVersionHistory, setActiveVersionHistory] =
     useState<ActiveDocumentVersionHistory | null>(null);
   const [versionHistoryLoadingDocumentId, setVersionHistoryLoadingDocumentId] =
+    useState<string | null>(null);
+  const [activeRelationshipContext, setActiveRelationshipContext] =
+    useState<ActiveRelationshipContext | null>(null);
+  const [relationshipContextLoadingDocumentId, setRelationshipContextLoadingDocumentId] =
+    useState<string | null>(null);
+  const [relationshipSearchQuery, setRelationshipSearchQuery] = useState("");
+  const [relationshipSearchResults, setRelationshipSearchResults] =
+    useState<SearchResult[]>([]);
+  const [relationshipType, setRelationshipType] = useState("RELATED");
+  const [isRelationshipSearching, setIsRelationshipSearching] = useState(false);
+  const [relationshipMutationId, setRelationshipMutationId] =
     useState<string | null>(null);
   const [activeTextPreview, setActiveTextPreview] =
     useState<ActiveTextPreview | null>(null);
@@ -1301,6 +1327,139 @@ export default function App() {
       setError(String(captureError));
     } finally {
       setCapturingFileInstanceId(null);
+    }
+  }
+
+  async function loadRelationshipContext(file: IndexedFile) {
+    if (relationshipContextLoadingDocumentId !== null) {
+      return;
+    }
+
+    setError(null);
+    setRelationshipContextLoadingDocumentId(file.documentId);
+
+    try {
+      const relationships = await invoke<DocumentRelationship[]>(
+        "list_document_relationships",
+        { documentId: file.documentId },
+      );
+      setActiveRelationshipContext({ file, relationships });
+      setRelationshipSearchQuery("");
+      setRelationshipSearchResults([]);
+      setRelationshipType("RELATED");
+    } catch (relationshipError) {
+      setError(String(relationshipError));
+    } finally {
+      setRelationshipContextLoadingDocumentId(null);
+    }
+  }
+
+  async function refreshRelationshipContext() {
+    if (!activeRelationshipContext) {
+      return;
+    }
+
+    const relationships = await invoke<DocumentRelationship[]>(
+      "list_document_relationships",
+      { documentId: activeRelationshipContext.file.documentId },
+    );
+    setActiveRelationshipContext((current) =>
+      current ? { ...current, relationships } : current,
+    );
+  }
+
+  async function searchRelationshipCandidates() {
+    if (!activeRelationshipContext) {
+      return;
+    }
+
+    const trimmedQuery = relationshipSearchQuery.trim();
+    if (!trimmedQuery) {
+      setRelationshipSearchResults([]);
+      return;
+    }
+
+    setIsRelationshipSearching(true);
+    setError(null);
+
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: trimmedQuery,
+        limit: 15,
+      });
+      const seen = new Set<string>();
+      setRelationshipSearchResults(
+        results.filter((result) => {
+          if (
+            result.documentId === activeRelationshipContext.file.documentId ||
+            seen.has(result.documentId)
+          ) {
+            return false;
+          }
+          seen.add(result.documentId);
+          return true;
+        }),
+      );
+    } catch (relationshipSearchError) {
+      setRelationshipSearchResults([]);
+      setError(String(relationshipSearchError));
+    } finally {
+      setIsRelationshipSearching(false);
+    }
+  }
+
+  async function addDocumentRelationship(target: IndexedFile) {
+    if (!activeRelationshipContext || relationshipMutationId !== null) {
+      return;
+    }
+
+    const normalizedType = relationshipType.trim();
+    if (!normalizedType) {
+      setError("Enter a relationship label before linking documents.");
+      return;
+    }
+
+    setError(null);
+    setRelationshipMutationId(target.documentId);
+
+    try {
+      await invoke<string>("create_document_relationship", {
+        sourceDocumentId: activeRelationshipContext.file.documentId,
+        targetDocumentId: target.documentId,
+        relationshipType: normalizedType,
+      });
+      await refreshRelationshipContext();
+    } catch (relationshipError) {
+      setError(String(relationshipError));
+    } finally {
+      setRelationshipMutationId(null);
+    }
+  }
+
+  async function removeDocumentRelationship(relationship: DocumentRelationship) {
+    if (!activeRelationshipContext || relationshipMutationId !== null) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Remove the "${relationship.relationshipType}" relationship with "${relationship.relatedDocumentName}"?\n\nThe removal is recorded in the audit trail.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setError(null);
+    setRelationshipMutationId(relationship.documentRelationshipId);
+
+    try {
+      await invoke("remove_document_relationship", {
+        documentRelationshipId: relationship.documentRelationshipId,
+      });
+      await refreshRelationshipContext();
+    } catch (relationshipError) {
+      setError(String(relationshipError));
+    } finally {
+      setRelationshipMutationId(null);
     }
   }
 
