@@ -6217,12 +6217,8 @@ mod tests {
         )
         .expect("evidence documents should persist");
 
-        let files = list_indexed_file_preview(
-            &database.path,
-            &storage_root.storage_root_id,
-            10,
-        )
-        .expect("evidence files should list");
+        let files = list_indexed_file_preview(&database.path, &storage_root.storage_root_id, 10)
+            .expect("evidence files should list");
         let support_a = files
             .iter()
             .find(|file| file.name == "Support A.pdf")
