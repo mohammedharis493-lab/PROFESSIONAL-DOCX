@@ -5137,7 +5137,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5159,14 +5159,20 @@ mod tests {
                        'evidence_capture_jobs',
                        'controlled_evidence_versions',
                        'audit_events',
-                       'document_relationships'
+                       'document_relationships',
+                       'firms',
+                       'users',
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 16);
+        assert_eq!(table_count, 22);
     }
 
     #[test]
@@ -5202,7 +5208,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5243,14 +5249,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: i64 = connection
             .query_row(
@@ -5292,14 +5298,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -5344,14 +5350,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: bool = connection
             .query_row(
@@ -5515,6 +5521,266 @@ mod tests {
             .expect("relationship removal audit count should load"),
             1
         );
+    }
+
+    #[test]
+    fn sixth_migration_upgrades_existing_v5_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..5] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 5);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 6");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 6);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'firms',
+                       'users',
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("engagement hierarchy tables should exist");
+        assert_eq!(table_count, 6);
+    }
+
+    #[test]
+    fn engagement_hierarchy_supports_multiple_services_and_nested_areas() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let firm = create_firm(&database.path, "Haris & Co")
+            .expect("firm should be created");
+        let client = create_client(
+            &database.path,
+            &firm.firm_id,
+            "ABC Limited",
+            Some("ABC-001"),
+        )
+        .expect("client should be created");
+        let statutory = create_service_type(
+            &database.path,
+            &firm.firm_id,
+            "Statutory Audit",
+            None,
+        )
+        .expect("statutory service should be created");
+        let internal = create_service_type(
+            &database.path,
+            &firm.firm_id,
+            "Operational Resilience Review",
+            Some("Firm-defined service type unknown to application source code"),
+        )
+        .expect("custom service should be created");
+
+        let statutory_engagement = create_engagement(
+            &database.path,
+            &firm.firm_id,
+            &client.client_id,
+            &statutory.service_type_id,
+            "ABC Limited - Statutory Audit 2026-27",
+            Some("2026-04-01"),
+            Some("2027-03-31"),
+            "ACTIVE",
+        )
+        .expect("statutory engagement should be created");
+        let internal_engagement = create_engagement(
+            &database.path,
+            &firm.firm_id,
+            &client.client_id,
+            &internal.service_type_id,
+            "ABC Limited - Operational Resilience Q2",
+            Some("2026-07-01"),
+            Some("2026-09-30"),
+            "PLANNING",
+        )
+        .expect("custom engagement should be created");
+
+        let top = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            None,
+            "Statutory Compliance",
+            Some("SC"),
+            10,
+            "ACTIVE",
+        )
+        .expect("top-level area should be created");
+        let gst = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            Some(&top.engagement_area_id),
+            "GST",
+            None,
+            20,
+            "ACTIVE",
+        )
+        .expect("child area should be created");
+        let rcm = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            Some(&gst.engagement_area_id),
+            "RCM",
+            None,
+            30,
+            "ACTIVE",
+        )
+        .expect("grandchild area should be created");
+
+        let engagements =
+            list_engagements_for_client(&database.path, &client.client_id)
+                .expect("client engagements should list");
+        assert_eq!(engagements.len(), 2);
+        assert!(engagements
+            .iter()
+            .any(|item| item.engagement_id == statutory_engagement.engagement_id));
+        assert!(engagements
+            .iter()
+            .any(|item| item.engagement_id == internal_engagement.engagement_id));
+
+        let areas = list_engagement_areas(&database.path, &statutory_engagement.engagement_id)
+            .expect("engagement areas should list");
+        assert_eq!(areas.len(), 3);
+        assert_eq!(gst.parent_engagement_area_id.as_deref(), Some(top.engagement_area_id.as_str()));
+        assert_eq!(rcm.parent_engagement_area_id.as_deref(), Some(gst.engagement_area_id.as_str()));
+
+        assert_eq!(
+            count_audit_events_for_test(&database.path, "FIRM_CREATED", &firm.firm_id)
+                .expect("firm audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "ENGAGEMENT_CREATED",
+                &statutory_engagement.engagement_id,
+            )
+            .expect("engagement audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "ENGAGEMENT_AREA_CREATED",
+                &rcm.engagement_area_id,
+            )
+            .expect("area audit count should load"),
+            1
+        );
+    }
+
+    #[test]
+    fn engagement_hierarchy_rejects_cross_firm_and_cross_engagement_links() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let first_firm = create_firm(&database.path, "First Firm").expect("first firm should exist");
+        let second_firm =
+            create_firm(&database.path, "Second Firm").expect("second firm should exist");
+        let client = create_client(&database.path, &first_firm.firm_id, "Client A", None)
+            .expect("client should exist");
+        let first_service =
+            create_service_type(&database.path, &first_firm.firm_id, "Service A", None)
+                .expect("first service should exist");
+        let second_service =
+            create_service_type(&database.path, &second_firm.firm_id, "Service B", None)
+                .expect("second service should exist");
+
+        let cross_firm = create_engagement(
+            &database.path,
+            &first_firm.firm_id,
+            &client.client_id,
+            &second_service.service_type_id,
+            "Invalid engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect_err("cross-firm service must be rejected");
+        assert!(cross_firm
+            .to_string()
+            .contains("service type does not belong to the selected firm"));
+
+        let first_engagement = create_engagement(
+            &database.path,
+            &first_firm.firm_id,
+            &client.client_id,
+            &first_service.service_type_id,
+            "First engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("first engagement should exist");
+        let second_engagement = create_engagement(
+            &database.path,
+            &first_firm.firm_id,
+            &client.client_id,
+            &first_service.service_type_id,
+            "Second engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("second engagement should exist");
+        let parent = create_engagement_area(
+            &database.path,
+            &first_engagement.engagement_id,
+            None,
+            "Parent",
+            None,
+            0,
+            "ACTIVE",
+        )
+        .expect("parent area should exist");
+
+        let cross_engagement = create_engagement_area(
+            &database.path,
+            &second_engagement.engagement_id,
+            Some(&parent.engagement_area_id),
+            "Invalid child",
+            None,
+            0,
+            "ACTIVE",
+        )
+        .expect_err("cross-engagement parent must be rejected");
+        assert!(cross_engagement
+            .to_string()
+            .contains("parent must belong to the same engagement"));
     }
 
     #[test]
