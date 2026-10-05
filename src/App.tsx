@@ -3111,7 +3111,21 @@ export default function App() {
                           (_, index) =>
                             activeWorkbookPreview.preview.columnOffset + index,
                         ).map((column) => (
-                          <th key={column}>{columnLabel(column)}</th>
+                          <th
+                            className={
+                              workbookHiddenColumns.has(column)
+                                ? "workbook-dimension-hidden"
+                                : undefined
+                            }
+                            key={column}
+                            title={
+                              workbookHiddenColumns.has(column)
+                                ? "This column is hidden in the source workbook."
+                                : undefined
+                            }
+                          >
+                            {columnLabel(column)}
+                          </th>
                         ))}
                       </tr>
                     </thead>
@@ -3121,16 +3135,33 @@ export default function App() {
                         (_, index) => activeWorkbookPreview.preview.rowOffset + index,
                       ).map((row) => (
                         <tr key={row}>
-                          <th>{row + 1}</th>
+                          <th
+                            className={
+                              workbookHiddenRows.has(row)
+                                ? "workbook-dimension-hidden"
+                                : undefined
+                            }
+                            title={
+                              workbookHiddenRows.has(row)
+                                ? "This row is hidden in the source workbook."
+                                : undefined
+                            }
+                          >
+                            {row + 1}
+                          </th>
                           {Array.from(
                             { length: activeWorkbookPreview.preview.columnCount },
                             (_, index) =>
                               activeWorkbookPreview.preview.columnOffset + index,
                           ).map((column) => {
+                            const positionKey = workbookCellKey(row, column);
                             const cell =
-                              activeWorkbookPreview.cellsByPosition[
-                                workbookCellKey(row, column)
-                              ];
+                              activeWorkbookPreview.cellsByPosition[positionKey];
+                            const comment =
+                              activeWorkbookPreview.commentsByPosition[positionKey];
+                            const hiddenDimension =
+                              workbookHiddenRows.has(row) ||
+                              workbookHiddenColumns.has(column);
 
                             const searchKey =
                               `${activeWorkbookPreview.preview.selectedSheet}:${row}:${column}`;
@@ -3148,12 +3179,18 @@ export default function App() {
                                 className={[
                                   "workbook-cell",
                                   cell?.formula ? "workbook-cell-formula" : "",
+                                  comment ? "workbook-cell-commented" : "",
+                                  hiddenDimension ? "workbook-cell-hidden-source" : "",
                                   isSearchHit ? "workbook-cell-search-hit" : "",
                                   isActiveSearchHit ? "workbook-cell-search-active" : "",
                                 ]
                                   .filter(Boolean)
                                   .join(" ")}
-                                title={cell?.address ?? `${columnLabel(column)}${row + 1}`}
+                                title={
+                                  comment
+                                    ? `${comment.address} · Note${comment.author ? ` by ${comment.author}` : ""}: ${comment.text || "(empty note)"}`
+                                    : cell?.address ?? `${columnLabel(column)}${row + 1}`
+                                }
                               >
                                 {cell ? (
                                   <>
@@ -3180,6 +3217,14 @@ export default function App() {
                                       </code>
                                     ) : null}
                                   </>
+                                ) : null}
+                                {comment ? (
+                                  <span
+                                    className="workbook-comment-indicator"
+                                    aria-label={`Note on ${comment.address}`}
+                                  >
+                                    NOTE
+                                  </span>
                                 ) : null}
                               </td>
                             );
