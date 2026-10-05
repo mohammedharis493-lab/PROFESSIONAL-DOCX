@@ -765,7 +765,9 @@ fn parse_comments_xml(xml: &str) -> Result<(Vec<WorkbookCommentInfo>, bool), Str
             Ok(Event::GeneralRef(reference)) => {
                 let resolved = if let Some(character) = reference
                     .resolve_char_ref()
-                    .map_err(|error| format!("Unable to resolve OOXML character reference: {error}"))?
+                    .map_err(|error| {
+                        format!("Unable to resolve OOXML character reference: {error}")
+                    })?
                 {
                     character.to_string()
                 } else {
