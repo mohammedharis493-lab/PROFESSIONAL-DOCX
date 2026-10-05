@@ -2571,6 +2571,16 @@ export default function App() {
                     Open original
                   </button>
                   <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activeTextPreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId === activeTextPreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
+                  </button>
+                  <button
                     className="file-action"
                     type="button"
                     onClick={() => {
@@ -2652,6 +2662,16 @@ export default function App() {
                     Open original
                   </button>
                   <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activePdfPreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId === activePdfPreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
+                  </button>
+                  <button
                     className="file-action"
                     type="button"
                     onClick={() => {
@@ -2724,6 +2744,16 @@ export default function App() {
                     }
                   >
                     Open original
+                  </button>
+                  <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activeWorkbookPreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId === activeWorkbookPreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
                   </button>
                   <button
                     className="file-action"
@@ -3046,6 +3076,16 @@ export default function App() {
                     }
                   >
                     Open original
+                  </button>
+                  <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activeWordPreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId === activeWordPreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
                   </button>
                   <button
                     className="file-action"
