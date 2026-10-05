@@ -1078,7 +1078,6 @@ export default function App() {
 
       closeImagePreview();
       closePdfPreview();
-      closeImagePreview();
       closeWorkbookPreview();
       closeWordPreview();
       setActiveTextPreview(null);
@@ -1126,6 +1125,7 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
 
       closePdfPreview();
+      closeImagePreview();
       closeWorkbookPreview();
       closeWordPreview();
       setActiveTextPreview(null);
