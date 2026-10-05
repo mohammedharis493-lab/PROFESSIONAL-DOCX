@@ -1604,9 +1604,48 @@ input:focus-visible {
 }
 
 .workbook-cell {
+  position: relative;
   color: #243246;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.workbook-dimension-hidden {
+  background: #f6efe4 !important;
+  color: #765f3f !important;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.workbook-cell-hidden-source {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(143, 112, 65, 0.04),
+    rgba(143, 112, 65, 0.04) 5px,
+    transparent 5px,
+    transparent 10px
+  );
+}
+
+.workbook-cell-commented {
+  padding-top: 18px !important;
+}
+
+.workbook-comment-indicator {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  display: inline-flex !important;
+  min-height: 0 !important;
+  align-items: center;
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: #fff4d8;
+  color: #795b20;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
 }
 
 .workbook-cell > span {
@@ -1632,9 +1671,9 @@ input:focus-visible {
 .workbook-metadata {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  max-height: 118px;
+  max-height: 160px;
   overflow: auto;
   padding: 10px 16px;
   border-top: 1px solid #e7ebf1;
