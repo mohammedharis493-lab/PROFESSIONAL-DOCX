@@ -1682,9 +1682,16 @@ export default function App() {
   function renderPreviewAction(file: IndexedFile, usedQuery?: string) {
     const isTextPreview = supportsTextPreview(file);
     const isPdfPreview = file.extension.toLowerCase() === "pdf";
+    const isImagePreview = supportsImagePreview(file);
     const isWorkbookPreview = supportsWorkbookPreview(file);
     const isWordPreview = supportsWordPreview(file);
-    if (!isTextPreview && !isPdfPreview && !isWorkbookPreview && !isWordPreview) {
+    if (
+      !isTextPreview &&
+      !isPdfPreview &&
+      !isImagePreview &&
+      !isWorkbookPreview &&
+      !isWordPreview
+    ) {
       return null;
     }
 
@@ -1697,21 +1704,25 @@ export default function App() {
         onClick={() =>
           void (isPdfPreview
             ? previewPdfFileInstance(file, usedQuery)
-            : isWorkbookPreview
-              ? previewWorkbookFileInstance(file, usedQuery)
-              : isWordPreview
-                ? previewWordFileInstance(file, usedQuery)
-                : previewFileInstance(file, usedQuery))
+            : isImagePreview
+              ? previewImageFileInstance(file, usedQuery)
+              : isWorkbookPreview
+                ? previewWorkbookFileInstance(file, usedQuery)
+                : isWordPreview
+                  ? previewWordFileInstance(file, usedQuery)
+                  : previewFileInstance(file, usedQuery))
         }
         disabled={sourceUnavailable(file.availabilityState) || previewingFileInstanceId !== null}
         title={
           isPdfPreview
             ? "Preview PDF safely inside Professional DocX"
-            : isWorkbookPreview
-              ? "Preview workbook safely inside Professional DocX"
-              : isWordPreview
-                ? "Preview DOCX safely inside Professional DocX"
-                : "Preview text safely inside Professional DocX"
+            : isImagePreview
+              ? "Preview raster image safely inside Professional DocX"
+              : isWorkbookPreview
+                ? "Preview workbook safely inside Professional DocX"
+                : isWordPreview
+                  ? "Preview DOCX safely inside Professional DocX"
+                  : "Preview text safely inside Professional DocX"
         }
       >
         {isThisPreview ? "Loading…" : "Preview"}
