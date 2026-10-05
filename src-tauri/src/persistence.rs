@@ -5708,7 +5708,8 @@ mod tests {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
 
-        let first_firm = create_firm(&database.path, "First Firm").expect("first firm should exist");
+        let first_firm =
+            create_firm(&database.path, "First Firm").expect("first firm should exist");
         let second_firm =
             create_firm(&database.path, "Second Firm").expect("second firm should exist");
         let client = create_client(&database.path, &first_firm.firm_id, "Client A", None)
