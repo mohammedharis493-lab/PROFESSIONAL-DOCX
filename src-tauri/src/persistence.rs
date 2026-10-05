@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -50,6 +50,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "document_relationships",
         sql: include_str!("../migrations/0005_document_relationships.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "engagement_hierarchy",
+        sql: include_str!("../migrations/0006_engagement_hierarchy.sql"),
     },
 ];
 
@@ -220,6 +225,56 @@ pub struct DocumentRelationshipRecord {
     pub related_document_id: String,
     pub related_document_name: String,
     pub related_file: Option<IndexedFilePreviewRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmRecord {
+    pub firm_id: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientRecord {
+    pub client_id: String,
+    pub firm_id: String,
+    pub name: String,
+    pub reference: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceTypeRecord {
+    pub service_type_id: String,
+    pub firm_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementRecord {
+    pub engagement_id: String,
+    pub firm_id: String,
+    pub client_id: String,
+    pub service_type_id: String,
+    pub name: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementAreaRecord {
+    pub engagement_area_id: String,
+    pub engagement_id: String,
+    pub parent_engagement_area_id: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub display_order: u32,
+    pub status: String,
+    pub created_at_ms: i64,
 }
 
 pub struct EvidenceCaptureCompletion<'a> {
