@@ -3268,6 +3268,54 @@ export default function App() {
                       : "None surfaced for this sheet/format."}
                   </span>
                 </div>
+                <div>
+                  <strong>
+                    Comments / notes ({activeWorkbookPreview.preview.comments.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML comment metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.comments.length
+                        ? activeWorkbookPreview.preview.comments
+                            .slice(0, 6)
+                            .map(
+                              (comment) =>
+                                `${comment.address}${comment.author ? ` · ${comment.author}` : ""}: ${comment.text || "(empty note)"}`,
+                            )
+                            .join(" · ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
+                <div>
+                  <strong>
+                    Hidden rows ({activeWorkbookPreview.preview.hiddenRows.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML row visibility metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.hiddenRows.length
+                        ? activeWorkbookPreview.preview.hiddenRows
+                            .slice(0, 20)
+                            .map((row) => row + 1)
+                            .join(", ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
+                <div>
+                  <strong>
+                    Hidden columns ({activeWorkbookPreview.preview.hiddenColumns.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML column visibility metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.hiddenColumns.length
+                        ? activeWorkbookPreview.preview.hiddenColumns
+                            .slice(0, 20)
+                            .map(columnLabel)
+                            .join(", ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
               </div>
 
               <footer className="text-preview-footer workbook-preview-footer">
@@ -3278,7 +3326,9 @@ export default function App() {
                   {activeWorkbookPreview.preview.metadataTruncated
                     ? "Sheet metadata list truncated for safety. "
                     : ""}
-                  Comments and hidden row/column indicators are not yet surfaced in this foundation.
+                  {activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                    ? "OOXML comments/notes and hidden row/column indicators are preserved for this sheet."
+                    : "Comments/notes and hidden row/column indicators are not available for this workbook format."}
                 </span>
               </footer>
             </section>
