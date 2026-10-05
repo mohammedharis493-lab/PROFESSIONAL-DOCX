@@ -133,6 +133,11 @@ type ActivePdfPreview = {
   url: string;
 };
 
+type ActiveImagePreview = {
+  file: IndexedFile;
+  url: string;
+};
+
 type WorkbookSheetInfo = {
   name: string;
   visibility: string;
@@ -264,6 +269,15 @@ const TERMINAL_JOB_STATUSES = new Set([
 ]);
 
 const TEXT_PREVIEW_EXTENSIONS = new Set(["txt", "csv", "xml"]);
+
+const IMAGE_PREVIEW_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+]);
 
 const EXCEL_PREVIEW_EXTENSIONS = new Set(["xlsx", "xlsm", "xls", "xlsb"]);
 const WORD_PREVIEW_EXTENSIONS = new Set(["docx"]);
@@ -418,6 +432,10 @@ function supportsTextPreview(file: IndexedFile) {
   return TEXT_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
 }
 
+function supportsImagePreview(file: IndexedFile) {
+  return IMAGE_PREVIEW_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -498,6 +516,8 @@ export default function App() {
     useState<ActiveTextPreview | null>(null);
   const [activePdfPreview, setActivePdfPreview] =
     useState<ActivePdfPreview | null>(null);
+  const [activeImagePreview, setActiveImagePreview] =
+    useState<ActiveImagePreview | null>(null);
   const [activeWorkbookPreview, setActiveWorkbookPreview] =
     useState<ActiveWorkbookPreview | null>(null);
   const [activeWordPreview, setActiveWordPreview] =
@@ -520,6 +540,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const pdfBlobUrlRef = useRef<string | null>(null);
+  const imageBlobUrlRef = useRef<string | null>(null);
   const searchSequence = useRef(0);
   const navigationSequence = useRef(0);
   const backHistory = useRef<NavigationLocation[]>([]);
@@ -535,6 +556,9 @@ export default function App() {
     return () => {
       if (pdfBlobUrlRef.current) {
         URL.revokeObjectURL(pdfBlobUrlRef.current);
+      }
+      if (imageBlobUrlRef.current) {
+        URL.revokeObjectURL(imageBlobUrlRef.current);
       }
     };
   }, []);
