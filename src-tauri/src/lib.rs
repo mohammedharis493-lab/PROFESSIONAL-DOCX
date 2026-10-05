@@ -109,6 +109,32 @@ impl From<persistence::IndexedFilePreviewRecord> for IndexedFilePreviewDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DocumentRelationshipDto {
+    document_relationship_id: String,
+    relationship_type: String,
+    direction: String,
+    created_at_ms: i64,
+    related_document_id: String,
+    related_document_name: String,
+    related_file: Option<IndexedFilePreviewDto>,
+}
+
+impl From<persistence::DocumentRelationshipRecord> for DocumentRelationshipDto {
+    fn from(value: persistence::DocumentRelationshipRecord) -> Self {
+        Self {
+            document_relationship_id: value.document_relationship_id,
+            relationship_type: value.relationship_type,
+            direction: value.direction,
+            created_at_ms: value.created_at_ms,
+            related_document_id: value.related_document_id,
+            related_document_name: value.related_document_name,
+            related_file: value.related_file.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RecentDocumentDto {
     document_id: String,
     file_instance_id: String,
@@ -580,6 +606,51 @@ fn list_document_version_history(
 }
 
 #[tauri::command]
+fn list_document_relationships(
+    document_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DocumentRelationshipDto>, String> {
+    Uuid::parse_str(&document_id).map_err(|_| "Invalid document identifier.".to_string())?;
+
+    persistence::list_document_relationships(database.path(), &document_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_document_relationship(
+    source_document_id: String,
+    target_document_id: String,
+    relationship_type: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<String, String> {
+    Uuid::parse_str(&source_document_id)
+        .map_err(|_| "Invalid source document identifier.".to_string())?;
+    Uuid::parse_str(&target_document_id)
+        .map_err(|_| "Invalid target document identifier.".to_string())?;
+
+    persistence::create_document_relationship(
+        database.path(),
+        &source_document_id,
+        &target_document_id,
+        &relationship_type,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_document_relationship(
+    document_relationship_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&document_relationship_id)
+        .map_err(|_| "Invalid document relationship identifier.".to_string())?;
+
+    persistence::remove_document_relationship(database.path(), &document_relationship_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn search_documents(
     query: String,
     limit: Option<u32>,
@@ -844,6 +915,9 @@ pub fn run() {
             choose_and_relink_file_instance,
             reconcile_linked_file_instance,
             list_document_version_history,
+            list_document_relationships,
+            create_document_relationship,
+            remove_document_relationship,
             search_documents,
             capture_controlled_evidence,
             preview_text_file_instance,
