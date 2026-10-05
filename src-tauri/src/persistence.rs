@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -50,6 +50,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "document_relationships",
         sql: include_str!("../migrations/0005_document_relationships.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "engagement_workpapers",
+        sql: include_str!("../migrations/0006_engagement_workpapers.sql"),
     },
 ];
 
@@ -209,6 +214,99 @@ pub struct DocumentVersionHistoryRecord {
     pub captured_by: Option<String>,
     pub capture_reason: Option<String>,
     pub capture_policy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientRecord {
+    pub client_id: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceTypeRecord {
+    pub service_type_id: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementRecord {
+    pub engagement_id: String,
+    pub client_id: String,
+    pub service_type_id: String,
+    pub name: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementAreaRecord {
+    pub engagement_area_id: String,
+    pub engagement_id: String,
+    pub parent_area_id: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub display_order: i64,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcedureRecord {
+    pub procedure_id: String,
+    pub engagement_id: String,
+    pub engagement_area_id: Option<String>,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperRecord {
+    pub workpaper_id: String,
+    pub engagement_id: String,
+    pub engagement_area_id: Option<String>,
+    pub procedure_id: Option<String>,
+    pub reference: String,
+    pub title: String,
+    pub workflow_state: String,
+    pub created_at_ms: i64,
+    pub latest_revision_number: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperRevisionRecord {
+    pub workpaper_revision_id: String,
+    pub workpaper_id: String,
+    pub revision_number: u64,
+    pub created_at_ms: i64,
+    pub revision_reason: Option<String>,
+    pub supersedes_revision_id: Option<String>,
+    pub objective: String,
+    pub procedure_performed: String,
+    pub population: String,
+    pub sample: String,
+    pub exceptions: String,
+    pub management_explanation: String,
+    pub conclusion: String,
+    pub content_hash: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperEvidenceLinkRecord {
+    pub evidence_link_id: String,
+    pub workpaper_revision_id: String,
+    pub document_id: String,
+    pub content_version_id: Option<String>,
+    pub controlled_evidence_version_id: Option<String>,
+    pub relationship_type: String,
+    pub description: Option<String>,
+    pub created_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
