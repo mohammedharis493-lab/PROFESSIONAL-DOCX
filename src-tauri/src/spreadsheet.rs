@@ -486,12 +486,9 @@ fn ooxml_sheet_metadata(path: &Path, sheet_name: &str) -> Result<OoxmlSheetMetad
 
     let workbook_rels = read_ooxml_xml(&mut archive, "xl/_rels/workbook.xml.rels")?
         .ok_or_else(|| "OOXML package does not contain workbook relationships.".to_string())?;
-    let sheet_target = relationship_target_by_id(
-        &workbook_rels,
-        &relationship_id,
-        Some("/worksheet"),
-    )?
-    .ok_or_else(|| format!("Worksheet '{sheet_name}' target could not be resolved."))?;
+    let sheet_target =
+        relationship_target_by_id(&workbook_rels, &relationship_id, Some("/worksheet"))?
+            .ok_or_else(|| format!("Worksheet '{sheet_name}' target could not be resolved."))?;
     let sheet_part = normalize_package_target("xl/workbook.xml", &sheet_target)
         .ok_or_else(|| "Worksheet relationship target is invalid.".to_string())?;
 
@@ -502,9 +499,7 @@ fn ooxml_sheet_metadata(path: &Path, sheet_name: &str) -> Result<OoxmlSheetMetad
 
     let comments = if let Some(rels_part) = relationships_part_for(&sheet_part) {
         if let Some(sheet_rels) = read_ooxml_xml(&mut archive, &rels_part)? {
-            if let Some(comment_target) =
-                relationship_target_by_type(&sheet_rels, "/comments")?
-            {
+            if let Some(comment_target) = relationship_target_by_type(&sheet_rels, "/comments")? {
                 if let Some(comment_part) = normalize_package_target(&sheet_part, &comment_target) {
                     if let Some(comment_xml) = read_ooxml_xml(&mut archive, &comment_part)? {
                         let (comments, comments_truncated) = parse_comments_xml(&comment_xml)?;
@@ -616,31 +611,22 @@ fn relationship_target(
                 if local_xml_name(start.name().as_ref()) == b"Relationship" =>
             {
                 let id = xml_attribute_value(&start, b"Id")?;
-                if wanted_id.is_some_and(|wanted| id.as_deref() != Some(wanted)) {
-                    buffer.clear();
-                    continue;
-                }
-
                 let target_mode = xml_attribute_value(&start, b"TargetMode")?;
-                if target_mode
-                    .as_deref()
-                    .is_some_and(|mode| mode.eq_ignore_ascii_case("External"))
-                {
-                    buffer.clear();
-                    continue;
-                }
-
                 let relationship_type = xml_attribute_value(&start, b"Type")?;
-                if required_type_suffix.is_some_and(|suffix| {
-                    !relationship_type
+
+                let id_matches = wanted_id.is_none_or(|wanted| id.as_deref() == Some(wanted));
+                let is_internal = !target_mode
+                    .as_deref()
+                    .is_some_and(|mode| mode.eq_ignore_ascii_case("External"));
+                let type_matches = required_type_suffix.is_none_or(|suffix| {
+                    relationship_type
                         .as_deref()
                         .is_some_and(|value| value.ends_with(suffix))
-                }) {
-                    buffer.clear();
-                    continue;
-                }
+                });
 
-                return xml_attribute_value(&start, b"Target");
+                if id_matches && is_internal && type_matches {
+                    return xml_attribute_value(&start, b"Target");
+                }
             }
             Ok(Event::Eof) => return Ok(None),
             Ok(_) => {}
@@ -861,14 +847,19 @@ fn local_xml_name(name: &[u8]) -> &[u8] {
 }
 
 fn normalize_package_target(base_part: &str, target: &str) -> Option<String> {
-    if target.contains("://") || target.contains('\\') {
+    if target.contains("://") || target.contains('\') {
         return None;
     }
 
     let mut segments = Vec::new();
     if !target.starts_with('/') {
         let base_parent = base_part.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-        segments.extend(base_parent.split('/').filter(|segment| !segment.is_empty()).map(str::to_string));
+        segments.extend(
+            base_parent
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_string),
+        );
     }
 
     for segment in target.trim_start_matches('/').split('/') {
@@ -890,7 +881,34 @@ fn relationships_part_for(part: &str) -> Option<String> {
 }
 
 fn parse_cell_address(address: &str) -> Option<(u32, u32)> {
-    let cleaned = address.replace('    if sheets.is_empty() {
+    let cleaned = address.replace('$', "");
+    let mut column = 0_u32;
+    let mut column_chars = 0_u32;
+    let mut row_start = 0_usize;
+
+    for (index, character) in cleaned.char_indices() {
+        if character.is_ascii_alphabetic() {
+            let upper = character.to_ascii_uppercase();
+            column = column
+                .checked_mul(26)?
+                .checked_add(u32::from(upper as u8 - b'A') + 1)?;
+            column_chars += 1;
+            row_start = index + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if column_chars == 0 || row_start >= cleaned.len() {
+        return None;
+    }
+
+    let row = cleaned[row_start..].parse::<u32>().ok()?.checked_sub(1)?;
+    Some((row, column.checked_sub(1)?))
+}
+
+fn choose_sheet(sheets: &[WorkbookSheetInfo], requested: Option<&str>) -> Result<String, String> {
+    if sheets.is_empty() {
         return Err("Workbook contains no worksheets.".to_string());
     }
 
@@ -1119,269 +1137,6 @@ mod tests {
         assert_eq!(parse_cell_address("$AB$10"), Some((9, 27)));
         assert_eq!(parse_cell_address("ZZ100"), Some((99, 701)));
         assert_eq!(parse_cell_address("not-a-cell"), None);
-    }
-
-    #[test]
-    fn matches_workbook_search_case_insensitively() {
-        assert!(contains_normalized("Revenue Recognition", "revenue"));
-        assert!(contains_normalized("=SUM(A1:A3)", "sum("));
-        assert!(!contains_normalized("Cash", "inventory"));
-    }
-
-    #[test]
-    fn converts_zero_based_columns_to_excel_labels() {
-        assert_eq!(column_label(0), "A");
-        assert_eq!(column_label(25), "Z");
-        assert_eq!(column_label(26), "AA");
-        assert_eq!(column_label(701), "ZZ");
-        assert_eq!(column_label(702), "AAA");
-    }
-
-    #[test]
-    fn builds_a1_cell_addresses() {
-        assert_eq!(cell_address(0, 0), "A1");
-        assert_eq!(cell_address(9, 27), "AB10");
-    }
-
-    #[test]
-    fn chooses_first_visible_previewable_sheet_by_default() {
-        let sheets = vec![
-            WorkbookSheetInfo {
-                name: "Hidden".into(),
-                visibility: "HIDDEN".into(),
-                sheet_type: "WORKSHEET".into(),
-                previewable: true,
-            },
-            WorkbookSheetInfo {
-                name: "Dashboard".into(),
-                visibility: "VISIBLE".into(),
-                sheet_type: "CHART_SHEET".into(),
-                previewable: false,
-            },
-            WorkbookSheetInfo {
-                name: "Data".into(),
-                visibility: "VISIBLE".into(),
-                sheet_type: "WORKSHEET".into(),
-                previewable: true,
-            },
-        ];
-
-        assert_eq!(choose_sheet(&sheets, None).unwrap(), "Data");
-    }
-
-    #[test]
-    fn rejects_non_previewable_requested_sheet() {
-        let sheets = vec![WorkbookSheetInfo {
-            name: "Chart".into(),
-            visibility: "VISIBLE".into(),
-            sheet_type: "CHART_SHEET".into(),
-            previewable: false,
-        }];
-
-        assert!(choose_sheet(&sheets, Some("Chart")).is_err());
-    }
-
-    #[test]
-    fn rejects_unsupported_excel_extension_before_parsing() {
-        let fixture = WorkbookFixture::new();
-        fs::write(fixture.root.join("notes.csv"), b"a,b\n1,2\n")
-            .expect("CSV fixture should be written");
-
-        let error =
-            preview_workbook_source(&fixture.source("notes.csv"), None, None, None, None, None)
-                .expect_err("CSV should not be parsed by Excel viewer");
-
-        assert!(error.contains("not supported"));
-    }
-
-    #[test]
-    fn rejects_workbook_over_preview_size_limit_before_parsing() {
-        let fixture = WorkbookFixture::new();
-        let path = fixture.root.join("huge.xlsx");
-        let file = fs::File::create(path).expect("large workbook fixture should be created");
-        file.set_len(MAX_WORKBOOK_PREVIEW_BYTES + 1)
-            .expect("large workbook fixture should be sized");
-
-        let error =
-            preview_workbook_source(&fixture.source("huge.xlsx"), None, None, None, None, None)
-                .expect_err("oversize workbook should fail before parsing");
-
-        assert!(error.contains("too large"));
-    }
-}
-, "");
-    let mut column = 0_u32;
-    let mut column_chars = 0_u32;
-    let mut row_start = 0_usize;
-
-    for (index, character) in cleaned.char_indices() {
-        if character.is_ascii_alphabetic() {
-            let upper = character.to_ascii_uppercase();
-            column = column
-                .checked_mul(26)?
-                .checked_add(u32::from(upper as u8 - b'A') + 1)?;
-            column_chars += 1;
-            row_start = index + character.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    if column_chars == 0 || row_start >= cleaned.len() {
-        return None;
-    }
-
-    let row = cleaned[row_start..].parse::<u32>().ok()?.checked_sub(1)?;
-    Some((row, column.checked_sub(1)?))
-}
-
-fn choose_sheet(sheets: &[WorkbookSheetInfo], requested: Option<&str>) -> Result<String, String> {
-    if sheets.is_empty() {
-        return Err("Workbook contains no worksheets.".to_string());
-    }
-
-    if let Some(requested) = requested {
-        let sheet = sheets
-            .iter()
-            .find(|sheet| sheet.name == requested)
-            .ok_or_else(|| "Requested worksheet does not exist.".to_string())?;
-
-        if !sheet.previewable {
-            return Err("Requested sheet type cannot be previewed as worksheet cells.".to_string());
-        }
-
-        return Ok(sheet.name.clone());
-    }
-
-    sheets
-        .iter()
-        .find(|sheet| sheet.previewable && sheet.visibility == "VISIBLE")
-        .or_else(|| sheets.iter().find(|sheet| sheet.previewable))
-        .map(|sheet| sheet.name.clone())
-        .ok_or_else(|| "Workbook contains no previewable worksheets.".to_string())
-}
-
-fn merged_ranges_for_sheet(
-    workbook: &mut Sheets<BufReader<fs::File>>,
-    sheet_name: &str,
-) -> Result<Vec<Dimensions>, String> {
-    match workbook {
-        Sheets::Xlsx(book) => book
-            .merge_cells_by_sheet_name(sheet_name)
-            .map_err(|error| format!("Unable to read merged ranges: {error}")),
-        Sheets::Xls(book) => book
-            .merge_cells_by_sheet_name(sheet_name)
-            .map_err(|error| format!("Unable to read merged ranges: {error}")),
-        Sheets::Xlsb(_) | Sheets::Ods(_) => Ok(Vec::new()),
-    }
-}
-
-fn hyperlinks_for_sheet(
-    workbook: &mut Sheets<BufReader<fs::File>>,
-    sheet_name: &str,
-) -> Result<Vec<calamine::Hyperlink>, String> {
-    match workbook {
-        Sheets::Xlsx(book) => book
-            .hyperlinks_by_sheet_name(sheet_name)
-            .map_err(|error| format!("Unable to read worksheet hyperlinks: {error}")),
-        Sheets::Xls(_) | Sheets::Xlsb(_) | Sheets::Ods(_) => Ok(Vec::new()),
-    }
-}
-
-fn sheet_visibility_label(visibility: SheetVisible) -> &'static str {
-    match visibility {
-        SheetVisible::Visible => "VISIBLE",
-        SheetVisible::Hidden => "HIDDEN",
-        SheetVisible::VeryHidden => "VERY_HIDDEN",
-    }
-}
-
-fn sheet_type_label(sheet_type: SheetType) -> &'static str {
-    match sheet_type {
-        SheetType::WorkSheet => "WORKSHEET",
-        SheetType::DialogSheet => "DIALOG_SHEET",
-        SheetType::MacroSheet => "MACRO_SHEET",
-        SheetType::ChartSheet => "CHART_SHEET",
-        SheetType::Vba => "VBA",
-    }
-}
-
-fn data_kind(value: &Data) -> &'static str {
-    match value {
-        Data::Empty => "EMPTY",
-        Data::String(_) => "STRING",
-        Data::Float(_) => "FLOAT",
-        Data::Int(_) => "INTEGER",
-        Data::Bool(_) => "BOOLEAN",
-        Data::DateTime(_) | Data::DateTimeIso(_) => "DATETIME",
-        Data::DurationIso(_) => "DURATION",
-        Data::Error(_) => "ERROR",
-    }
-}
-
-fn range_info(range: Dimensions) -> WorkbookRangeInfo {
-    WorkbookRangeInfo {
-        start_row: range.start.0,
-        start_column: range.start.1,
-        end_row: range.end.0,
-        end_column: range.end.1,
-        address: format!(
-            "{}:{}",
-            cell_address(range.start.0, range.start.1),
-            cell_address(range.end.0, range.end.1)
-        ),
-    }
-}
-
-fn cell_address(row: u32, column: u32) -> String {
-    format!("{}{}", column_label(column), row.saturating_add(1))
-}
-
-fn column_label(column: u32) -> String {
-    let mut value = u64::from(column) + 1;
-    let mut chars = Vec::new();
-
-    while value > 0 {
-        let remainder = ((value - 1) % 26) as u8;
-        chars.push((b'A' + remainder) as char);
-        value = (value - 1) / 26;
-    }
-
-    chars.into_iter().rev().collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-    use uuid::Uuid;
-
-    struct WorkbookFixture {
-        root: PathBuf,
-    }
-
-    impl WorkbookFixture {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "professional-docx-workbook-preview-{}",
-                Uuid::new_v4()
-            ));
-            fs::create_dir_all(&root).expect("workbook preview test root should be created");
-            Self { root }
-        }
-
-        fn source(&self, relative_path: &str) -> ResolvedFileSource {
-            ResolvedFileSource {
-                storage_root_path: self.root.clone(),
-                relative_path: PathBuf::from(relative_path),
-            }
-        }
-    }
-
-    impl Drop for WorkbookFixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
     }
 
     #[test]
