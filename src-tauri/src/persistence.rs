@@ -309,6 +309,17 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub created_at_ms: i64,
 }
 
+pub struct NewWorkpaperRevision<'a> {
+    pub revision_reason: Option<&'a str>,
+    pub objective: &'a str,
+    pub procedure_performed: &'a str,
+    pub population: &'a str,
+    pub sample: &'a str,
+    pub exceptions: &'a str,
+    pub management_explanation: &'a str,
+    pub conclusion: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentRelationshipRecord {
     pub document_relationship_id: String,
@@ -3620,6 +3631,1116 @@ pub fn remove_document_relationship(
 
     transaction.commit()?;
     Ok(())
+}
+
+fn normalize_domain_label(
+    value: &str,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<String, PersistenceError> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = normalized.chars().count();
+    if count == 0 || count > max_chars {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain 1 to {max_chars} characters"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Option<String> {
+    value.and_then(|raw| {
+        let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.chars().take(max_chars).collect())
+        }
+    })
+}
+
+fn insert_domain_audit_event(
+    transaction: &rusqlite::Transaction<'_>,
+    event_type: &str,
+    entity_type: &str,
+    entity_id: &str,
+    related_entity_type: Option<&str>,
+    related_entity_id: Option<&str>,
+    occurred_at_ms: i64,
+    details: serde_json::Value,
+) -> Result<(), PersistenceError> {
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+        params![
+            Uuid::new_v4().to_string(),
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            details.to_string()
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn create_client(database_path: &Path, name: &str) -> Result<ClientRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "client name", 200)?;
+    let client_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let connection = open_configured_connection(database_path)?;
+    connection.execute(
+        "INSERT INTO clients (client_id, name, created_at_ms, archived_at_ms)
+         VALUES (?1, ?2, ?3, NULL)",
+        params![&client_id, &name, now],
+    )?;
+
+    Ok(ClientRecord {
+        client_id,
+        name,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_clients(database_path: &Path) -> Result<Vec<ClientRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT client_id, name, created_at_ms
+         FROM clients
+         WHERE archived_at_ms IS NULL
+         ORDER BY name COLLATE NOCASE, created_at_ms",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ClientRecord {
+            client_id: row.get(0)?,
+            name: row.get(1)?,
+            created_at_ms: row.get(2)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_service_type(
+    database_path: &Path,
+    name: &str,
+) -> Result<ServiceTypeRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "service type name", 120)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "service type name must contain searchable characters".to_string(),
+        ));
+    }
+
+    let service_type_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let connection = open_configured_connection(database_path)?;
+    connection.execute(
+        "INSERT INTO service_types (
+            service_type_id,
+            name,
+            normalized_name,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, NULL)",
+        params![&service_type_id, &name, &normalized_name, now],
+    )?;
+
+    Ok(ServiceTypeRecord {
+        service_type_id,
+        name,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_service_types(
+    database_path: &Path,
+) -> Result<Vec<ServiceTypeRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT service_type_id, name, created_at_ms
+         FROM service_types
+         WHERE archived_at_ms IS NULL
+         ORDER BY name COLLATE NOCASE, created_at_ms",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ServiceTypeRecord {
+            service_type_id: row.get(0)?,
+            name: row.get(1)?,
+            created_at_ms: row.get(2)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_engagement(
+    database_path: &Path,
+    client_id: &str,
+    service_type_id: &str,
+    name: &str,
+    period_start: Option<&str>,
+    period_end: Option<&str>,
+    status: &str,
+) -> Result<EngagementRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement name", 240)?;
+    let status = normalize_domain_label(status, "engagement status", 80)?;
+    let period_start = normalize_optional_domain_text(period_start, 40);
+    let period_end = normalize_optional_domain_text(period_end, 40);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let client_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM clients
+            WHERE client_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if !client_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "client {client_id} does not exist"
+        )));
+    }
+
+    let service_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM service_types
+            WHERE service_type_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [service_type_id],
+        |row| row.get(0),
+    )?;
+    if !service_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "service type {service_type_id} does not exist"
+        )));
+    }
+
+    let engagement_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagements (
+            engagement_id,
+            client_id,
+            service_type_id,
+            name,
+            period_start,
+            period_end,
+            status,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &engagement_id,
+            client_id,
+            service_type_id,
+            &name,
+            period_start.as_deref(),
+            period_end.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementRecord {
+        engagement_id,
+        client_id: client_id.to_string(),
+        service_type_id: service_type_id.to_string(),
+        name,
+        period_start,
+        period_end,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_engagements(
+    database_path: &Path,
+    client_id: Option<&str>,
+) -> Result<Vec<EngagementRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut result = Vec::new();
+
+    if let Some(client_id) = client_id {
+        let mut statement = connection.prepare(
+            "SELECT
+                engagement_id,
+                client_id,
+                service_type_id,
+                name,
+                period_start,
+                period_end,
+                status,
+                created_at_ms
+             FROM engagements
+             WHERE archived_at_ms IS NULL
+               AND client_id = ?1
+             ORDER BY created_at_ms DESC, name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([client_id], engagement_from_row)?;
+        for row in rows {
+            result.push(row?);
+        }
+    } else {
+        let mut statement = connection.prepare(
+            "SELECT
+                engagement_id,
+                client_id,
+                service_type_id,
+                name,
+                period_start,
+                period_end,
+                status,
+                created_at_ms
+             FROM engagements
+             WHERE archived_at_ms IS NULL
+             ORDER BY created_at_ms DESC, name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([], engagement_from_row)?;
+        for row in rows {
+            result.push(row?);
+        }
+    }
+
+    Ok(result)
+}
+
+fn engagement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRecord> {
+    Ok(EngagementRecord {
+        engagement_id: row.get(0)?,
+        client_id: row.get(1)?,
+        service_type_id: row.get(2)?,
+        name: row.get(3)?,
+        period_start: row.get(4)?,
+        period_end: row.get(5)?,
+        status: row.get(6)?,
+        created_at_ms: row.get(7)?,
+    })
+}
+
+pub fn create_engagement_area(
+    database_path: &Path,
+    engagement_id: &str,
+    parent_area_id: Option<&str>,
+    name: &str,
+    code: Option<&str>,
+    display_order: i64,
+    status: &str,
+) -> Result<EngagementAreaRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "area name", 160)?;
+    let code = normalize_optional_domain_text(code, 40);
+    let status = normalize_domain_label(status, "area status", 80)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(parent_area_id) = parent_area_id {
+        let parent_engagement: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM engagement_areas
+                 WHERE engagement_area_id = ?1
+                   AND archived_at_ms IS NULL",
+                [parent_area_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if parent_engagement.as_deref() != Some(engagement_id) {
+            return Err(PersistenceError::Configuration(
+                "parent area must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let engagement_area_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagement_areas (
+            engagement_area_id,
+            engagement_id,
+            parent_area_id,
+            name,
+            code,
+            display_order,
+            status,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &engagement_area_id,
+            engagement_id,
+            parent_area_id,
+            &name,
+            code.as_deref(),
+            display_order,
+            &status,
+            now
+        ],
+    )?;
+    transaction.commit()?;
+
+    Ok(EngagementAreaRecord {
+        engagement_area_id,
+        engagement_id: engagement_id.to_string(),
+        parent_area_id: parent_area_id.map(str::to_string),
+        name,
+        code,
+        display_order,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_engagement_areas(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<EngagementAreaRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            engagement_area_id,
+            engagement_id,
+            parent_area_id,
+            name,
+            code,
+            display_order,
+            status,
+            created_at_ms
+         FROM engagement_areas
+         WHERE engagement_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY COALESCE(parent_area_id, ''), display_order, name COLLATE NOCASE",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(EngagementAreaRecord {
+            engagement_area_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            parent_area_id: row.get(2)?,
+            name: row.get(3)?,
+            code: row.get(4)?,
+            display_order: row.get(5)?,
+            status: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_procedure(
+    database_path: &Path,
+    engagement_id: &str,
+    engagement_area_id: Option<&str>,
+    reference: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+    status: &str,
+) -> Result<ProcedureRecord, PersistenceError> {
+    let title = normalize_domain_label(title, "procedure title", 240)?;
+    let reference = normalize_optional_domain_text(reference, 80);
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let status = normalize_domain_label(status, "procedure status", 80)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(area_id) = engagement_area_id {
+        let area_engagement: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM engagement_areas
+                 WHERE engagement_area_id = ?1
+                   AND archived_at_ms IS NULL",
+                [area_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if area_engagement.as_deref() != Some(engagement_id) {
+            return Err(PersistenceError::Configuration(
+                "procedure area must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let procedure_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO procedures (
+            procedure_id,
+            engagement_id,
+            engagement_area_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &procedure_id,
+            engagement_id,
+            engagement_area_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    transaction.commit()?;
+
+    Ok(ProcedureRecord {
+        procedure_id,
+        engagement_id: engagement_id.to_string(),
+        engagement_area_id: engagement_area_id.map(str::to_string),
+        reference,
+        title,
+        description,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_procedures(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<ProcedureRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            procedure_id,
+            engagement_id,
+            engagement_area_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms
+         FROM procedures
+         WHERE engagement_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY created_at_ms, title COLLATE NOCASE",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(ProcedureRecord {
+            procedure_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            engagement_area_id: row.get(2)?,
+            reference: row.get(3)?,
+            title: row.get(4)?,
+            description: row.get(5)?,
+            status: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_workpaper(
+    database_path: &Path,
+    engagement_id: &str,
+    engagement_area_id: Option<&str>,
+    procedure_id: Option<&str>,
+    reference: &str,
+    title: &str,
+    workflow_state: &str,
+) -> Result<WorkpaperRecord, PersistenceError> {
+    let reference = normalize_domain_label(reference, "workpaper reference", 80)?;
+    let title = normalize_domain_label(title, "workpaper title", 240)?;
+    let workflow_state = normalize_domain_label(workflow_state, "workflow state", 80)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(area_id) = engagement_area_id {
+        let area_engagement: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM engagement_areas
+                 WHERE engagement_area_id = ?1
+                   AND archived_at_ms IS NULL",
+                [area_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if area_engagement.as_deref() != Some(engagement_id) {
+            return Err(PersistenceError::Configuration(
+                "workpaper area must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    if let Some(procedure_id) = procedure_id {
+        let procedure_context: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT engagement_id, engagement_area_id
+                 FROM procedures
+                 WHERE procedure_id = ?1
+                   AND archived_at_ms IS NULL",
+                [procedure_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((procedure_engagement, procedure_area)) = procedure_context else {
+            return Err(PersistenceError::Configuration(format!(
+                "procedure {procedure_id} does not exist"
+            )));
+        };
+        if procedure_engagement != engagement_id {
+            return Err(PersistenceError::Configuration(
+                "workpaper procedure must belong to the same engagement".to_string(),
+            ));
+        }
+        if let (Some(area_id), Some(procedure_area)) =
+            (engagement_area_id, procedure_area.as_deref())
+        {
+            if area_id != procedure_area {
+                return Err(PersistenceError::Configuration(
+                    "workpaper area must match the selected procedure area".to_string(),
+                ));
+            }
+        }
+    }
+
+    let workpaper_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO workpapers (
+            workpaper_id,
+            engagement_id,
+            engagement_area_id,
+            procedure_id,
+            reference,
+            title,
+            workflow_state,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &workpaper_id,
+            engagement_id,
+            engagement_area_id,
+            procedure_id,
+            &reference,
+            &title,
+            &workflow_state,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        "WORKPAPER_CREATED",
+        "WORKPAPER",
+        &workpaper_id,
+        Some("ENGAGEMENT"),
+        Some(engagement_id),
+        now,
+        json!({
+            "reference": reference,
+            "title": title,
+            "workflowState": workflow_state,
+            "engagementAreaId": engagement_area_id,
+            "procedureId": procedure_id
+        }),
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperRecord {
+        workpaper_id,
+        engagement_id: engagement_id.to_string(),
+        engagement_area_id: engagement_area_id.map(str::to_string),
+        procedure_id: procedure_id.map(str::to_string),
+        reference,
+        title,
+        workflow_state,
+        created_at_ms: now,
+        latest_revision_number: None,
+    })
+}
+
+pub fn list_workpapers(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<WorkpaperRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            w.workpaper_id,
+            w.engagement_id,
+            w.engagement_area_id,
+            w.procedure_id,
+            w.reference,
+            w.title,
+            w.workflow_state,
+            w.created_at_ms,
+            (
+                SELECT MAX(wr.revision_number)
+                FROM workpaper_revisions wr
+                WHERE wr.workpaper_id = w.workpaper_id
+            )
+         FROM workpapers w
+         WHERE w.engagement_id = ?1
+           AND w.archived_at_ms IS NULL
+         ORDER BY w.reference COLLATE NOCASE, w.created_at_ms",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let latest_revision_number: Option<i64> = row.get(8)?;
+        Ok(WorkpaperRecord {
+            workpaper_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            engagement_area_id: row.get(2)?,
+            procedure_id: row.get(3)?,
+            reference: row.get(4)?,
+            title: row.get(5)?,
+            workflow_state: row.get(6)?,
+            created_at_ms: row.get(7)?,
+            latest_revision_number: latest_revision_number.map(|value| value.max(0) as u64),
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_workpaper_revision(
+    database_path: &Path,
+    workpaper_id: &str,
+    content: NewWorkpaperRevision<'_>,
+) -> Result<WorkpaperRevisionRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let workpaper_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM workpapers
+            WHERE workpaper_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [workpaper_id],
+        |row| row.get(0),
+    )?;
+    if !workpaper_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper {workpaper_id} does not exist"
+        )));
+    }
+
+    let previous: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT workpaper_revision_id, revision_number
+             FROM workpaper_revisions
+             WHERE workpaper_id = ?1
+             ORDER BY revision_number DESC
+             LIMIT 1",
+            [workpaper_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let next_revision = previous
+        .as_ref()
+        .map(|(_, number)| number.saturating_add(1))
+        .unwrap_or(1);
+    let supersedes_revision_id = previous.map(|(id, _)| id);
+
+    let revision_reason = content
+        .revision_reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut hasher = Sha256::new();
+    for value in [
+        content.objective,
+        content.procedure_performed,
+        content.population,
+        content.sample,
+        content.exceptions,
+        content.management_explanation,
+        content.conclusion,
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let content_hash = hasher.finalize().to_vec();
+
+    let revision_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO workpaper_revisions (
+            workpaper_revision_id,
+            workpaper_id,
+            revision_number,
+            created_at_ms,
+            revision_reason,
+            supersedes_revision_id,
+            objective,
+            procedure_performed,
+            population,
+            sample,
+            exceptions,
+            management_explanation,
+            conclusion,
+            content_hash
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            &revision_id,
+            workpaper_id,
+            next_revision,
+            now,
+            revision_reason.as_deref(),
+            supersedes_revision_id.as_deref(),
+            content.objective,
+            content.procedure_performed,
+            content.population,
+            content.sample,
+            content.exceptions,
+            content.management_explanation,
+            content.conclusion,
+            &content_hash
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        "WORKPAPER_REVISION_CREATED",
+        "WORKPAPER_REVISION",
+        &revision_id,
+        Some("WORKPAPER"),
+        Some(workpaper_id),
+        now,
+        json!({
+            "revisionNumber": next_revision,
+            "supersedesRevisionId": supersedes_revision_id,
+            "revisionReason": revision_reason,
+            "contentHash": hex::encode(&content_hash)
+        }),
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperRevisionRecord {
+        workpaper_revision_id: revision_id,
+        workpaper_id: workpaper_id.to_string(),
+        revision_number: next_revision.max(0) as u64,
+        created_at_ms: now,
+        revision_reason,
+        supersedes_revision_id,
+        objective: content.objective.to_string(),
+        procedure_performed: content.procedure_performed.to_string(),
+        population: content.population.to_string(),
+        sample: content.sample.to_string(),
+        exceptions: content.exceptions.to_string(),
+        management_explanation: content.management_explanation.to_string(),
+        conclusion: content.conclusion.to_string(),
+        content_hash: Some(content_hash),
+    })
+}
+
+pub fn list_workpaper_revisions(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<WorkpaperRevisionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            workpaper_revision_id,
+            workpaper_id,
+            revision_number,
+            created_at_ms,
+            revision_reason,
+            supersedes_revision_id,
+            objective,
+            procedure_performed,
+            population,
+            sample,
+            exceptions,
+            management_explanation,
+            conclusion,
+            content_hash
+         FROM workpaper_revisions
+         WHERE workpaper_id = ?1
+         ORDER BY revision_number DESC",
+    )?;
+    let rows = statement.query_map([workpaper_id], |row| {
+        let revision_number: i64 = row.get(2)?;
+        Ok(WorkpaperRevisionRecord {
+            workpaper_revision_id: row.get(0)?,
+            workpaper_id: row.get(1)?,
+            revision_number: revision_number.max(0) as u64,
+            created_at_ms: row.get(3)?,
+            revision_reason: row.get(4)?,
+            supersedes_revision_id: row.get(5)?,
+            objective: row.get(6)?,
+            procedure_performed: row.get(7)?,
+            population: row.get(8)?,
+            sample: row.get(9)?,
+            exceptions: row.get(10)?,
+            management_explanation: row.get(11)?,
+            conclusion: row.get(12)?,
+            content_hash: row.get(13)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_workpaper_evidence_link(
+    database_path: &Path,
+    workpaper_revision_id: &str,
+    document_id: &str,
+    content_version_id: Option<&str>,
+    controlled_evidence_version_id: Option<&str>,
+    relationship_type: &str,
+    description: Option<&str>,
+) -> Result<WorkpaperEvidenceLinkRecord, PersistenceError> {
+    if content_version_id.is_some() == controlled_evidence_version_id.is_some() {
+        return Err(PersistenceError::Configuration(
+            "evidence link must reference exactly one content version or controlled evidence version"
+                .to_string(),
+        ));
+    }
+
+    let relationship_type =
+        normalize_domain_label(relationship_type, "evidence relationship type", 80)?;
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let revision_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM workpaper_revisions
+            WHERE workpaper_revision_id = ?1
+        )",
+        [workpaper_revision_id],
+        |row| row.get(0),
+    )?;
+    if !revision_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper revision {workpaper_revision_id} does not exist"
+        )));
+    }
+
+    let document_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM documents
+            WHERE document_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [document_id],
+        |row| row.get(0),
+    )?;
+    if !document_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "document {document_id} does not exist"
+        )));
+    }
+
+    if let Some(content_version_id) = content_version_id {
+        let version_document: Option<String> = transaction
+            .query_row(
+                "SELECT document_id
+                 FROM content_versions
+                 WHERE content_version_id = ?1",
+                [content_version_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if version_document.as_deref() != Some(document_id) {
+            return Err(PersistenceError::Configuration(
+                "content version does not belong to the selected document".to_string(),
+            ));
+        }
+    }
+
+    if let Some(controlled_version_id) = controlled_evidence_version_id {
+        let version_document: Option<String> = transaction
+            .query_row(
+                "SELECT document_id
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [controlled_version_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if version_document.as_deref() != Some(document_id) {
+            return Err(PersistenceError::Configuration(
+                "controlled evidence version does not belong to the selected document".to_string(),
+            ));
+        }
+    }
+
+    let evidence_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO workpaper_evidence_links (
+            evidence_link_id,
+            workpaper_revision_id,
+            document_id,
+            content_version_id,
+            controlled_evidence_version_id,
+            relationship_type,
+            description,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &evidence_link_id,
+            workpaper_revision_id,
+            document_id,
+            content_version_id,
+            controlled_evidence_version_id,
+            &relationship_type,
+            description.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        "WORKPAPER_EVIDENCE_LINK_ADDED",
+        "WORKPAPER_EVIDENCE_LINK",
+        &evidence_link_id,
+        Some("WORKPAPER_REVISION"),
+        Some(workpaper_revision_id),
+        now,
+        json!({
+            "documentId": document_id,
+            "contentVersionId": content_version_id,
+            "controlledEvidenceVersionId": controlled_evidence_version_id,
+            "relationshipType": relationship_type
+        }),
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperEvidenceLinkRecord {
+        evidence_link_id,
+        workpaper_revision_id: workpaper_revision_id.to_string(),
+        document_id: document_id.to_string(),
+        content_version_id: content_version_id.map(str::to_string),
+        controlled_evidence_version_id: controlled_evidence_version_id.map(str::to_string),
+        relationship_type,
+        description,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_workpaper_evidence_links(
+    database_path: &Path,
+    workpaper_revision_id: &str,
+) -> Result<Vec<WorkpaperEvidenceLinkRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            evidence_link_id,
+            workpaper_revision_id,
+            document_id,
+            content_version_id,
+            controlled_evidence_version_id,
+            relationship_type,
+            description,
+            created_at_ms
+         FROM workpaper_evidence_links
+         WHERE workpaper_revision_id = ?1
+         ORDER BY created_at_ms, rowid",
+    )?;
+    let rows = statement.query_map([workpaper_revision_id], |row| {
+        Ok(WorkpaperEvidenceLinkRecord {
+            evidence_link_id: row.get(0)?,
+            workpaper_revision_id: row.get(1)?,
+            document_id: row.get(2)?,
+            content_version_id: row.get(3)?,
+            controlled_evidence_version_id: row.get(4)?,
+            relationship_type: row.get(5)?,
+            description: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
 }
 
 pub fn resolve_file_instance_source(
