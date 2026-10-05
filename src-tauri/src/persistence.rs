@@ -4704,6 +4704,157 @@ mod tests {
     }
 
     #[test]
+    fn document_relationships_are_bidirectional_in_context_and_audited() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let source_root = database.source_root("relationship-source");
+        fs::create_dir_all(&source_root).expect("source root should exist");
+        let canonical_root =
+            fs::canonicalize(&source_root).expect("source root should canonicalize");
+        let root = register_storage_root(
+            &database.path,
+            "relationship-root",
+            &source_root,
+            &canonical_root,
+        )
+        .expect("source root should register");
+
+        let index_job_id = Uuid::new_v4().to_string();
+        let scan_generation_id = Uuid::new_v4().to_string();
+        create_index_job(
+            &database.path,
+            &root.storage_root_id,
+            &index_job_id,
+            &scan_generation_id,
+        )
+        .expect("index job should be created");
+        mark_index_job_running(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+        )
+        .expect("index job should start");
+
+        let make_observation = |name: &str, fingerprint_byte: u8| {
+            let relative = Path::new(name);
+            let (relative_path_native, path_native_encoding) =
+                encode_native_path_for_storage(relative);
+            FileObservation {
+                relative_path_native,
+                path_native_encoding,
+                relative_path_display: name.to_string(),
+                relative_path_search: normalize_search_text(name),
+                display_name: name.to_string(),
+                size_bytes: 128,
+                creation_time_ms: Some(1_000),
+                last_write_time_ms: Some(2_000),
+                filesystem_identity: None,
+                volume_identity: None,
+                file_attributes: None,
+                reparse_tag: None,
+                quick_fingerprint: Some(vec![fingerprint_byte; 32]),
+                source_stable_during_read: Some(true),
+            }
+        };
+
+        let observations = vec![
+            make_observation("Workpaper.xlsx", 0x11),
+            make_observation("Invoice.pdf", 0x22),
+        ];
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            &observations,
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("relationship fixture files should persist");
+
+        let files = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("relationship fixture preview should load");
+        let workpaper = files
+            .iter()
+            .find(|file| file.name == "Workpaper.xlsx")
+            .expect("workpaper should exist");
+        let invoice = files
+            .iter()
+            .find(|file| file.name == "Invoice.pdf")
+            .expect("invoice should exist");
+
+        let relationship_id = create_document_relationship(
+            &database.path,
+            &workpaper.document_id,
+            &invoice.document_id,
+            "Supports",
+        )
+        .expect("relationship should be created");
+        let duplicate_id = create_document_relationship(
+            &database.path,
+            &workpaper.document_id,
+            &invoice.document_id,
+            "supports",
+        )
+        .expect("case-insensitive duplicate should be idempotent");
+        assert_eq!(duplicate_id, relationship_id);
+
+        let outgoing = list_document_relationships(&database.path, &workpaper.document_id)
+            .expect("outgoing relationships should load");
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].direction, "OUTGOING");
+        assert_eq!(outgoing[0].relationship_type, "Supports");
+        assert_eq!(outgoing[0].related_document_id, invoice.document_id);
+        assert_eq!(
+            outgoing[0]
+                .related_file
+                .as_ref()
+                .expect("related invoice should have a current file")
+                .file_instance_id,
+            invoice.file_instance_id
+        );
+
+        let incoming = list_document_relationships(&database.path, &invoice.document_id)
+            .expect("incoming relationships should load");
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0].direction, "INCOMING");
+        assert_eq!(incoming[0].related_document_id, workpaper.document_id);
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "DOCUMENT_RELATIONSHIP_CREATED",
+                &relationship_id,
+            )
+            .expect("relationship creation audit count should load"),
+            1
+        );
+
+        remove_document_relationship(&database.path, &relationship_id)
+            .expect("relationship should be removed");
+        assert!(
+            list_document_relationships(&database.path, &workpaper.document_id)
+                .expect("removed source context should load")
+                .is_empty()
+        );
+        assert!(
+            list_document_relationships(&database.path, &invoice.document_id)
+                .expect("removed target context should load")
+                .is_empty()
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "DOCUMENT_RELATIONSHIP_REMOVED",
+                &relationship_id,
+            )
+            .expect("relationship removal audit count should load"),
+            1
+        );
+    }
+
+    #[test]
     fn recent_searches_deduplicate_normalized_query_and_track_usage() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
