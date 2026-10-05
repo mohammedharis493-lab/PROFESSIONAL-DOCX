@@ -605,6 +605,24 @@ mod tests {
                 .expect("controlled evidence count should load"),
             1
         );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RECONCILED",
+                &file_instance_id,
+            )
+            .expect("reconciliation audit count should load"),
+            2
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "LINKED_SOURCE_RELINKED",
+                &file_instance_id,
+            )
+            .expect("relink audit count should load"),
+            1
+        );
 
         let history =
             persistence::list_document_version_history(&test.database_path, &captured.document_id)
