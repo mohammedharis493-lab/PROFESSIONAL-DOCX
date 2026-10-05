@@ -170,6 +170,14 @@ type WorkbookHyperlinkInfo = {
   tooltip: string | null;
 };
 
+type WorkbookCommentInfo = {
+  row: number;
+  column: number;
+  address: string;
+  author: string | null;
+  text: string;
+};
+
 type WorkbookPreview = {
   sheets: WorkbookSheetInfo[];
   selectedSheet: string;
@@ -184,6 +192,10 @@ type WorkbookPreview = {
   cells: WorkbookCell[];
   mergedRanges: WorkbookRangeInfo[];
   hyperlinks: WorkbookHyperlinkInfo[];
+  comments: WorkbookCommentInfo[];
+  hiddenRows: number[];
+  hiddenColumns: number[];
+  ooxmlMetadataAvailable: boolean;
   metadataTruncated: boolean;
   totalSizeBytes: number;
   extension: string;
@@ -193,6 +205,7 @@ type ActiveWorkbookPreview = {
   file: IndexedFile;
   preview: WorkbookPreview;
   cellsByPosition: Record<string, WorkbookCell>;
+  commentsByPosition: Record<string, WorkbookCommentInfo>;
 };
 
 type WordParagraphBlock = {
@@ -975,11 +988,18 @@ export default function App() {
     const cellsByPosition = Object.fromEntries(
       preview.cells.map((cell) => [workbookCellKey(cell.row, cell.column), cell]),
     );
+    const commentsByPosition = Object.fromEntries(
+      preview.comments.map((comment) => [
+        workbookCellKey(comment.row, comment.column),
+        comment,
+      ]),
+    );
 
     setActiveWorkbookPreview({
       file,
       preview,
       cellsByPosition,
+      commentsByPosition,
     });
   }
 
@@ -1593,6 +1613,12 @@ export default function App() {
     workbookSearchHits.map(
       (hit) => `${hit.sheetName}:${hit.row}:${hit.column}`,
     ),
+  );
+  const workbookHiddenRows = new Set(
+    activeWorkbookPreview?.preview.hiddenRows ?? [],
+  );
+  const workbookHiddenColumns = new Set(
+    activeWorkbookPreview?.preview.hiddenColumns ?? [],
   );
 
   function moveViewerSearch(delta: number) {
@@ -3085,7 +3111,21 @@ export default function App() {
                           (_, index) =>
                             activeWorkbookPreview.preview.columnOffset + index,
                         ).map((column) => (
-                          <th key={column}>{columnLabel(column)}</th>
+                          <th
+                            className={
+                              workbookHiddenColumns.has(column)
+                                ? "workbook-dimension-hidden"
+                                : undefined
+                            }
+                            key={column}
+                            title={
+                              workbookHiddenColumns.has(column)
+                                ? "This column is hidden in the source workbook."
+                                : undefined
+                            }
+                          >
+                            {columnLabel(column)}
+                          </th>
                         ))}
                       </tr>
                     </thead>
@@ -3095,16 +3135,33 @@ export default function App() {
                         (_, index) => activeWorkbookPreview.preview.rowOffset + index,
                       ).map((row) => (
                         <tr key={row}>
-                          <th>{row + 1}</th>
+                          <th
+                            className={
+                              workbookHiddenRows.has(row)
+                                ? "workbook-dimension-hidden"
+                                : undefined
+                            }
+                            title={
+                              workbookHiddenRows.has(row)
+                                ? "This row is hidden in the source workbook."
+                                : undefined
+                            }
+                          >
+                            {row + 1}
+                          </th>
                           {Array.from(
                             { length: activeWorkbookPreview.preview.columnCount },
                             (_, index) =>
                               activeWorkbookPreview.preview.columnOffset + index,
                           ).map((column) => {
+                            const positionKey = workbookCellKey(row, column);
                             const cell =
-                              activeWorkbookPreview.cellsByPosition[
-                                workbookCellKey(row, column)
-                              ];
+                              activeWorkbookPreview.cellsByPosition[positionKey];
+                            const comment =
+                              activeWorkbookPreview.commentsByPosition[positionKey];
+                            const hiddenDimension =
+                              workbookHiddenRows.has(row) ||
+                              workbookHiddenColumns.has(column);
 
                             const searchKey =
                               `${activeWorkbookPreview.preview.selectedSheet}:${row}:${column}`;
@@ -3122,12 +3179,18 @@ export default function App() {
                                 className={[
                                   "workbook-cell",
                                   cell?.formula ? "workbook-cell-formula" : "",
+                                  comment ? "workbook-cell-commented" : "",
+                                  hiddenDimension ? "workbook-cell-hidden-source" : "",
                                   isSearchHit ? "workbook-cell-search-hit" : "",
                                   isActiveSearchHit ? "workbook-cell-search-active" : "",
                                 ]
                                   .filter(Boolean)
                                   .join(" ")}
-                                title={cell?.address ?? `${columnLabel(column)}${row + 1}`}
+                                title={
+                                  comment
+                                    ? `${comment.address} · Note${comment.author ? ` by ${comment.author}` : ""}: ${comment.text || "(empty note)"}`
+                                    : cell?.address ?? `${columnLabel(column)}${row + 1}`
+                                }
                               >
                                 {cell ? (
                                   <>
@@ -3154,6 +3217,14 @@ export default function App() {
                                       </code>
                                     ) : null}
                                   </>
+                                ) : null}
+                                {comment ? (
+                                  <span
+                                    className="workbook-comment-indicator"
+                                    aria-label={`Note on ${comment.address}`}
+                                  >
+                                    NOTE
+                                  </span>
                                 ) : null}
                               </td>
                             );
@@ -3197,6 +3268,54 @@ export default function App() {
                       : "None surfaced for this sheet/format."}
                   </span>
                 </div>
+                <div>
+                  <strong>
+                    Notes / legacy comments ({activeWorkbookPreview.preview.comments.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML note metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.comments.length
+                        ? activeWorkbookPreview.preview.comments
+                            .slice(0, 6)
+                            .map(
+                              (comment) =>
+                                `${comment.address}${comment.author ? ` · ${comment.author}` : ""}: ${comment.text || "(empty note)"}`,
+                            )
+                            .join(" · ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
+                <div>
+                  <strong>
+                    Hidden rows ({activeWorkbookPreview.preview.hiddenRows.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML row visibility metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.hiddenRows.length
+                        ? activeWorkbookPreview.preview.hiddenRows
+                            .slice(0, 20)
+                            .map((row) => row + 1)
+                            .join(", ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
+                <div>
+                  <strong>
+                    Hidden columns ({activeWorkbookPreview.preview.hiddenColumns.length})
+                  </strong>
+                  <span>
+                    {!activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                      ? "OOXML column visibility metadata is unavailable for this workbook format."
+                      : activeWorkbookPreview.preview.hiddenColumns.length
+                        ? activeWorkbookPreview.preview.hiddenColumns
+                            .slice(0, 20)
+                            .map(columnLabel)
+                            .join(", ")
+                        : "None detected for this sheet."}
+                  </span>
+                </div>
               </div>
 
               <footer className="text-preview-footer workbook-preview-footer">
@@ -3207,7 +3326,9 @@ export default function App() {
                   {activeWorkbookPreview.preview.metadataTruncated
                     ? "Sheet metadata list truncated for safety. "
                     : ""}
-                  Comments and hidden row/column indicators are not yet surfaced in this foundation.
+                  {activeWorkbookPreview.preview.ooxmlMetadataAvailable
+                    ? "OOXML notes and hidden row/column indicators are preserved for this sheet; threaded comments are not yet surfaced."
+                    : "Notes and hidden row/column indicators are not available for this workbook format."}
                 </span>
               </footer>
             </section>
