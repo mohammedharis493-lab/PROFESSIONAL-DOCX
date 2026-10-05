@@ -638,9 +638,7 @@ fn create_firm(
 }
 
 #[tauri::command]
-fn list_firms(
-    database: State<'_, persistence::DatabaseState>,
-) -> Result<Vec<FirmDto>, String> {
+fn list_firms(database: State<'_, persistence::DatabaseState>) -> Result<Vec<FirmDto>, String> {
     persistence::list_firms(database.path())
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
