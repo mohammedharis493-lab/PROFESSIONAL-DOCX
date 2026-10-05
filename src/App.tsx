@@ -1635,6 +1635,22 @@ export default function App() {
     );
   }
 
+  function renderRelationshipAction(file: IndexedFile) {
+    const isThisContext = relationshipContextLoadingDocumentId === file.documentId;
+
+    return (
+      <button
+        className="file-action file-action-related"
+        type="button"
+        onClick={() => void loadRelationshipContext(file)}
+        disabled={relationshipContextLoadingDocumentId !== null}
+        title="View, add, or remove explicit document relationships without leaving the current context"
+      >
+        {isThisContext ? "Loading links…" : "Related"}
+      </button>
+    );
+  }
+
   function renderHistoryAction(file: IndexedFile) {
     const isThisHistory = versionHistoryLoadingDocumentId === file.documentId;
 
@@ -2013,6 +2029,7 @@ export default function App() {
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderHistoryAction(file)}
+                      {renderRelationshipAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2086,6 +2103,7 @@ export default function App() {
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderHistoryAction(file)}
+                      {renderRelationshipAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2184,6 +2202,7 @@ export default function App() {
                       </span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderHistoryAction(file)}
+                      {renderRelationshipAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
@@ -2297,6 +2316,7 @@ export default function App() {
                       <span className="file-size">{formatBytes(file.sizeBytes)}</span>
                       {renderPreviewAction(file, hasQuery ? query : undefined)}
                       {renderHistoryAction(file)}
+                      {renderRelationshipAction(file)}
                       {renderCaptureAction(file)}
                       <button
                         className="file-action"
