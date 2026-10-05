@@ -394,8 +394,7 @@ mod tests {
             }
         }
 
-        fn index_file(&self, name: &str, bytes: &[u8]) -> String {
-            fs::write(self.source_root.join(name), bytes).expect("source file should be written");
+        fn run_scan(&self) -> persistence::StorageRootRecord {
             let canonical =
                 fs::canonicalize(&self.source_root).expect("source root should canonicalize");
             let root = persistence::register_storage_root(
@@ -424,6 +423,13 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
             )
             .expect("indexing should succeed");
+
+            root
+        }
+
+        fn index_file(&self, name: &str, bytes: &[u8]) -> String {
+            fs::write(self.source_root.join(name), bytes).expect("source file should be written");
+            let root = self.run_scan();
 
             persistence::list_indexed_file_preview(&self.database_path, &root.storage_root_id, 10)
                 .expect("indexed files should list")
@@ -499,6 +505,116 @@ mod tests {
         assert_eq!(history[1].verification_state, "FINGERPRINTED");
         assert_eq!(history[1].source_stable_during_read, Some(true));
         assert_eq!(history[1].sha256, None);
+    }
+
+    #[test]
+    fn controlled_evidence_keeps_linked_source_reconcile_and_relink_lifecycle() {
+        let test = TestEvidence::new();
+        let source_name = "Working Evidence.txt";
+        let source_path = test.source_root.join(source_name);
+        let file_instance_id = test.index_file(source_name, b"captured baseline");
+
+        let captured = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect("capture should succeed");
+
+        let controlled_path = test
+            .evidence_state
+            .root
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
+        let controlled_bytes =
+            fs::read(&controlled_path).expect("controlled evidence should be readable");
+        assert_eq!(controlled_bytes, b"captured baseline");
+
+        fs::write(&source_path, b"working revision")
+            .expect("linked working source should be editable after capture");
+        let root = test.run_scan();
+
+        let changed = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &root.storage_root_id,
+            10,
+        )
+        .expect("changed linked source should list")
+        .into_iter()
+        .find(|file| file.file_instance_id == file_instance_id)
+        .expect("captured document working source should remain indexed");
+        assert_eq!(changed.availability_state, "CHANGED");
+
+        persistence::reconcile_linked_file_instance(&test.database_path, &file_instance_id)
+            .expect("controlled-evidence document should allow linked-source reconciliation");
+
+        let reconciled = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &root.storage_root_id,
+            10,
+        )
+        .expect("reconciled source should list")
+        .into_iter()
+        .find(|file| file.file_instance_id == file_instance_id)
+        .expect("reconciled working source should remain indexed");
+        assert_eq!(reconciled.availability_state, "AVAILABLE");
+
+        fs::remove_file(&source_path).expect("working source should be removable");
+        let root = test.run_scan();
+
+        let missing = persistence::list_indexed_file_preview(
+            &test.database_path,
+            &root.storage_root_id,
+            10,
+        )
+        .expect("missing source should remain indexed")
+        .into_iter()
+        .find(|file| file.file_instance_id == file_instance_id)
+        .expect("missing captured-document source should remain indexed");
+        assert_eq!(missing.availability_state, "MISSING");
+
+        let relinked_path = test.source_root.join("Relinked Working Evidence.txt");
+        fs::write(&relinked_path, b"working revision after move")
+            .expect("relink target should be created after the missing-source scan");
+
+        let relinked = persistence::relink_linked_file_instance(
+            &test.database_path,
+            &file_instance_id,
+            &relinked_path,
+        )
+        .expect("controlled-evidence document should allow linked-source relinking");
+        assert_eq!(relinked.document_id, captured.document_id);
+        assert_eq!(relinked.file_instance_id, file_instance_id);
+        assert_eq!(relinked.availability_state, "CHANGED");
+
+        persistence::reconcile_linked_file_instance(&test.database_path, &file_instance_id)
+            .expect("relinked controlled-evidence source should reconcile");
+
+        assert_eq!(
+            fs::read(&controlled_path).expect("controlled evidence should remain readable"),
+            controlled_bytes
+        );
+        assert_eq!(
+            hash_file(&controlled_path)
+                .expect("controlled evidence hash should still verify")
+                .to_vec(),
+            captured.sha256
+        );
+        assert_eq!(
+            persistence::count_controlled_evidence_versions_for_test(&test.database_path)
+                .expect("controlled evidence count should load"),
+            1
+        );
+
+        let history =
+            persistence::list_document_version_history(&test.database_path, &captured.document_id)
+                .expect("version history should remain available");
+        assert!(history.iter().any(|entry| {
+            entry.controlled_evidence_version_id.as_deref()
+                == Some(captured.controlled_evidence_version_id.as_str())
+                && entry.controlled_version_number == Some(1)
+                && entry.sha256.as_deref() == Some(captured.sha256.as_slice())
+        }));
     }
 
     #[test]
