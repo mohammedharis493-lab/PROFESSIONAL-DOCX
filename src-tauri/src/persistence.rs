@@ -3349,7 +3349,13 @@ pub fn create_client(
         "INSERT INTO clients (
             client_id, firm_id, name, reference, created_at_ms, archived_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-        params![&client_id, firm_id, &name, reference.as_deref(), created_at_ms],
+        params![
+            &client_id,
+            firm_id,
+            &name,
+            reference.as_deref(),
+            created_at_ms
+        ],
     )?;
     transaction.execute(
         "INSERT INTO audit_events (
@@ -5583,8 +5589,7 @@ mod tests {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
 
-        let firm = create_firm(&database.path, "Haris & Co")
-            .expect("firm should be created");
+        let firm = create_firm(&database.path, "Haris & Co").expect("firm should be created");
         let client = create_client(
             &database.path,
             &firm.firm_id,
@@ -5592,13 +5597,8 @@ mod tests {
             Some("ABC-001"),
         )
         .expect("client should be created");
-        let statutory = create_service_type(
-            &database.path,
-            &firm.firm_id,
-            "Statutory Audit",
-            None,
-        )
-        .expect("statutory service should be created");
+        let statutory = create_service_type(&database.path, &firm.firm_id, "Statutory Audit", None)
+            .expect("statutory service should be created");
         let internal = create_service_type(
             &database.path,
             &firm.firm_id,
@@ -5661,9 +5661,8 @@ mod tests {
         )
         .expect("grandchild area should be created");
 
-        let engagements =
-            list_engagements_for_client(&database.path, &client.client_id)
-                .expect("client engagements should list");
+        let engagements = list_engagements_for_client(&database.path, &client.client_id)
+            .expect("client engagements should list");
         assert_eq!(engagements.len(), 2);
         assert!(engagements
             .iter()
@@ -5675,8 +5674,14 @@ mod tests {
         let areas = list_engagement_areas(&database.path, &statutory_engagement.engagement_id)
             .expect("engagement areas should list");
         assert_eq!(areas.len(), 3);
-        assert_eq!(gst.parent_engagement_area_id.as_deref(), Some(top.engagement_area_id.as_str()));
-        assert_eq!(rcm.parent_engagement_area_id.as_deref(), Some(gst.engagement_area_id.as_str()));
+        assert_eq!(
+            gst.parent_engagement_area_id.as_deref(),
+            Some(top.engagement_area_id.as_str())
+        );
+        assert_eq!(
+            rcm.parent_engagement_area_id.as_deref(),
+            Some(gst.engagement_area_id.as_str())
+        );
 
         assert_eq!(
             count_audit_events_for_test(&database.path, "FIRM_CREATED", &firm.firm_id)
