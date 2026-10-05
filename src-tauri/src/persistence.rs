@@ -3659,6 +3659,15 @@ fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Opti
     })
 }
 
+fn bytes_to_lower_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
 fn insert_domain_audit_event(
     transaction: &rusqlite::Transaction<'_>,
     event_type: &str,
@@ -4488,7 +4497,7 @@ pub fn create_workpaper_revision(
             "revisionNumber": next_revision,
             "supersedesRevisionId": supersedes_revision_id,
             "revisionReason": revision_reason,
-            "contentHash": hex::encode(&content_hash)
+            "contentHash": bytes_to_lower_hex(&content_hash)
         }),
     )?;
 
