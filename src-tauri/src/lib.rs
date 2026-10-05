@@ -874,7 +874,12 @@ pub fn run() {
                 .to_path_buf();
 
             std::thread::spawn(move || {
-                responder.respond(preview::pdf_preview_response(&database_path, request));
+                let response = if request.uri().path().starts_with("/image/") {
+                    preview::image_preview_response(&database_path, request)
+                } else {
+                    preview::pdf_preview_response(&database_path, request)
+                };
+                responder.respond(response);
             });
         })
         .plugin(tauri_plugin_dialog::init())
