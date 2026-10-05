@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -45,6 +45,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "controlled_evidence",
         sql: include_str!("../migrations/0004_controlled_evidence.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "document_relationships",
+        sql: include_str!("../migrations/0005_document_relationships.sql"),
     },
 ];
 
@@ -204,6 +209,17 @@ pub struct DocumentVersionHistoryRecord {
     pub captured_by: Option<String>,
     pub capture_reason: Option<String>,
     pub capture_policy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentRelationshipRecord {
+    pub document_relationship_id: String,
+    pub relationship_type: String,
+    pub direction: String,
+    pub created_at_ms: i64,
+    pub related_document_id: String,
+    pub related_document_name: String,
+    pub related_file: Option<IndexedFilePreviewRecord>,
 }
 
 pub struct EvidenceCaptureCompletion<'a> {
@@ -3105,6 +3121,402 @@ pub fn finish_evidence_capture_failure(
     Ok(())
 }
 
+fn current_file_preview_for_document(
+    connection: &Connection,
+    document_id: &str,
+) -> Result<Option<IndexedFilePreviewRecord>, PersistenceError> {
+    type CurrentFileRow = (
+        String,
+        String,
+        String,
+        Vec<u8>,
+        String,
+        Vec<u8>,
+        String,
+        i64,
+        Option<i64>,
+        String,
+        String,
+    );
+
+    let row: Option<CurrentFileRow> = connection
+        .query_row(
+            "SELECT
+                d.document_id,
+                fi.file_instance_id,
+                d.display_name,
+                COALESCE(sr.canonical_native_locator, sr.native_locator),
+                sr.native_locator_encoding,
+                fi.relative_path_native,
+                fi.path_native_encoding,
+                fi.size_bytes,
+                fi.last_write_time_ms,
+                fi.availability_state,
+                sr.availability_state
+             FROM documents d
+             JOIN file_instances fi ON fi.document_id = d.document_id
+             JOIN storage_roots sr ON sr.storage_root_id = fi.storage_root_id
+             WHERE d.document_id = ?1
+               AND d.archived_at_ms IS NULL
+             ORDER BY
+                CASE fi.availability_state
+                    WHEN 'AVAILABLE' THEN 0
+                    WHEN 'CHANGED' THEN 1
+                    WHEN 'UNAVAILABLE' THEN 2
+                    WHEN 'UNKNOWN' THEN 3
+                    WHEN 'MISSING' THEN 4
+                    ELSE 5
+                END,
+                fi.last_seen_at_ms DESC,
+                fi.rowid DESC
+             LIMIT 1",
+            [document_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((
+        document_id,
+        file_instance_id,
+        name,
+        root_native,
+        root_encoding,
+        relative_native,
+        relative_encoding,
+        size_bytes,
+        modified_unix_ms,
+        file_availability_state,
+        root_availability_state,
+    )) = row
+    else {
+        return Ok(None);
+    };
+
+    let root_path = decode_native_path(&root_native, &root_encoding)?;
+    let relative_path = decode_native_path(&relative_native, &relative_encoding)?;
+
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(PersistenceError::Configuration(
+            "stored related-file path is not root-relative".to_string(),
+        ));
+    }
+
+    let extension = relative_path
+        .extension()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    Ok(Some(IndexedFilePreviewRecord {
+        document_id,
+        file_instance_id,
+        name,
+        path: root_path.join(&relative_path).to_string_lossy().into_owned(),
+        extension,
+        size_bytes: size_bytes.max(0) as u64,
+        modified_unix_ms,
+        availability_state: effective_file_availability_state(
+            &file_availability_state,
+            &root_availability_state,
+        ),
+    }))
+}
+
+pub fn list_document_relationships(
+    database_path: &Path,
+    document_id: &str,
+) -> Result<Vec<DocumentRelationshipRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let document_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM documents
+            WHERE document_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [document_id],
+        |row| row.get(0),
+    )?;
+
+    if !document_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "document {document_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            document_relationship_id,
+            source_document_id,
+            target_document_id,
+            relationship_type,
+            created_at_ms
+         FROM document_relationships
+         WHERE removed_at_ms IS NULL
+           AND (source_document_id = ?1 OR target_document_id = ?1)
+         ORDER BY created_at_ms DESC, rowid DESC",
+    )?;
+
+    let rows = statement.query_map([document_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+
+    let mut relationships = Vec::new();
+    for row in rows {
+        let (
+            document_relationship_id,
+            source_document_id,
+            target_document_id,
+            relationship_type,
+            created_at_ms,
+        ) = row?;
+        let outgoing = source_document_id == document_id;
+        let related_document_id = if outgoing {
+            target_document_id
+        } else {
+            source_document_id
+        };
+        let related_document_name: String = connection.query_row(
+            "SELECT display_name
+             FROM documents
+             WHERE document_id = ?1",
+            [&related_document_id],
+            |row| row.get(0),
+        )?;
+        let related_file = current_file_preview_for_document(&connection, &related_document_id)?;
+
+        relationships.push(DocumentRelationshipRecord {
+            document_relationship_id,
+            relationship_type,
+            direction: if outgoing {
+                "OUTGOING".to_string()
+            } else {
+                "INCOMING".to_string()
+            },
+            created_at_ms,
+            related_document_id,
+            related_document_name,
+            related_file,
+        });
+    }
+
+    Ok(relationships)
+}
+
+pub fn create_document_relationship(
+    database_path: &Path,
+    source_document_id: &str,
+    target_document_id: &str,
+    relationship_type: &str,
+) -> Result<String, PersistenceError> {
+    if source_document_id == target_document_id {
+        return Err(PersistenceError::Configuration(
+            "a document cannot be related to itself".to_string(),
+        ));
+    }
+
+    let normalized_type = relationship_type
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized_type.is_empty() || normalized_type.chars().count() > 80 {
+        return Err(PersistenceError::Configuration(
+            "relationship type must contain 1 to 80 characters".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    for document_id in [source_document_id, target_document_id] {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM documents
+                WHERE document_id = ?1
+                  AND archived_at_ms IS NULL
+            )",
+            [document_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(PersistenceError::Configuration(format!(
+                "document {document_id} does not exist"
+            )));
+        }
+    }
+
+    let existing_id: Option<String> = transaction
+        .query_row(
+            "SELECT document_relationship_id
+             FROM document_relationships
+             WHERE source_document_id = ?1
+               AND target_document_id = ?2
+               AND relationship_type = ?3 COLLATE NOCASE
+               AND removed_at_ms IS NULL
+             LIMIT 1",
+            params![source_document_id, target_document_id, &normalized_type],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if let Some(existing_id) = existing_id {
+        transaction.commit()?;
+        return Ok(existing_id);
+    }
+
+    let relationship_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO document_relationships (
+            document_relationship_id,
+            source_document_id,
+            target_document_id,
+            relationship_type,
+            created_at_ms,
+            created_by,
+            removed_at_ms,
+            removed_by
+         ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL)",
+        params![
+            &relationship_id,
+            source_document_id,
+            target_document_id,
+            &normalized_type,
+            now
+        ],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'DOCUMENT_RELATIONSHIP_CREATED', 'DOCUMENT_RELATIONSHIP', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            &relationship_id,
+            target_document_id,
+            now,
+            json!({
+                "sourceDocumentId": source_document_id,
+                "targetDocumentId": target_document_id,
+                "relationshipType": normalized_type
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(relationship_id)
+}
+
+pub fn remove_document_relationship(
+    database_path: &Path,
+    document_relationship_id: &str,
+) -> Result<(), PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let relationship: Option<(String, String, String, Option<i64>)> = transaction
+        .query_row(
+            "SELECT
+                source_document_id,
+                target_document_id,
+                relationship_type,
+                removed_at_ms
+             FROM document_relationships
+             WHERE document_relationship_id = ?1",
+            [document_relationship_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+
+    let Some((source_document_id, target_document_id, relationship_type, removed_at_ms)) =
+        relationship
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "document relationship {document_relationship_id} does not exist"
+        )));
+    };
+
+    if removed_at_ms.is_some() {
+        transaction.commit()?;
+        return Ok(());
+    }
+
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "UPDATE document_relationships
+         SET removed_at_ms = ?1,
+             removed_by = NULL
+         WHERE document_relationship_id = ?2
+           AND removed_at_ms IS NULL",
+        params![now, document_relationship_id],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'DOCUMENT_RELATIONSHIP_REMOVED', 'DOCUMENT_RELATIONSHIP', ?2, 'DOCUMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            document_relationship_id,
+            target_document_id,
+            now,
+            json!({
+                "sourceDocumentId": source_document_id,
+                "targetDocumentId": target_document_id,
+                "relationshipType": relationship_type
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn resolve_file_instance_source(
     database_path: &Path,
     file_instance_id: &str,
@@ -4062,7 +4474,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -4083,14 +4495,15 @@ mod tests {
                        'recent_searches',
                        'evidence_capture_jobs',
                        'controlled_evidence_versions',
-                       'audit_events'
+                       'audit_events',
+                       'document_relationships'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 15);
+        assert_eq!(table_count, 16);
     }
 
     #[test]
@@ -4126,7 +4539,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -4167,14 +4580,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 4");
+        initialize_database(&database.path).expect("database should upgrade through version 5");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_exists: i64 = connection
             .query_row(
@@ -4216,14 +4629,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 4");
+        initialize_database(&database.path).expect("database should upgrade through version 5");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 4);
+        assert_eq!(user_version, 5);
 
         let table_count: i64 = connection
             .query_row(
@@ -4239,6 +4652,55 @@ mod tests {
             )
             .expect("controlled-evidence tables should exist");
         assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn fifth_migration_upgrades_existing_v4_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..4] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 4);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 5");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 5);
+
+        let table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'document_relationships'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("document relationship table should exist");
+        assert!(table_exists);
     }
 
     #[test]
