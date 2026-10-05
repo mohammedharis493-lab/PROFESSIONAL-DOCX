@@ -1782,6 +1782,10 @@ pub fn list_indexed_file_preview(
     Ok(result)
 }
 
+fn supports_linked_source_lifecycle(storage_state: &str) -> bool {
+    matches!(storage_state, "LINKED" | "CONTROLLED_EVIDENCE")
+}
+
 pub fn relink_linked_file_instance(
     database_path: &Path,
     file_instance_id: &str,
@@ -1949,10 +1953,10 @@ pub fn relink_linked_file_instance(
         )));
     };
 
-    if storage_state != "LINKED" {
-        return Err(PersistenceError::Configuration(
-            "only linked file instances can be relinked".to_string(),
-        ));
+    if !supports_linked_source_lifecycle(&storage_state) {
+        return Err(PersistenceError::Configuration(format!(
+            "document storage state {storage_state} does not support linked-source relinking"
+        )));
     }
 
     if availability_state != "MISSING" && source_root_availability_state == "AVAILABLE" {
@@ -2257,10 +2261,10 @@ pub fn reconcile_linked_file_instance(
         )));
     };
 
-    if storage_state != "LINKED" {
-        return Err(PersistenceError::Configuration(
-            "only linked file instances can be reconciled".to_string(),
-        ));
+    if !supports_linked_source_lifecycle(&storage_state) {
+        return Err(PersistenceError::Configuration(format!(
+            "document storage state {storage_state} does not support linked-source reconciliation"
+        )));
     }
 
     if root_availability_state != "AVAILABLE" {
