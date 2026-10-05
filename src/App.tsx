@@ -2803,6 +2803,84 @@ export default function App() {
             </section>
           </div>
         ) : null}
+        {activeImagePreview ? (
+          <div
+            className="text-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                closeImagePreview();
+              }
+            }}
+          >
+            <section
+              className="image-preview-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="image-preview-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">
+                    IN-APP PREVIEW · {activeImagePreview.file.extension.toUpperCase()}
+                  </p>
+                  <h2 id="image-preview-title">{activeImagePreview.file.name}</h2>
+                  <span>
+                    {stateLabel(activeImagePreview.file.availabilityState)} ·{" "}
+                    {formatBytes(activeImagePreview.file.sizeBytes)}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      void openFileInstance(activeImagePreview.file.fileInstanceId)
+                    }
+                  >
+                    Open original
+                  </button>
+                  <button
+                    className="file-action file-action-related"
+                    type="button"
+                    onClick={() => void loadRelationshipContext(activeImagePreview.file)}
+                    disabled={relationshipContextLoadingDocumentId !== null}
+                  >
+                    {relationshipContextLoadingDocumentId ===
+                    activeImagePreview.file.documentId
+                      ? "Loading links…"
+                      : "Related"}
+                  </button>
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={closeImagePreview}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="image-preview-body">
+                <img
+                  src={activeImagePreview.url}
+                  alt={activeImagePreview.file.name}
+                  draggable={false}
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>
+                  Raster image bytes are served only from the validated indexed source.
+                </span>
+                <span>
+                  PNG, JPEG, GIF, WebP, BMP · Preview limit: 32 MB · SVG is intentionally excluded.
+                </span>
+              </footer>
+            </section>
+          </div>
+        ) : null}
         {activeWorkbookPreview ? (
           <div
             className="text-preview-backdrop"
