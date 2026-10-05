@@ -296,6 +296,22 @@ pub fn run_index_job(
 
         progress.bytes_seen = progress.bytes_seen.saturating_add(metadata.len());
         let platform = filesystem::platform_file_metadata(entry.path(), &metadata);
+        let initial_modified = metadata.modified().ok();
+        let fingerprint_result = filesystem::quick_fingerprint(entry.path()).ok();
+        let metadata_stable_since_scan = fingerprint_result.as_ref().is_some_and(|_| {
+            fs::metadata(entry.path())
+                .map(|after| {
+                    after.len() == metadata.len() && after.modified().ok() == initial_modified
+                })
+                .unwrap_or(false)
+        });
+        let source_stable_during_read = fingerprint_result
+            .as_ref()
+            .map(|fingerprint| fingerprint.source_stable_during_read && metadata_stable_since_scan);
+        let quick_fingerprint = fingerprint_result.and_then(|fingerprint| {
+            (fingerprint.source_stable_during_read && metadata_stable_since_scan)
+                .then_some(fingerprint.digest)
+        });
 
         file_batch.push(FileObservation {
             relative_path_native: relative_native,
@@ -310,6 +326,8 @@ pub fn run_index_job(
             volume_identity: platform.volume_identity,
             file_attributes: platform.file_attributes,
             reparse_tag: platform.reparse_tag,
+            quick_fingerprint,
+            source_stable_during_read,
         });
 
         maybe_flush(

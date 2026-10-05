@@ -496,7 +496,8 @@ mod tests {
         assert_eq!(history[0].capture_reason.as_deref(), Some(CAPTURE_REASON));
         assert_eq!(history[0].capture_policy.as_deref(), Some(CAPTURE_POLICY));
         assert_eq!(history[1].controlled_version_number, None);
-        assert_eq!(history[1].verification_state, "METADATA_ONLY");
+        assert_eq!(history[1].verification_state, "FINGERPRINTED");
+        assert_eq!(history[1].source_stable_during_read, Some(true));
         assert_eq!(history[1].sha256, None);
     }
 

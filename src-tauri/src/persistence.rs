@@ -116,6 +116,8 @@ pub struct FileObservation {
     pub volume_identity: Option<Vec<u8>>,
     pub file_attributes: Option<i64>,
     pub reparse_tag: Option<i64>,
+    pub quick_fingerprint: Option<Vec<u8>>,
+    pub source_stable_during_read: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +283,7 @@ struct ExistingFileInstance {
     last_write_time_ms: Option<i64>,
     creation_time_ms: Option<i64>,
     availability_state: String,
+    latest_quick_fingerprint: Option<Vec<u8>>,
 }
 
 struct ObservationContext<'a> {
@@ -887,7 +890,14 @@ fn find_existing_by_identity(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                (
+                    SELECT cv.quick_fingerprint
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = file_instances.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
              FROM file_instances
              WHERE storage_root_id = ?1
                AND filesystem_identity = ?2
@@ -922,7 +932,14 @@ fn find_existing_by_path(
                 size_bytes,
                 last_write_time_ms,
                 creation_time_ms,
-                availability_state
+                availability_state,
+                (
+                    SELECT cv.quick_fingerprint
+                    FROM content_versions cv
+                    WHERE cv.file_instance_id = file_instances.file_instance_id
+                    ORDER BY cv.observed_at_ms DESC, cv.rowid DESC
+                    LIMIT 1
+                )
              FROM file_instances
              WHERE storage_root_id = ?1
                AND path_native_encoding = ?2
@@ -955,6 +972,7 @@ fn existing_file_instance_from_row(
         last_write_time_ms: row.get(8)?,
         creation_time_ms: row.get(9)?,
         availability_state: row.get(10)?,
+        latest_quick_fingerprint: row.get(11)?,
     })
 }
 
@@ -994,11 +1012,21 @@ fn update_existing_file_instance(
     let observation = context.observation;
     let path_changed = existing.path_native_encoding != observation.path_native_encoding
         || existing.relative_path_native != observation.relative_path_native;
+    let fingerprint_changed = matches!(
+        (
+            existing.latest_quick_fingerprint.as_deref(),
+            observation.quick_fingerprint.as_deref(),
+        ),
+        (Some(previous), Some(current)) if previous != current
+    );
     let content_changed = existing.size_bytes != u64_to_i64(observation.size_bytes)?
         || matches!(
             observation.last_write_time_ms,
             Some(current) if existing.last_write_time_ms != Some(current)
-        );
+        )
+        || fingerprint_changed;
+    let should_seed_fingerprint =
+        existing.latest_quick_fingerprint.is_none() && observation.quick_fingerprint.is_some();
     let next_availability_state =
         if existing.availability_state == "CHANGED" || path_changed || content_changed {
             "CHANGED"
@@ -1096,7 +1124,7 @@ fn update_existing_file_instance(
         )?;
     }
 
-    if content_changed {
+    if content_changed || should_seed_fingerprint {
         insert_content_version(
             transaction,
             &existing.document_id,
@@ -1245,14 +1273,23 @@ fn insert_content_version(
             sha256,
             verification_state,
             source_stable_during_read
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, 'METADATA_ONLY', NULL)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
         params![
             &content_version_id,
             document_id,
             file_instance_id,
             observed_at_ms,
             u64_to_i64(observation.size_bytes)?,
-            observation.last_write_time_ms
+            observation.last_write_time_ms,
+            observation.quick_fingerprint.as_deref(),
+            if observation.quick_fingerprint.is_some() {
+                "FINGERPRINTED"
+            } else {
+                "METADATA_ONLY"
+            },
+            observation
+                .source_stable_during_read
+                .map(|stable| if stable { 1_i64 } else { 0_i64 })
         ],
     )?;
 
@@ -2044,6 +2081,8 @@ pub fn relink_linked_file_instance(
             volume_identity: platform.volume_identity.clone(),
             file_attributes: platform.file_attributes,
             reparse_tag: platform.reparse_tag,
+            quick_fingerprint: None,
+            source_stable_during_read: None,
         };
         insert_content_version(
             &transaction,
@@ -3848,6 +3887,158 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn fingerprint_baseline_does_not_create_false_change_but_mismatch_does() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let source_root = database.source_root("fingerprint-source");
+        fs::create_dir_all(&source_root).expect("source root should exist");
+        let canonical_root =
+            fs::canonicalize(&source_root).expect("source root should canonicalize");
+        let root = register_storage_root(
+            &database.path,
+            "fingerprint-root",
+            &source_root,
+            &canonical_root,
+        )
+        .expect("source root should register");
+
+        let index_job_id = Uuid::new_v4().to_string();
+        let scan_generation_id = Uuid::new_v4().to_string();
+        create_index_job(
+            &database.path,
+            &root.storage_root_id,
+            &index_job_id,
+            &scan_generation_id,
+        )
+        .expect("index job should be created");
+        mark_index_job_running(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+        )
+        .expect("index job should start");
+
+        let relative = Path::new("Ledger.xlsx");
+        let (relative_path_native, path_native_encoding) = encode_native_path_for_storage(relative);
+        let base_observation = FileObservation {
+            relative_path_native,
+            path_native_encoding,
+            relative_path_display: "Ledger.xlsx".to_string(),
+            relative_path_search: normalize_search_text("Ledger.xlsx"),
+            display_name: "Ledger.xlsx".to_string(),
+            size_bytes: 128,
+            creation_time_ms: Some(1_000),
+            last_write_time_ms: Some(2_000),
+            filesystem_identity: None,
+            volume_identity: None,
+            file_attributes: None,
+            reparse_tag: None,
+            quick_fingerprint: None,
+            source_stable_during_read: None,
+        };
+
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&base_observation),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("metadata-only observation should persist");
+
+        let initial = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("initial preview should load");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &initial[0].file_instance_id)
+                .expect("initial version count should load"),
+            1
+        );
+
+        let mut fingerprinted = base_observation.clone();
+        fingerprinted.quick_fingerprint = Some(vec![0x11; 32]);
+        fingerprinted.source_stable_during_read = Some(true);
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&fingerprinted),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("fingerprint baseline should persist");
+
+        let seeded = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("seeded preview should load");
+        assert_eq!(seeded[0].availability_state, "AVAILABLE");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &seeded[0].file_instance_id)
+                .expect("seeded version count should load"),
+            2
+        );
+
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&fingerprinted),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("unchanged fingerprint should persist without another version");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &seeded[0].file_instance_id)
+                .expect("unchanged fingerprint version count should load"),
+            2
+        );
+
+        let mut changed = fingerprinted;
+        changed.quick_fingerprint = Some(vec![0x22; 32]);
+        persist_index_batch(
+            &database.path,
+            &index_job_id,
+            &scan_generation_id,
+            &root.storage_root_id,
+            std::slice::from_ref(&changed),
+            &[],
+            &IndexProgress::default(),
+        )
+        .expect("fingerprint change should persist");
+
+        let changed_preview = list_indexed_file_preview(&database.path, &root.storage_root_id, 10)
+            .expect("changed preview should load");
+        assert_eq!(changed_preview[0].availability_state, "CHANGED");
+        assert_eq!(
+            count_content_versions_for_test(&database.path, &changed_preview[0].file_instance_id,)
+                .expect("changed fingerprint version count should load"),
+            3
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("configured connection should open");
+        let (verification_state, quick_fingerprint): (String, Option<Vec<u8>>) = connection
+            .query_row(
+                "SELECT verification_state, quick_fingerprint
+                 FROM content_versions
+                 WHERE file_instance_id = ?1
+                 ORDER BY observed_at_ms DESC, rowid DESC
+                 LIMIT 1",
+                [&changed_preview[0].file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("latest content version should load");
+        assert_eq!(verification_state, "FINGERPRINTED");
+        assert_eq!(quick_fingerprint, Some(vec![0x22; 32]));
     }
 
     #[test]
