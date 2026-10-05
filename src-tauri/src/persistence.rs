@@ -3231,7 +3231,10 @@ fn current_file_preview_for_document(
         document_id,
         file_instance_id,
         name,
-        path: root_path.join(&relative_path).to_string_lossy().into_owned(),
+        path: root_path
+            .join(&relative_path)
+            .to_string_lossy()
+            .into_owned(),
         extension,
         size_bytes: size_bytes.max(0) as u64,
         modified_unix_ms,
