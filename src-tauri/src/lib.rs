@@ -135,6 +135,126 @@ impl From<persistence::DocumentRelationshipRecord> for DocumentRelationshipDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FirmDto {
+    firm_id: String,
+    name: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::FirmRecord> for FirmDto {
+    fn from(value: persistence::FirmRecord) -> Self {
+        Self {
+            firm_id: value.firm_id,
+            name: value.name,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientDto {
+    client_id: String,
+    firm_id: String,
+    name: String,
+    reference: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ClientRecord> for ClientDto {
+    fn from(value: persistence::ClientRecord) -> Self {
+        Self {
+            client_id: value.client_id,
+            firm_id: value.firm_id,
+            name: value.name,
+            reference: value.reference,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceTypeDto {
+    service_type_id: String,
+    firm_id: String,
+    name: String,
+    description: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ServiceTypeRecord> for ServiceTypeDto {
+    fn from(value: persistence::ServiceTypeRecord) -> Self {
+        Self {
+            service_type_id: value.service_type_id,
+            firm_id: value.firm_id,
+            name: value.name,
+            description: value.description,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngagementDto {
+    engagement_id: String,
+    firm_id: String,
+    client_id: String,
+    service_type_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::EngagementRecord> for EngagementDto {
+    fn from(value: persistence::EngagementRecord) -> Self {
+        Self {
+            engagement_id: value.engagement_id,
+            firm_id: value.firm_id,
+            client_id: value.client_id,
+            service_type_id: value.service_type_id,
+            name: value.name,
+            period_start: value.period_start,
+            period_end: value.period_end,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngagementAreaDto {
+    engagement_area_id: String,
+    engagement_id: String,
+    parent_engagement_area_id: Option<String>,
+    name: String,
+    code: Option<String>,
+    display_order: u32,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::EngagementAreaRecord> for EngagementAreaDto {
+    fn from(value: persistence::EngagementAreaRecord) -> Self {
+        Self {
+            engagement_area_id: value.engagement_area_id,
+            engagement_id: value.engagement_id,
+            parent_engagement_area_id: value.parent_engagement_area_id,
+            name: value.name,
+            code: value.code,
+            display_order: value.display_order,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RecentDocumentDto {
     document_id: String,
     file_instance_id: String,
@@ -504,6 +624,160 @@ fn list_indexed_file_preview(
 
     persistence::list_indexed_file_preview(database.path(), &storage_root_id, limit.unwrap_or(200))
         .map(|files| files.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_firm(
+    name: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<FirmDto, String> {
+    persistence::create_firm(database.path(), &name)
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_firms(
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<FirmDto>, String> {
+    persistence::list_firms(database.path())
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_client(
+    firm_id: String,
+    name: String,
+    reference: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ClientDto, String> {
+    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+
+    persistence::create_client(database.path(), &firm_id, &name, reference.as_deref())
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_clients(
+    firm_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ClientDto>, String> {
+    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+
+    persistence::list_clients(database.path(), &firm_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_service_type(
+    firm_id: String,
+    name: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ServiceTypeDto, String> {
+    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+
+    persistence::create_service_type(database.path(), &firm_id, &name, description.as_deref())
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_service_types(
+    firm_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ServiceTypeDto>, String> {
+    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+
+    persistence::list_service_types(database.path(), &firm_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement(
+    firm_id: String,
+    client_id: String,
+    service_type_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementDto, String> {
+    Uuid::parse_str(&firm_id).map_err(|_| "Invalid firm identifier.".to_string())?;
+    Uuid::parse_str(&client_id).map_err(|_| "Invalid client identifier.".to_string())?;
+    Uuid::parse_str(&service_type_id)
+        .map_err(|_| "Invalid service-type identifier.".to_string())?;
+
+    persistence::create_engagement(
+        database.path(),
+        &firm_id,
+        &client_id,
+        &service_type_id,
+        &name,
+        period_start.as_deref(),
+        period_end.as_deref(),
+        &status,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_engagements_for_client(
+    client_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<EngagementDto>, String> {
+    Uuid::parse_str(&client_id).map_err(|_| "Invalid client identifier.".to_string())?;
+
+    persistence::list_engagements_for_client(database.path(), &client_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement_area(
+    engagement_id: String,
+    parent_engagement_area_id: Option<String>,
+    name: String,
+    code: Option<String>,
+    display_order: u32,
+    status: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementAreaDto, String> {
+    Uuid::parse_str(&engagement_id).map_err(|_| "Invalid engagement identifier.".to_string())?;
+    if let Some(parent_id) = parent_engagement_area_id.as_deref() {
+        Uuid::parse_str(parent_id)
+            .map_err(|_| "Invalid parent engagement-area identifier.".to_string())?;
+    }
+
+    persistence::create_engagement_area(
+        database.path(),
+        &engagement_id,
+        parent_engagement_area_id.as_deref(),
+        &name,
+        code.as_deref(),
+        display_order,
+        &status,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_engagement_areas(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<EngagementAreaDto>, String> {
+    Uuid::parse_str(&engagement_id).map_err(|_| "Invalid engagement identifier.".to_string())?;
+
+    persistence::list_engagement_areas(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
 
@@ -912,6 +1186,16 @@ pub fn run() {
             get_latest_index_job_for_root,
             cancel_index_job,
             list_indexed_file_preview,
+            create_firm,
+            list_firms,
+            create_client,
+            list_clients,
+            create_service_type,
+            list_service_types,
+            create_engagement,
+            list_engagements_for_client,
+            create_engagement_area,
+            list_engagement_areas,
             list_recent_documents,
             list_recent_searches,
             record_recent_search,
