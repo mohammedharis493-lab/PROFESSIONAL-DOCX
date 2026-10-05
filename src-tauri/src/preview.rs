@@ -193,8 +193,8 @@ fn read_image_source(
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    let expected_content_type = image_content_type_for_extension(&extension)
-        .ok_or(ImagePreviewError::Unsupported)?;
+    let expected_content_type =
+        image_content_type_for_extension(&extension).ok_or(ImagePreviewError::Unsupported)?;
 
     let metadata = fs::metadata(&path).map_err(|_| ImagePreviewError::Unavailable)?;
     if metadata.len() > MAX_IMAGE_PREVIEW_BYTES {
@@ -584,8 +584,10 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let fixture = PreviewFixture::new();
-        let outside =
-            std::env::temp_dir().join(format!("professional-docx-image-outside-{}", Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!(
+            "professional-docx-image-outside-{}",
+            Uuid::new_v4()
+        ));
         fs::create_dir_all(&outside).expect("outside directory should be created");
         fs::write(outside.join("secret.png"), b"\x89PNG\r\n\x1a\nsecret")
             .expect("outside image should be written");
