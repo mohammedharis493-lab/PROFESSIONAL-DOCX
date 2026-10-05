@@ -534,43 +534,34 @@ mod tests {
             .expect("linked working source should be editable after capture");
         let root = test.run_scan();
 
-        let changed = persistence::list_indexed_file_preview(
-            &test.database_path,
-            &root.storage_root_id,
-            10,
-        )
-        .expect("changed linked source should list")
-        .into_iter()
-        .find(|file| file.file_instance_id == file_instance_id)
-        .expect("captured document working source should remain indexed");
+        let changed =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 10)
+                .expect("changed linked source should list")
+                .into_iter()
+                .find(|file| file.file_instance_id == file_instance_id)
+                .expect("captured document working source should remain indexed");
         assert_eq!(changed.availability_state, "CHANGED");
 
         persistence::reconcile_linked_file_instance(&test.database_path, &file_instance_id)
             .expect("controlled-evidence document should allow linked-source reconciliation");
 
-        let reconciled = persistence::list_indexed_file_preview(
-            &test.database_path,
-            &root.storage_root_id,
-            10,
-        )
-        .expect("reconciled source should list")
-        .into_iter()
-        .find(|file| file.file_instance_id == file_instance_id)
-        .expect("reconciled working source should remain indexed");
+        let reconciled =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 10)
+                .expect("reconciled source should list")
+                .into_iter()
+                .find(|file| file.file_instance_id == file_instance_id)
+                .expect("reconciled working source should remain indexed");
         assert_eq!(reconciled.availability_state, "AVAILABLE");
 
         fs::remove_file(&source_path).expect("working source should be removable");
         let root = test.run_scan();
 
-        let missing = persistence::list_indexed_file_preview(
-            &test.database_path,
-            &root.storage_root_id,
-            10,
-        )
-        .expect("missing source should remain indexed")
-        .into_iter()
-        .find(|file| file.file_instance_id == file_instance_id)
-        .expect("missing captured-document source should remain indexed");
+        let missing =
+            persistence::list_indexed_file_preview(&test.database_path, &root.storage_root_id, 10)
+                .expect("missing source should remain indexed")
+                .into_iter()
+                .find(|file| file.file_instance_id == file_instance_id)
+                .expect("missing captured-document source should remain indexed");
         assert_eq!(missing.availability_state, "MISSING");
 
         let relinked_path = test.source_root.join("Relinked Working Evidence.txt");
