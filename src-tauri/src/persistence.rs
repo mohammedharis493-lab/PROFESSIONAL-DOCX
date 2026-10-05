@@ -265,6 +265,16 @@ pub struct EngagementRecord {
     pub created_at_ms: i64,
 }
 
+pub struct EngagementCreation<'a> {
+    pub firm_id: &'a str,
+    pub client_id: &'a str,
+    pub service_type_id: &'a str,
+    pub name: &'a str,
+    pub period_start: Option<&'a str>,
+    pub period_end: Option<&'a str>,
+    pub status: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct EngagementAreaRecord {
     pub engagement_area_id: String,
@@ -3505,14 +3515,18 @@ pub fn list_service_types(
 
 pub fn create_engagement(
     database_path: &Path,
-    firm_id: &str,
-    client_id: &str,
-    service_type_id: &str,
-    name: &str,
-    period_start: Option<&str>,
-    period_end: Option<&str>,
-    status: &str,
+    creation: EngagementCreation<'_>,
 ) -> Result<EngagementRecord, PersistenceError> {
+    let EngagementCreation {
+        firm_id,
+        client_id,
+        service_type_id,
+        name,
+        period_start,
+        period_end,
+        status,
+    } = creation;
+
     let name = normalize_domain_text(name, "engagement name", 240)?;
     let status = normalize_domain_text(status, "engagement status", 80)?;
     let period_start = normalize_period_date(period_start, "period start")?;
@@ -5609,24 +5623,28 @@ mod tests {
 
         let statutory_engagement = create_engagement(
             &database.path,
-            &firm.firm_id,
-            &client.client_id,
-            &statutory.service_type_id,
-            "ABC Limited - Statutory Audit 2026-27",
-            Some("2026-04-01"),
-            Some("2027-03-31"),
-            "ACTIVE",
+            EngagementCreation {
+                firm_id: &firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &statutory.service_type_id,
+                name: "ABC Limited - Statutory Audit 2026-27",
+                period_start: Some("2026-04-01"),
+                period_end: Some("2027-03-31"),
+                status: "ACTIVE",
+            },
         )
         .expect("statutory engagement should be created");
         let internal_engagement = create_engagement(
             &database.path,
-            &firm.firm_id,
-            &client.client_id,
-            &internal.service_type_id,
-            "ABC Limited - Operational Resilience Q2",
-            Some("2026-07-01"),
-            Some("2026-09-30"),
-            "PLANNING",
+            EngagementCreation {
+                firm_id: &firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &internal.service_type_id,
+                name: "ABC Limited - Operational Resilience Q2",
+                period_start: Some("2026-07-01"),
+                period_end: Some("2026-09-30"),
+                status: "PLANNING",
+            },
         )
         .expect("custom engagement should be created");
 
@@ -5728,13 +5746,15 @@ mod tests {
 
         let cross_firm = create_engagement(
             &database.path,
-            &first_firm.firm_id,
-            &client.client_id,
-            &second_service.service_type_id,
-            "Invalid engagement",
-            None,
-            None,
-            "ACTIVE",
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &second_service.service_type_id,
+                name: "Invalid engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
         )
         .expect_err("cross-firm service must be rejected");
         assert!(cross_firm
@@ -5743,24 +5763,28 @@ mod tests {
 
         let first_engagement = create_engagement(
             &database.path,
-            &first_firm.firm_id,
-            &client.client_id,
-            &first_service.service_type_id,
-            "First engagement",
-            None,
-            None,
-            "ACTIVE",
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &first_service.service_type_id,
+                name: "First engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
         )
         .expect("first engagement should exist");
         let second_engagement = create_engagement(
             &database.path,
-            &first_firm.firm_id,
-            &client.client_id,
-            &first_service.service_type_id,
-            "Second engagement",
-            None,
-            None,
-            "ACTIVE",
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &first_service.service_type_id,
+                name: "Second engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
         )
         .expect("second engagement should exist");
         let parent = create_engagement_area(
