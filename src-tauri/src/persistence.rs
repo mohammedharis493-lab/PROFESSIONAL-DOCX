@@ -3283,7 +3283,7 @@ pub fn create_firm(database_path: &Path, name: &str) -> Result<FirmRecord, Persi
             Uuid::new_v4().to_string(),
             &firm_id,
             created_at_ms,
-            json!({ "name": name }).to_string()
+            json!({ "name": &name }).to_string()
         ],
     )?;
 
@@ -3361,7 +3361,7 @@ pub fn create_client(
             &client_id,
             firm_id,
             created_at_ms,
-            json!({ "name": name, "reference": reference }).to_string()
+            json!({ "name": &name, "reference": &reference }).to_string()
         ],
     )?;
 
@@ -3585,10 +3585,10 @@ pub fn create_engagement(
             json!({
                 "firmId": firm_id,
                 "serviceTypeId": service_type_id,
-                "name": name,
-                "periodStart": period_start,
-                "periodEnd": period_end,
-                "status": status
+                "name": &name,
+                "periodStart": &period_start,
+                "periodEnd": &period_end,
+                "status": &status
             })
             .to_string()
         ],
@@ -3720,10 +3720,10 @@ pub fn create_engagement_area(
             created_at_ms,
             json!({
                 "parentEngagementAreaId": parent_engagement_area_id,
-                "name": name,
-                "code": code,
+                "name": &name,
+                "code": &code,
                 "displayOrder": display_order,
-                "status": status
+                "status": &status
             })
             .to_string()
         ],
