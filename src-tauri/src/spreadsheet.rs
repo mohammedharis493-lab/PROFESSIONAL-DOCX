@@ -494,8 +494,7 @@ fn ooxml_sheet_metadata(path: &Path, sheet_name: &str) -> Result<OoxmlSheetMetad
 
     let sheet_xml = read_ooxml_xml(&mut archive, &sheet_part)?
         .ok_or_else(|| format!("OOXML worksheet part '{sheet_part}' is missing."))?;
-    let (hidden_rows, hidden_columns, mut truncated) =
-        parse_hidden_sheet_dimensions(&sheet_xml)?;
+    let (hidden_rows, hidden_columns, mut truncated) = parse_hidden_sheet_dimensions(&sheet_xml)?;
 
     let comments = if let Some(rels_part) = relationships_part_for(&sheet_part) {
         if let Some(sheet_rels) = read_ooxml_xml(&mut archive, &rels_part)? {
@@ -573,9 +572,7 @@ fn sheet_relationship_id(xml: &str, wanted_sheet_name: &str) -> Result<Option<St
             }
             Ok(Event::Eof) => return Ok(None),
             Ok(_) => {}
-            Err(error) => {
-                return Err(format!("Unable to parse OOXML workbook metadata: {error}"))
-            }
+            Err(error) => return Err(format!("Unable to parse OOXML workbook metadata: {error}")),
         }
         buffer.clear();
     }
@@ -804,9 +801,7 @@ fn parse_comments_xml(xml: &str) -> Result<(Vec<WorkbookCommentInfo>, bool), Str
             },
             Ok(Event::Eof) => break,
             Ok(_) => {}
-            Err(error) => {
-                return Err(format!("Unable to parse OOXML comments metadata: {error}"))
-            }
+            Err(error) => return Err(format!("Unable to parse OOXML comments metadata: {error}")),
         }
         buffer.clear();
     }
@@ -833,10 +828,7 @@ fn xml_attribute_value(
     Ok(None)
 }
 
-fn xml_attribute_is_true(
-    start: &BytesStart<'_>,
-    wanted_local_name: &[u8],
-) -> Result<bool, String> {
+fn xml_attribute_is_true(start: &BytesStart<'_>, wanted_local_name: &[u8]) -> Result<bool, String> {
     Ok(xml_attribute_value(start, wanted_local_name)?
         .as_deref()
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")))
@@ -853,7 +845,10 @@ fn normalize_package_target(base_part: &str, target: &str) -> Option<String> {
 
     let mut segments = Vec::new();
     if !target.starts_with('/') {
-        let base_parent = base_part.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let base_parent = base_part
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
         segments.extend(
             base_parent
                 .split('/')
@@ -1100,8 +1095,7 @@ mod tests {
         }
         writer.finish().expect("OOXML fixture should finish");
 
-        let metadata =
-            ooxml_sheet_metadata(&path, "A & B").expect("OOXML metadata should parse");
+        let metadata = ooxml_sheet_metadata(&path, "A & B").expect("OOXML metadata should parse");
 
         assert_eq!(metadata.hidden_rows, vec![3]);
         assert_eq!(metadata.hidden_columns, vec![1, 2]);
