@@ -3178,6 +3178,214 @@ export default function App() {
             </section>
           </div>
         ) : null}
+        {activeRelationshipContext ? (
+          <div
+            className="text-preview-backdrop relationship-context-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.currentTarget === event.target) {
+                setActiveRelationshipContext(null);
+              }
+            }}
+          >
+            <section
+              className="relationship-context-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="relationship-context-title"
+            >
+              <header className="text-preview-header">
+                <div>
+                  <p className="eyebrow">RELATED DOCUMENT CONTEXT</p>
+                  <h2 id="relationship-context-title">
+                    {activeRelationshipContext.file.name}
+                  </h2>
+                  <span>
+                    {activeRelationshipContext.relationships.length} active relationship
+                    {activeRelationshipContext.relationships.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="text-preview-actions">
+                  <button
+                    className="file-action"
+                    type="button"
+                    onClick={() => setActiveRelationshipContext(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+
+              <div className="relationship-context-body">
+                <section className="relationship-existing" aria-label="Existing relationships">
+                  <div className="relationship-section-heading">
+                    <div>
+                      <strong>Current links</strong>
+                      <span>
+                        Incoming and outgoing links are shown together so supporting context
+                        is reachable without another global search.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="relationship-list">
+                    {activeRelationshipContext.relationships.length ? (
+                      activeRelationshipContext.relationships.map((relationship) => {
+                        const relatedFile = relationship.relatedFile;
+                        const unavailable =
+                          relatedFile === null ||
+                          sourceUnavailable(relatedFile.availabilityState);
+
+                        return (
+                          <article
+                            className="relationship-row"
+                            key={relationship.documentRelationshipId}
+                          >
+                            <div className="relationship-direction">
+                              <span>
+                                {relationship.direction === "OUTGOING" ? "OUTGOING" : "INCOMING"}
+                              </span>
+                              <strong>{relationship.relationshipType}</strong>
+                            </div>
+                            <div className="relationship-main">
+                              <strong>{relationship.relatedDocumentName}</strong>
+                              <span>
+                                {relatedFile
+                                  ? relatedFile.path
+                                  : "No current file instance is available for this document."}
+                              </span>
+                              <small>
+                                Linked {formatTimestamp(relationship.createdAtMs)}
+                              </small>
+                            </div>
+                            <div className="relationship-actions">
+                              {relatedFile ? (
+                                <button
+                                  className="file-action"
+                                  type="button"
+                                  disabled={unavailable}
+                                  onClick={() =>
+                                    void openFileInstance(relatedFile.fileInstanceId)
+                                  }
+                                >
+                                  Open
+                                </button>
+                              ) : null}
+                              <button
+                                className="file-action file-action-remove-link"
+                                type="button"
+                                disabled={relationshipMutationId !== null}
+                                onClick={() =>
+                                  void removeDocumentRelationship(relationship)
+                                }
+                              >
+                                {relationshipMutationId ===
+                                relationship.documentRelationshipId
+                                  ? "Removing…"
+                                  : "Remove"}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })
+                    ) : (
+                      <div className="empty-result">
+                        No explicit relationships have been recorded for this document yet.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="relationship-add" aria-label="Add relationship">
+                  <div className="relationship-section-heading">
+                    <div>
+                      <strong>Add a related document</strong>
+                      <span>
+                        Relationship labels are free-form so the same model can represent
+                        support, source, response, workpaper, or future firm-specific links.
+                      </span>
+                    </div>
+                  </div>
+
+                  <form
+                    className="relationship-link-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void searchRelationshipCandidates();
+                    }}
+                  >
+                    <label>
+                      <span>Relationship label</span>
+                      <input
+                        value={relationshipType}
+                        maxLength={80}
+                        onChange={(event) => setRelationshipType(event.target.value)}
+                        placeholder="e.g. SUPPORTS"
+                      />
+                    </label>
+                    <label className="relationship-search-field">
+                      <span>Find document</span>
+                      <div>
+                        <input
+                          value={relationshipSearchQuery}
+                          onChange={(event) =>
+                            setRelationshipSearchQuery(event.target.value)
+                          }
+                          placeholder="Type a filename or meaningful fragment"
+                        />
+                        <button
+                          className="file-action"
+                          type="submit"
+                          disabled={isRelationshipSearching}
+                        >
+                          {isRelationshipSearching ? "Searching…" : "Find"}
+                        </button>
+                      </div>
+                    </label>
+                  </form>
+
+                  <div className="relationship-candidates">
+                    {relationshipSearchResults.map((candidate) => (
+                      <div className="relationship-candidate" key={candidate.documentId}>
+                        <div>
+                          <strong>{candidate.name}</strong>
+                          <span>{candidate.path}</span>
+                          <small>{stateLabel(candidate.availabilityState)}</small>
+                        </div>
+                        <button
+                          className="file-action file-action-related"
+                          type="button"
+                          disabled={relationshipMutationId !== null}
+                          onClick={() => void addDocumentRelationship(candidate)}
+                        >
+                          {relationshipMutationId === candidate.documentId
+                            ? "Linking…"
+                            : "Link"}
+                        </button>
+                      </div>
+                    ))}
+                    {!isRelationshipSearching &&
+                    relationshipSearchQuery.trim() &&
+                    !relationshipSearchResults.length ? (
+                      <div className="empty-result">
+                        No candidate documents matched this relationship search.
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              </div>
+
+              <footer className="text-preview-footer">
+                <span>
+                  Relationship creation and removal are recorded in the audit trail.
+                </span>
+                <span>
+                  Closing this panel returns to the current viewer without changing its context.
+                </span>
+              </footer>
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );
