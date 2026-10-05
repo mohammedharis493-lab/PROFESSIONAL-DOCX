@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -50,6 +50,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "document_relationships",
         sql: include_str!("../migrations/0005_document_relationships.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "engagement_hierarchy",
+        sql: include_str!("../migrations/0006_engagement_hierarchy.sql"),
     },
 ];
 
@@ -220,6 +225,66 @@ pub struct DocumentRelationshipRecord {
     pub related_document_id: String,
     pub related_document_name: String,
     pub related_file: Option<IndexedFilePreviewRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmRecord {
+    pub firm_id: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientRecord {
+    pub client_id: String,
+    pub firm_id: String,
+    pub name: String,
+    pub reference: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceTypeRecord {
+    pub service_type_id: String,
+    pub firm_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementRecord {
+    pub engagement_id: String,
+    pub firm_id: String,
+    pub client_id: String,
+    pub service_type_id: String,
+    pub name: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+pub struct EngagementCreation<'a> {
+    pub firm_id: &'a str,
+    pub client_id: &'a str,
+    pub service_type_id: &'a str,
+    pub name: &'a str,
+    pub period_start: Option<&'a str>,
+    pub period_end: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementAreaRecord {
+    pub engagement_area_id: String,
+    pub engagement_id: String,
+    pub parent_engagement_area_id: Option<String>,
+    pub name: String,
+    pub code: Option<String>,
+    pub display_order: u32,
+    pub status: String,
+    pub created_at_ms: i64,
 }
 
 pub struct EvidenceCaptureCompletion<'a> {
@@ -3121,6 +3186,621 @@ pub fn finish_evidence_capture_failure(
     Ok(())
 }
 
+fn normalize_domain_text(
+    value: &str,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<String, PersistenceError> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let length = normalized.chars().count();
+
+    if length == 0 || length > max_chars {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain 1 to {max_chars} characters"
+        )));
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_optional_domain_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > max_chars {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must not exceed {max_chars} characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn normalize_period_date(
+    value: Option<&str>,
+    field_name: &str,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    let bytes = value.as_bytes();
+    let valid_shape = bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit());
+
+    if !valid_shape {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must use YYYY-MM-DD format"
+        )));
+    }
+
+    let month: u8 = value[5..7].parse().map_err(|_| {
+        PersistenceError::Configuration(format!("{field_name} contains an invalid month"))
+    })?;
+    let day: u8 = value[8..10].parse().map_err(|_| {
+        PersistenceError::Configuration(format!("{field_name} contains an invalid day"))
+    })?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} contains an invalid calendar value"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
+}
+
+pub fn create_firm(database_path: &Path, name: &str) -> Result<FirmRecord, PersistenceError> {
+    let name = normalize_domain_text(name, "firm name", 200)?;
+    let firm_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    transaction.execute(
+        "INSERT INTO firms (firm_id, name, created_at_ms, archived_at_ms)
+         VALUES (?1, ?2, ?3, NULL)",
+        params![&firm_id, &name, created_at_ms],
+    )?;
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id,
+            event_type,
+            entity_type,
+            entity_id,
+            related_entity_type,
+            related_entity_id,
+            occurred_at_ms,
+            actor_id,
+            details_json
+         ) VALUES (?1, 'FIRM_CREATED', 'FIRM', ?2, NULL, NULL, ?3, NULL, ?4)",
+        params![
+            Uuid::new_v4().to_string(),
+            &firm_id,
+            created_at_ms,
+            json!({ "name": &name }).to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(FirmRecord {
+        firm_id,
+        name,
+        created_at_ms,
+    })
+}
+
+pub fn list_firms(database_path: &Path) -> Result<Vec<FirmRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT firm_id, name, created_at_ms
+         FROM firms
+         WHERE archived_at_ms IS NULL
+         ORDER BY name COLLATE NOCASE, created_at_ms",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(FirmRecord {
+            firm_id: row.get(0)?,
+            name: row.get(1)?,
+            created_at_ms: row.get(2)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_client(
+    database_path: &Path,
+    firm_id: &str,
+    name: &str,
+    reference: Option<&str>,
+) -> Result<ClientRecord, PersistenceError> {
+    let name = normalize_domain_text(name, "client name", 240)?;
+    let reference = normalize_optional_domain_text(reference, "client reference", 160)?;
+    let client_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let firm_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM firms
+            WHERE firm_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [firm_id],
+        |row| row.get(0),
+    )?;
+    if !firm_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "firm {firm_id} does not exist"
+        )));
+    }
+
+    transaction.execute(
+        "INSERT INTO clients (
+            client_id, firm_id, name, reference, created_at_ms, archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+        params![
+            &client_id,
+            firm_id,
+            &name,
+            reference.as_deref(),
+            created_at_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id, event_type, entity_type, entity_id,
+            related_entity_type, related_entity_id, occurred_at_ms, actor_id, details_json
+         ) VALUES (?1, 'CLIENT_CREATED', 'CLIENT', ?2, 'FIRM', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            &client_id,
+            firm_id,
+            created_at_ms,
+            json!({ "name": &name, "reference": &reference }).to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(ClientRecord {
+        client_id,
+        firm_id: firm_id.to_string(),
+        name,
+        reference,
+        created_at_ms,
+    })
+}
+
+pub fn list_clients(
+    database_path: &Path,
+    firm_id: &str,
+) -> Result<Vec<ClientRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT client_id, firm_id, name, reference, created_at_ms
+         FROM clients
+         WHERE firm_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY name COLLATE NOCASE, created_at_ms",
+    )?;
+    let rows = statement.query_map([firm_id], |row| {
+        Ok(ClientRecord {
+            client_id: row.get(0)?,
+            firm_id: row.get(1)?,
+            name: row.get(2)?,
+            reference: row.get(3)?,
+            created_at_ms: row.get(4)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_service_type(
+    database_path: &Path,
+    firm_id: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<ServiceTypeRecord, PersistenceError> {
+    let name = normalize_domain_text(name, "service type name", 160)?;
+    let description =
+        normalize_optional_domain_text(description, "service type description", 2_000)?;
+    let service_type_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let firm_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM firms
+            WHERE firm_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [firm_id],
+        |row| row.get(0),
+    )?;
+    if !firm_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "firm {firm_id} does not exist"
+        )));
+    }
+
+    transaction.execute(
+        "INSERT INTO service_types (
+            service_type_id, firm_id, name, description, created_at_ms, archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+        params![
+            &service_type_id,
+            firm_id,
+            &name,
+            description.as_deref(),
+            created_at_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id, event_type, entity_type, entity_id,
+            related_entity_type, related_entity_id, occurred_at_ms, actor_id, details_json
+         ) VALUES (?1, 'SERVICE_TYPE_CREATED', 'SERVICE_TYPE', ?2, 'FIRM', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            &service_type_id,
+            firm_id,
+            created_at_ms,
+            json!({ "name": name }).to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(ServiceTypeRecord {
+        service_type_id,
+        firm_id: firm_id.to_string(),
+        name,
+        description,
+        created_at_ms,
+    })
+}
+
+pub fn list_service_types(
+    database_path: &Path,
+    firm_id: &str,
+) -> Result<Vec<ServiceTypeRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT service_type_id, firm_id, name, description, created_at_ms
+         FROM service_types
+         WHERE firm_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY name COLLATE NOCASE, created_at_ms",
+    )?;
+    let rows = statement.query_map([firm_id], |row| {
+        Ok(ServiceTypeRecord {
+            service_type_id: row.get(0)?,
+            firm_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            created_at_ms: row.get(4)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_engagement(
+    database_path: &Path,
+    creation: EngagementCreation<'_>,
+) -> Result<EngagementRecord, PersistenceError> {
+    let EngagementCreation {
+        firm_id,
+        client_id,
+        service_type_id,
+        name,
+        period_start,
+        period_end,
+        status,
+    } = creation;
+
+    let name = normalize_domain_text(name, "engagement name", 240)?;
+    let status = normalize_domain_text(status, "engagement status", 80)?;
+    let period_start = normalize_period_date(period_start, "period start")?;
+    let period_end = normalize_period_date(period_end, "period end")?;
+    if matches!(
+        (period_start.as_deref(), period_end.as_deref()),
+        (Some(start), Some(end)) if start > end
+    ) {
+        return Err(PersistenceError::Configuration(
+            "engagement period start must not be after period end".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let client_firm_id: Option<String> = transaction
+        .query_row(
+            "SELECT firm_id
+             FROM clients
+             WHERE client_id = ?1 AND archived_at_ms IS NULL",
+            [client_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let service_firm_id: Option<String> = transaction
+        .query_row(
+            "SELECT firm_id
+             FROM service_types
+             WHERE service_type_id = ?1 AND archived_at_ms IS NULL",
+            [service_type_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if client_firm_id.as_deref() != Some(firm_id) {
+        return Err(PersistenceError::Configuration(
+            "engagement client does not belong to the selected firm".to_string(),
+        ));
+    }
+    if service_firm_id.as_deref() != Some(firm_id) {
+        return Err(PersistenceError::Configuration(
+            "engagement service type does not belong to the selected firm".to_string(),
+        ));
+    }
+
+    let engagement_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagements (
+            engagement_id, firm_id, client_id, service_type_id, name,
+            period_start, period_end, status, created_at_ms, created_by, archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
+        params![
+            &engagement_id,
+            firm_id,
+            client_id,
+            service_type_id,
+            &name,
+            period_start.as_deref(),
+            period_end.as_deref(),
+            &status,
+            created_at_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id, event_type, entity_type, entity_id,
+            related_entity_type, related_entity_id, occurred_at_ms, actor_id, details_json
+         ) VALUES (?1, 'ENGAGEMENT_CREATED', 'ENGAGEMENT', ?2, 'CLIENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            &engagement_id,
+            client_id,
+            created_at_ms,
+            json!({
+                "firmId": firm_id,
+                "serviceTypeId": service_type_id,
+                "name": &name,
+                "periodStart": &period_start,
+                "periodEnd": &period_end,
+                "status": &status
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementRecord {
+        engagement_id,
+        firm_id: firm_id.to_string(),
+        client_id: client_id.to_string(),
+        service_type_id: service_type_id.to_string(),
+        name,
+        period_start,
+        period_end,
+        status,
+        created_at_ms,
+    })
+}
+
+pub fn list_engagements_for_client(
+    database_path: &Path,
+    client_id: &str,
+) -> Result<Vec<EngagementRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            engagement_id, firm_id, client_id, service_type_id, name,
+            period_start, period_end, status, created_at_ms
+         FROM engagements
+         WHERE client_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY created_at_ms DESC, name COLLATE NOCASE",
+    )?;
+    let rows = statement.query_map([client_id], |row| {
+        Ok(EngagementRecord {
+            engagement_id: row.get(0)?,
+            firm_id: row.get(1)?,
+            client_id: row.get(2)?,
+            service_type_id: row.get(3)?,
+            name: row.get(4)?,
+            period_start: row.get(5)?,
+            period_end: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_engagement_area(
+    database_path: &Path,
+    engagement_id: &str,
+    parent_engagement_area_id: Option<&str>,
+    name: &str,
+    code: Option<&str>,
+    display_order: u32,
+    status: &str,
+) -> Result<EngagementAreaRecord, PersistenceError> {
+    let name = normalize_domain_text(name, "engagement area name", 200)?;
+    let code = normalize_optional_domain_text(code, "engagement area code", 80)?;
+    let status = normalize_domain_text(status, "engagement area status", 80)?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(parent_id) = parent_engagement_area_id {
+        let parent_engagement: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM engagement_areas
+                 WHERE engagement_area_id = ?1
+                   AND archived_at_ms IS NULL",
+                [parent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if parent_engagement.as_deref() != Some(engagement_id) {
+            return Err(PersistenceError::Configuration(
+                "engagement area parent must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let engagement_area_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagement_areas (
+            engagement_area_id, engagement_id, parent_engagement_area_id,
+            name, code, display_order, status, owner_user_id, created_at_ms, archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL)",
+        params![
+            &engagement_area_id,
+            engagement_id,
+            parent_engagement_area_id,
+            &name,
+            code.as_deref(),
+            i64::from(display_order),
+            &status,
+            created_at_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO audit_events (
+            audit_event_id, event_type, entity_type, entity_id,
+            related_entity_type, related_entity_id, occurred_at_ms, actor_id, details_json
+         ) VALUES (?1, 'ENGAGEMENT_AREA_CREATED', 'ENGAGEMENT_AREA', ?2, 'ENGAGEMENT', ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::new_v4().to_string(),
+            &engagement_area_id,
+            engagement_id,
+            created_at_ms,
+            json!({
+                "parentEngagementAreaId": parent_engagement_area_id,
+                "name": &name,
+                "code": &code,
+                "displayOrder": display_order,
+                "status": &status
+            })
+            .to_string()
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementAreaRecord {
+        engagement_area_id,
+        engagement_id: engagement_id.to_string(),
+        parent_engagement_area_id: parent_engagement_area_id.map(str::to_string),
+        name,
+        code,
+        display_order,
+        status,
+        created_at_ms,
+    })
+}
+
+pub fn list_engagement_areas(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<EngagementAreaRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            engagement_area_id, engagement_id, parent_engagement_area_id,
+            name, code, display_order, status, created_at_ms
+         FROM engagement_areas
+         WHERE engagement_id = ?1
+           AND archived_at_ms IS NULL
+         ORDER BY
+            COALESCE(parent_engagement_area_id, ''),
+            display_order,
+            name COLLATE NOCASE,
+            created_at_ms",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let display_order: i64 = row.get(5)?;
+        Ok(EngagementAreaRecord {
+            engagement_area_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            parent_engagement_area_id: row.get(2)?,
+            name: row.get(3)?,
+            code: row.get(4)?,
+            display_order: display_order.max(0) as u32,
+            status: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 fn current_file_preview_for_document(
     connection: &Connection,
     document_id: &str,
@@ -4477,7 +5157,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -4499,14 +5179,20 @@ mod tests {
                        'evidence_capture_jobs',
                        'controlled_evidence_versions',
                        'audit_events',
-                       'document_relationships'
+                       'document_relationships',
+                       'firms',
+                       'users',
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 16);
+        assert_eq!(table_count, 22);
     }
 
     #[test]
@@ -4542,7 +5228,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -4583,14 +5269,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: i64 = connection
             .query_row(
@@ -4632,14 +5318,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_count: i64 = connection
             .query_row(
@@ -4684,14 +5370,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 5");
+        initialize_database(&database.path).expect("database should upgrade through version 6");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let table_exists: bool = connection
             .query_row(
@@ -4855,6 +5541,276 @@ mod tests {
             .expect("relationship removal audit count should load"),
             1
         );
+    }
+
+    #[test]
+    fn sixth_migration_upgrades_existing_v5_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..5] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 5);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 6");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 6);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'firms',
+                       'users',
+                       'clients',
+                       'service_types',
+                       'engagements',
+                       'engagement_areas'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("engagement hierarchy tables should exist");
+        assert_eq!(table_count, 6);
+    }
+
+    #[test]
+    fn engagement_hierarchy_supports_multiple_services_and_nested_areas() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let firm = create_firm(&database.path, "Haris & Co").expect("firm should be created");
+        let client = create_client(
+            &database.path,
+            &firm.firm_id,
+            "ABC Limited",
+            Some("ABC-001"),
+        )
+        .expect("client should be created");
+        let statutory = create_service_type(&database.path, &firm.firm_id, "Statutory Audit", None)
+            .expect("statutory service should be created");
+        let internal = create_service_type(
+            &database.path,
+            &firm.firm_id,
+            "Operational Resilience Review",
+            Some("Firm-defined service type unknown to application source code"),
+        )
+        .expect("custom service should be created");
+
+        let statutory_engagement = create_engagement(
+            &database.path,
+            EngagementCreation {
+                firm_id: &firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &statutory.service_type_id,
+                name: "ABC Limited - Statutory Audit 2026-27",
+                period_start: Some("2026-04-01"),
+                period_end: Some("2027-03-31"),
+                status: "ACTIVE",
+            },
+        )
+        .expect("statutory engagement should be created");
+        let internal_engagement = create_engagement(
+            &database.path,
+            EngagementCreation {
+                firm_id: &firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &internal.service_type_id,
+                name: "ABC Limited - Operational Resilience Q2",
+                period_start: Some("2026-07-01"),
+                period_end: Some("2026-09-30"),
+                status: "PLANNING",
+            },
+        )
+        .expect("custom engagement should be created");
+
+        let top = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            None,
+            "Statutory Compliance",
+            Some("SC"),
+            10,
+            "ACTIVE",
+        )
+        .expect("top-level area should be created");
+        let gst = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            Some(&top.engagement_area_id),
+            "GST",
+            None,
+            20,
+            "ACTIVE",
+        )
+        .expect("child area should be created");
+        let rcm = create_engagement_area(
+            &database.path,
+            &statutory_engagement.engagement_id,
+            Some(&gst.engagement_area_id),
+            "RCM",
+            None,
+            30,
+            "ACTIVE",
+        )
+        .expect("grandchild area should be created");
+
+        let engagements = list_engagements_for_client(&database.path, &client.client_id)
+            .expect("client engagements should list");
+        assert_eq!(engagements.len(), 2);
+        assert!(engagements
+            .iter()
+            .any(|item| item.engagement_id == statutory_engagement.engagement_id));
+        assert!(engagements
+            .iter()
+            .any(|item| item.engagement_id == internal_engagement.engagement_id));
+
+        let areas = list_engagement_areas(&database.path, &statutory_engagement.engagement_id)
+            .expect("engagement areas should list");
+        assert_eq!(areas.len(), 3);
+        assert_eq!(
+            gst.parent_engagement_area_id.as_deref(),
+            Some(top.engagement_area_id.as_str())
+        );
+        assert_eq!(
+            rcm.parent_engagement_area_id.as_deref(),
+            Some(gst.engagement_area_id.as_str())
+        );
+
+        assert_eq!(
+            count_audit_events_for_test(&database.path, "FIRM_CREATED", &firm.firm_id)
+                .expect("firm audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "ENGAGEMENT_CREATED",
+                &statutory_engagement.engagement_id,
+            )
+            .expect("engagement audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "ENGAGEMENT_AREA_CREATED",
+                &rcm.engagement_area_id,
+            )
+            .expect("area audit count should load"),
+            1
+        );
+    }
+
+    #[test]
+    fn engagement_hierarchy_rejects_cross_firm_and_cross_engagement_links() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let first_firm =
+            create_firm(&database.path, "First Firm").expect("first firm should exist");
+        let second_firm =
+            create_firm(&database.path, "Second Firm").expect("second firm should exist");
+        let client = create_client(&database.path, &first_firm.firm_id, "Client A", None)
+            .expect("client should exist");
+        let first_service =
+            create_service_type(&database.path, &first_firm.firm_id, "Service A", None)
+                .expect("first service should exist");
+        let second_service =
+            create_service_type(&database.path, &second_firm.firm_id, "Service B", None)
+                .expect("second service should exist");
+
+        let cross_firm = create_engagement(
+            &database.path,
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &second_service.service_type_id,
+                name: "Invalid engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
+        )
+        .expect_err("cross-firm service must be rejected");
+        assert!(cross_firm
+            .to_string()
+            .contains("service type does not belong to the selected firm"));
+
+        let first_engagement = create_engagement(
+            &database.path,
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &first_service.service_type_id,
+                name: "First engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
+        )
+        .expect("first engagement should exist");
+        let second_engagement = create_engagement(
+            &database.path,
+            EngagementCreation {
+                firm_id: &first_firm.firm_id,
+                client_id: &client.client_id,
+                service_type_id: &first_service.service_type_id,
+                name: "Second engagement",
+                period_start: None,
+                period_end: None,
+                status: "ACTIVE",
+            },
+        )
+        .expect("second engagement should exist");
+        let parent = create_engagement_area(
+            &database.path,
+            &first_engagement.engagement_id,
+            None,
+            "Parent",
+            None,
+            0,
+            "ACTIVE",
+        )
+        .expect("parent area should exist");
+
+        let cross_engagement = create_engagement_area(
+            &database.path,
+            &second_engagement.engagement_id,
+            Some(&parent.engagement_area_id),
+            "Invalid child",
+            None,
+            0,
+            "ACTIVE",
+        )
+        .expect_err("cross-engagement parent must be rejected");
+        assert!(cross_engagement
+            .to_string()
+            .contains("parent must belong to the same engagement"));
     }
 
     #[test]
