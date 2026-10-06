@@ -3822,6 +3822,152 @@ fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Opti
     })
 }
 
+fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 255 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "review note worksheet must contain 1 to 255 printable characters".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn is_a1_cell_reference(value: &str) -> bool {
+    let bytes = value.trim().as_bytes();
+    let letter_count = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphabetic())
+        .count();
+    if !(1..=3).contains(&letter_count) || letter_count == bytes.len() {
+        return false;
+    }
+
+    let mut column = 0u32;
+    for byte in &bytes[..letter_count] {
+        column = column
+            .saturating_mul(26)
+            .saturating_add(u32::from(byte.to_ascii_uppercase() - b'A' + 1));
+    }
+    if column == 0 || column > 16_384 {
+        return false;
+    }
+
+    let row_bytes = &bytes[letter_count..];
+    if row_bytes.is_empty() || !row_bytes.iter().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(row_text) = std::str::from_utf8(row_bytes) else {
+        return false;
+    };
+    let Ok(row) = row_text.parse::<u32>() else {
+        return false;
+    };
+    (1..=1_048_576).contains(&row)
+}
+
+fn normalize_review_note_workbook_anchor(
+    location_kind: &str,
+    value: &str,
+    expects_range: bool,
+) -> Result<String, PersistenceError> {
+    let (worksheet, address) = value.rsplit_once('!').ok_or_else(|| {
+        let expected_format = if expects_range {
+            "Worksheet!B12:D20"
+        } else {
+            "Worksheet!B12"
+        };
+        PersistenceError::Configuration(format!(
+            "review note {location_kind} location must use {expected_format} format"
+        ))
+    })?;
+    let worksheet = normalize_review_note_worksheet(worksheet)?;
+
+    if expects_range {
+        let Some((start, end)) = address.split_once(':') else {
+            return Err(PersistenceError::Configuration(
+                "review note RANGE location must use Worksheet!B12:D20 format".to_string(),
+            ));
+        };
+        let start = start.trim();
+        let end = end.trim();
+        if end.contains(':') || !is_a1_cell_reference(start) || !is_a1_cell_reference(end) {
+            return Err(PersistenceError::Configuration(
+                "review note RANGE location must use Worksheet!B12:D20 format".to_string(),
+            ));
+        }
+        Ok(format!(
+            "{worksheet}!{}:{}",
+            start.to_ascii_uppercase(),
+            end.to_ascii_uppercase()
+        ))
+    } else {
+        let address = address.trim();
+        if address.contains(':') || !is_a1_cell_reference(address) {
+            return Err(PersistenceError::Configuration(
+                "review note CELL location must use Worksheet!B12 format".to_string(),
+            ));
+        }
+        Ok(format!("{worksheet}!{}", address.to_ascii_uppercase()))
+    }
+}
+
+fn normalize_review_note_location(
+    evidence_link_id: Option<&str>,
+    location_kind: Option<&str>,
+    location_value: Option<&str>,
+) -> Result<(Option<String>, Option<String>), PersistenceError> {
+    let location_kind =
+        normalize_optional_domain_text(location_kind, 80).map(|value| value.to_ascii_uppercase());
+    let location_value = location_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if location_kind.is_some() != location_value.is_some() {
+        return Err(PersistenceError::Configuration(
+            "review note location kind and value must be supplied together".to_string(),
+        ));
+    }
+    if location_kind.is_none() {
+        return Ok((None, None));
+    }
+    if evidence_link_id.is_none() {
+        return Err(PersistenceError::Configuration(
+            "review note page/worksheet/cell/range location requires an exact evidence link"
+                .to_string(),
+        ));
+    }
+
+    let kind = location_kind.expect("location kind must exist after paired validation");
+    let value = location_value.expect("location value must exist after paired validation");
+    let normalized_value = match kind.as_str() {
+        "PAGE" => {
+            let page = value.parse::<u32>().map_err(|_| {
+                PersistenceError::Configuration(
+                    "review note PAGE location must be a positive page number".to_string(),
+                )
+            })?;
+            if page == 0 {
+                return Err(PersistenceError::Configuration(
+                    "review note PAGE location must be a positive page number".to_string(),
+                ));
+            }
+            page.to_string()
+        }
+        "WORKSHEET" => normalize_review_note_worksheet(&value)?,
+        "CELL" => normalize_review_note_workbook_anchor("CELL", &value, false)?,
+        "RANGE" => normalize_review_note_workbook_anchor("RANGE", &value, true)?,
+        _ => {
+            return Err(PersistenceError::Configuration(
+                "review note location kind must be PAGE, WORKSHEET, CELL, or RANGE".to_string(),
+            ))
+        }
+    };
+
+    Ok((Some(kind), Some(normalized_value)))
+}
+
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -5575,12 +5721,11 @@ pub fn create_review_note(
         ));
     }
     let owner_id = normalize_optional_domain_text(note.owner_id, 160);
-    let location_kind = normalize_optional_domain_text(note.location_kind, 80);
-    let location_value = note
-        .location_value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let (location_kind, location_value) = normalize_review_note_location(
+        note.evidence_link_id,
+        note.location_kind,
+        note.location_value,
+    )?;
     let raised_by = normalize_optional_domain_text(note.raised_by, 160);
 
     let mut connection = open_configured_connection(database_path)?;
@@ -5617,12 +5762,6 @@ pub fn create_review_note(
                     .to_string(),
             ));
         }
-    }
-
-    if location_kind.is_some() != location_value.is_some() {
-        return Err(PersistenceError::Configuration(
-            "review note location kind and value must be supplied together".to_string(),
-        ));
     }
 
     let review_note_id = Uuid::new_v4().to_string();
@@ -7381,6 +7520,57 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn review_note_locations_require_exact_evidence_and_unambiguous_supported_anchors() {
+        assert_eq!(
+            normalize_review_note_location(Some("evidence-link"), Some("page"), Some(" 2 "))
+                .expect("page anchor should normalize"),
+            (Some("PAGE".to_string()), Some("2".to_string()))
+        );
+        assert_eq!(
+            normalize_review_note_location(
+                Some("evidence-link"),
+                Some("CELL"),
+                Some(" Trial Balance !b12 ")
+            )
+            .expect("cell anchor should normalize"),
+            (
+                Some("CELL".to_string()),
+                Some("Trial Balance!B12".to_string())
+            )
+        );
+        assert_eq!(
+            normalize_review_note_location(
+                Some("evidence-link"),
+                Some("RANGE"),
+                Some("Sheet1!b12:d20")
+            )
+            .expect("range anchor should normalize"),
+            (
+                Some("RANGE".to_string()),
+                Some("Sheet1!B12:D20".to_string())
+            )
+        );
+
+        let missing_evidence = normalize_review_note_location(None, Some("PAGE"), Some("2"))
+            .expect_err("sublocation without exact evidence must be rejected");
+        assert!(missing_evidence
+            .to_string()
+            .contains("requires an exact evidence link"));
+
+        let ambiguous_cell =
+            normalize_review_note_location(Some("evidence-link"), Some("CELL"), Some("B12"))
+                .expect_err("cell anchor without worksheet must be rejected");
+        assert!(ambiguous_cell.to_string().contains("Worksheet!B12"));
+
+        let unsupported =
+            normalize_review_note_location(Some("evidence-link"), Some("PARAGRAPH"), Some("4"))
+                .expect_err("unsupported location kinds must be rejected");
+        assert!(unsupported
+            .to_string()
+            .contains("PAGE, WORKSHEET, CELL, or RANGE"));
     }
 
     #[test]
