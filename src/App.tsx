@@ -557,6 +557,45 @@ function formatTimestamp(timestampMs: number | null) {
   return new Date(timestampMs).toLocaleString();
 }
 
+type EvidenceVersionOption = {
+  key: string;
+  label: string;
+  controlled: boolean;
+};
+
+function workpaperEvidenceVersionOptions(
+  entries: DocumentVersionHistoryEntry[],
+): EvidenceVersionOption[] {
+  const options: EvidenceVersionOption[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    if (entry.controlledEvidenceVersionId) {
+      const key = `controlled:${entry.controlledEvidenceVersionId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        options.push({
+          key,
+          controlled: true,
+          label: `Controlled evidence v${entry.controlledVersionNumber ?? "?"} · captured ${formatTimestamp(entry.capturedAtMs)}`,
+        });
+      }
+    }
+
+    const contentKey = `content:${entry.contentVersionId}`;
+    if (!seen.has(contentKey)) {
+      seen.add(contentKey);
+      options.push({
+        key: contentKey,
+        controlled: false,
+        label: `Observed content · ${formatTimestamp(entry.observedAtMs)} · ${entry.verificationState.replaceAll("_", " ")}`,
+      });
+    }
+  }
+
+  return options;
+}
+
 function jobLabel(job: IndexJob | null | undefined) {
   if (!job) return "Not indexed";
   return job.status.replaceAll("_", " ");
@@ -2418,6 +2457,7 @@ export default function App() {
   const areaNameById = Object.fromEntries(
     engagementAreas.map((area) => [area.engagementAreaId, area.name]),
   );
+  const evidenceVersionOptions = workpaperEvidenceVersionOptions(evidenceVersionHistory);
 
   return (
     <div className="app-shell">
@@ -3250,6 +3290,167 @@ export default function App() {
                             Create the first immutable revision for this workpaper.
                           </div>
                         )}
+                      </div>
+                    </div>
+
+                    <div className="workspace-evidence-panel">
+                      <div className="workspace-detail-heading">
+                        <div>
+                          <span className="workspace-label">EXACT EVIDENCE LINKS</span>
+                          <h3>
+                            {workpaperRevisions.length
+                              ? `Revision ${workpaperRevisions[0].revisionNumber} evidence`
+                              : "Create a revision before linking evidence"}
+                          </h3>
+                        </div>
+                        <span>
+                          {workpaperEvidenceLinks.length} linked version
+                          {workpaperEvidenceLinks.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+
+                      <div className="workspace-grid workspace-grid-two">
+                        <div className="workspace-card evidence-link-builder">
+                          <form className="workspace-inline-form evidence-search-form" onSubmit={searchWorkpaperEvidence}>
+                            <label>
+                              <span>Find indexed evidence</span>
+                              <input
+                                value={evidenceSearchQuery}
+                                onChange={(event) => setEvidenceSearchQuery(event.target.value)}
+                                placeholder="Search filename or path"
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="submit"
+                              disabled={
+                                evidenceSearchBusy ||
+                                !evidenceSearchQuery.trim() ||
+                                !workpaperRevisions.length
+                              }
+                            >
+                              {evidenceSearchBusy ? "Searching…" : "Search"}
+                            </button>
+                          </form>
+
+                          {evidenceSearchResults.length ? (
+                            <div className="evidence-search-results">
+                              {evidenceSearchResults.map((result) => (
+                                <button
+                                  className={`workspace-list-row${selectedEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                                  type="button"
+                                  key={result.fileInstanceId}
+                                  onClick={() => void selectWorkpaperEvidenceDocument(result)}
+                                >
+                                  <span>
+                                    <strong>{result.name}</strong>
+                                    <small>{result.path}</small>
+                                  </span>
+                                  <span className="workspace-row-action">Versions →</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {selectedEvidenceDocument ? (
+                            <form className="workspace-form evidence-version-form" onSubmit={submitWorkpaperEvidenceLink}>
+                              <div className="evidence-selected-document">
+                                <span className="workspace-label">SELECTED DOCUMENT</span>
+                                <strong>{selectedEvidenceDocument.name}</strong>
+                                <small>{selectedEvidenceDocument.path}</small>
+                              </div>
+                              <label>
+                                <span>Exact version</span>
+                                <select
+                                  value={selectedEvidenceVersionKey}
+                                  onChange={(event) =>
+                                    setSelectedEvidenceVersionKey(event.target.value)
+                                  }
+                                >
+                                  <option value="">Select exact version</option>
+                                  {evidenceVersionOptions.map((option) => (
+                                    <option key={option.key} value={option.key}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              {selectedEvidenceVersionKey.startsWith("content:") ? (
+                                <p className="evidence-integrity-note">
+                                  This is a persisted working-source observation, not an immutable
+                                  controlled copy. Capture controlled evidence before formal reviewer
+                                  reliance.
+                                </p>
+                              ) : selectedEvidenceVersionKey.startsWith("controlled:") ? (
+                                <p className="evidence-integrity-note evidence-integrity-strong">
+                                  This link will bind the workpaper revision to an immutable
+                                  controlled-evidence version.
+                                </p>
+                              ) : null}
+                              <label>
+                                <span>Relationship</span>
+                                <input
+                                  value={evidenceRelationshipType}
+                                  onChange={(event) =>
+                                    setEvidenceRelationshipType(event.target.value)
+                                  }
+                                  placeholder="SUPPORTS"
+                                  maxLength={80}
+                                />
+                              </label>
+                              <label>
+                                <span>Description</span>
+                                <textarea
+                                  value={evidenceDescription}
+                                  onChange={(event) => setEvidenceDescription(event.target.value)}
+                                  rows={2}
+                                  placeholder="What does this evidence support?"
+                                />
+                              </label>
+                              <button
+                                className="primary-button"
+                                type="submit"
+                                disabled={
+                                  workspaceBusy ||
+                                  !selectedEvidenceVersionKey ||
+                                  !evidenceRelationshipType.trim()
+                                }
+                              >
+                                Link exact version
+                              </button>
+                            </form>
+                          ) : null}
+                        </div>
+
+                        <div className="workspace-card workpaper-evidence-list">
+                          {workpaperEvidenceLinks.length ? (
+                            workpaperEvidenceLinks.map((link) => (
+                              <article key={link.evidenceLinkId}>
+                                <div>
+                                  <strong>{link.documentName}</strong>
+                                  <span>{link.relationshipType}</span>
+                                </div>
+                                <p>
+                                  {link.controlledEvidenceVersionId
+                                    ? `Controlled evidence v${link.controlledVersionNumber ?? "?"} · captured ${formatTimestamp(link.controlledCapturedAtMs)}`
+                                    : `Observed content · ${formatTimestamp(link.contentObservedAtMs)}`}
+                                </p>
+                                {link.description ? <p>{link.description}</p> : null}
+                                <code title={link.controlledEvidenceVersionId ?? link.contentVersionId ?? ""}>
+                                  {link.controlledEvidenceVersionId
+                                    ? `Controlled ID ${link.controlledEvidenceVersionId.slice(0, 18)}…`
+                                    : `Content ID ${link.contentVersionId?.slice(0, 18) ?? "—"}…`}
+                                </code>
+                              </article>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              {workpaperRevisions.length
+                                ? "No evidence version is linked to the latest revision yet."
+                                : "Create a workpaper revision before linking evidence."}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
