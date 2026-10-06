@@ -1023,11 +1023,10 @@ fn list_review_notes(
         .map_err(|error| error.to_string())
 }
 
-fn review_note_action(
-    database: &persistence::DatabaseState,
-    review_note_id: &str,
-    action: &ReviewNoteActionInputDto,
-) -> persistence::ReviewNoteAction<'_> {
+fn review_note_action<'a>(
+    review_note_id: &'a str,
+    action: &'a ReviewNoteActionInputDto,
+) -> persistence::ReviewNoteAction<'a> {
     persistence::ReviewNoteAction {
         review_note_id,
         actor_id: action.actor_id.as_deref(),
@@ -1045,7 +1044,7 @@ fn respond_to_review_note(
     validate_uuid(&review_note_id, "review-note")?;
     persistence::respond_to_review_note(
         database.path(),
-        review_note_action(&database, &review_note_id, &action),
+        review_note_action(&review_note_id, &action),
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
@@ -1060,7 +1059,7 @@ fn clear_review_note(
     validate_uuid(&review_note_id, "review-note")?;
     persistence::clear_review_note(
         database.path(),
-        review_note_action(&database, &review_note_id, &action),
+        review_note_action(&review_note_id, &action),
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
@@ -1075,7 +1074,7 @@ fn reopen_review_note(
     validate_uuid(&review_note_id, "review-note")?;
     persistence::reopen_review_note(
         database.path(),
-        review_note_action(&database, &review_note_id, &action),
+        review_note_action(&review_note_id, &action),
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
