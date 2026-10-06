@@ -7836,6 +7836,120 @@ mod tests {
         );
         assert!(links[0].content_observed_at_ms.is_some());
 
+        let invalid_pbc = create_pbc_request(
+            &database.path,
+            NewPbcRequest {
+                engagement_id: &second_engagement.engagement_id,
+                engagement_area_id: Some(&child_area.engagement_area_id),
+                request_number: "PBC-X",
+                description: "Invalid cross-engagement request",
+                requested_from_party: "Client finance team",
+                due_at_ms: None,
+                status: "REQUESTED",
+                client_visible_content: None,
+                internal_notes: None,
+            },
+        )
+        .expect_err("PBC area from another engagement must be rejected");
+        assert!(invalid_pbc
+            .to_string()
+            .contains("PBC request area must belong to the same engagement"));
+
+        let pbc_request = create_pbc_request(
+            &database.path,
+            NewPbcRequest {
+                engagement_id: &engagement.engagement_id,
+                engagement_area_id: Some(&child_area.engagement_area_id),
+                request_number: "PBC-001",
+                description: "Provide vendor onboarding approvals for the selected sample.",
+                requested_from_party: "Client finance team",
+                due_at_ms: Some(12_345_678),
+                status: "REQUESTED",
+                client_visible_content: Some("Please upload the approval records for the sample."),
+                internal_notes: Some("Do not disclose internal sampling rationale."),
+            },
+        )
+        .expect("PBC request should be created");
+        assert_eq!(
+            pbc_request.client_visible_content.as_deref(),
+            Some("Please upload the approval records for the sample.")
+        );
+        assert_eq!(
+            pbc_request.internal_notes.as_deref(),
+            Some("Do not disclose internal sampling rationale.")
+        );
+
+        transition_pbc_request_status(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            "RECEIVED",
+            Some("auditor@example.test"),
+            Some("Client provided the requested records."),
+        )
+        .expect("PBC status transition should be recorded");
+        add_pbc_request_assessment(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            "Received evidence is complete for the selected sample.",
+            Some("auditor@example.test"),
+        )
+        .expect("PBC assessment should be recorded");
+
+        let pbc_evidence = create_pbc_request_evidence_link(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            Some("Received vendor onboarding support"),
+        )
+        .expect("PBC received evidence should bind to an exact content version");
+        assert_eq!(pbc_evidence.document_name, "Support A.pdf");
+        assert_eq!(
+            pbc_evidence.content_version_id.as_deref(),
+            Some(version_a.as_str())
+        );
+
+        let pbc_requests = list_pbc_requests(&database.path, &engagement.engagement_id)
+            .expect("PBC requests should list");
+        assert_eq!(pbc_requests.len(), 1);
+        assert_eq!(pbc_requests[0].status, "RECEIVED");
+        assert_eq!(
+            pbc_requests[0].latest_assessment.as_deref(),
+            Some("Received evidence is complete for the selected sample.")
+        );
+
+        let pbc_events =
+            list_pbc_request_events(&database.path, &pbc_request.pbc_request_id)
+                .expect("PBC request event history should load");
+        assert_eq!(pbc_events.len(), 3);
+        assert_eq!(pbc_events[0].event_type, "CREATED");
+        assert_eq!(pbc_events[1].event_type, "STATUS_CHANGED");
+        assert_eq!(pbc_events[2].event_type, "ASSESSMENT_ADDED");
+
+        let pbc_links =
+            list_pbc_request_evidence_links(&database.path, &pbc_request.pbc_request_id)
+                .expect("PBC received evidence should list");
+        assert_eq!(pbc_links.len(), 1);
+        assert_eq!(
+            pbc_links[0].pbc_request_evidence_link_id,
+            pbc_evidence.pbc_request_evidence_link_id
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let pbc_event_mutation_error = connection
+            .execute(
+                "UPDATE pbc_request_events
+                 SET comment = 'tampered'
+                 WHERE pbc_request_event_id = ?1",
+                [&pbc_events[1].pbc_request_event_id],
+            )
+            .expect_err("PBC request event history must be immutable");
+        assert!(pbc_event_mutation_error
+            .to_string()
+            .contains("PBC request events are immutable"));
+
         let prepared_event = transition_workpaper_state(
             &database.path,
             &workpaper.workpaper_id,
