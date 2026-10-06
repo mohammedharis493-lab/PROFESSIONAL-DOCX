@@ -4304,27 +4304,10 @@ fn engagement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRe
     })
 }
 
-pub fn create_engagement_template_from_engagement(
-    database_path: &Path,
+fn capture_engagement_template_definition(
+    transaction: &rusqlite::Transaction<'_>,
     source_engagement_id: &str,
-    name: &str,
-    description: Option<&str>,
-) -> Result<EngagementTemplateRecord, PersistenceError> {
-    let name = normalize_domain_label(name, "engagement template name", 200)?;
-    let normalized_name = normalize_search_text(&name);
-    if normalized_name.is_empty() {
-        return Err(PersistenceError::Configuration(
-            "engagement template name must contain searchable characters".to_string(),
-        ));
-    }
-    let description = description
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    let mut connection = open_configured_connection(database_path)?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-
+) -> Result<(String, String), PersistenceError> {
     let service_type_id: Option<String> = transaction
         .query_row(
             "SELECT service_type_id
@@ -4422,6 +4405,33 @@ pub fn create_engagement_template_from_engagement(
         ))
     })?;
 
+    Ok((service_type_id, definition_json))
+}
+
+pub fn create_engagement_template_from_engagement(
+    database_path: &Path,
+    source_engagement_id: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<EngagementTemplateRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement template name", 200)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "engagement template name must contain searchable characters".to_string(),
+        ));
+    }
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let (service_type_id, definition_json) =
+        capture_engagement_template_definition(&transaction, source_engagement_id)?;
+
     let engagement_template_id = Uuid::new_v4().to_string();
     let engagement_template_version_id = Uuid::new_v4().to_string();
     let now = now_unix_ms()?;
@@ -4472,6 +4482,99 @@ pub fn create_engagement_template_from_engagement(
         service_type_id,
         source_engagement_id: Some(source_engagement_id.to_string()),
         created_at_ms: now,
+    })
+}
+
+pub fn create_engagement_template_version_from_engagement(
+    database_path: &Path,
+    engagement_template_id: &str,
+    source_engagement_id: &str,
+) -> Result<EngagementTemplateRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let template: Option<(String, Option<String>, i64, String)> = transaction
+        .query_row(
+            "SELECT
+                t.name,
+                t.description,
+                t.created_at_ms,
+                v.service_type_id
+             FROM engagement_templates t
+             JOIN engagement_template_versions v
+               ON v.engagement_template_id = t.engagement_template_id
+              AND v.version_number = (
+                  SELECT MAX(v2.version_number)
+                  FROM engagement_template_versions v2
+                  WHERE v2.engagement_template_id = t.engagement_template_id
+              )
+             WHERE t.engagement_template_id = ?1
+               AND t.archived_at_ms IS NULL",
+            [engagement_template_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let (name, description, template_created_at_ms, expected_service_type_id) =
+        template.ok_or_else(|| {
+            PersistenceError::Configuration(format!(
+                "engagement template {engagement_template_id} does not exist"
+            ))
+        })?;
+
+    let (service_type_id, definition_json) =
+        capture_engagement_template_definition(&transaction, source_engagement_id)?;
+    if service_type_id != expected_service_type_id {
+        return Err(PersistenceError::Configuration(
+            "engagement template update must use the template service type".to_string(),
+        ));
+    }
+
+    let next_version_number: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM engagement_template_versions
+         WHERE engagement_template_id = ?1",
+        [engagement_template_id],
+        |row| row.get(0),
+    )?;
+    if next_version_number < 1 {
+        return Err(PersistenceError::Configuration(
+            "engagement template version sequence is invalid".to_string(),
+        ));
+    }
+
+    let engagement_template_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagement_template_versions (
+            engagement_template_version_id,
+            engagement_template_id,
+            version_number,
+            source_engagement_id,
+            service_type_id,
+            definition_json,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &engagement_template_version_id,
+            engagement_template_id,
+            next_version_number,
+            source_engagement_id,
+            &service_type_id,
+            &definition_json,
+            now
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementTemplateRecord {
+        engagement_template_id: engagement_template_id.to_string(),
+        name,
+        description,
+        latest_version_id: engagement_template_version_id,
+        latest_version_number: next_version_number as u64,
+        service_type_id,
+        source_engagement_id: Some(source_engagement_id.to_string()),
+        created_at_ms: template_created_at_ms,
     })
 }
 
@@ -8820,6 +8923,42 @@ mod tests {
             "ACTIVE",
         )
         .expect("later source procedure");
+
+        let updated_template = create_engagement_template_version_from_engagement(
+            &database.path,
+            &template.engagement_template_id,
+            &source_engagement.engagement_id,
+        )
+        .expect("updated methodology should publish a new template version");
+        assert_eq!(updated_template.latest_version_number, 2);
+        assert_ne!(
+            updated_template.latest_version_id,
+            template.latest_version_id
+        );
+        let latest_templates =
+            list_engagement_templates(&database.path).expect("latest template list should load");
+        assert_eq!(latest_templates[0].latest_version_number, 2);
+        assert_eq!(
+            latest_templates[0].latest_version_id,
+            updated_template.latest_version_id
+        );
+
+        let updated_target = create_engagement_from_template(
+            &database.path,
+            &updated_template.latest_version_id,
+            &target_client.client_id,
+            "Target engagement from updated template",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("new exact methodology version should instantiate");
+        assert_eq!(
+            list_procedures(&database.path, &updated_target.engagement_id)
+                .expect("updated target procedures")
+                .len(),
+            2
+        );
 
         let target_engagement = create_engagement_from_template(
             &database.path,
