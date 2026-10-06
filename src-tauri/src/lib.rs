@@ -8,7 +8,7 @@ mod search;
 mod spreadsheet;
 mod word;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -296,6 +296,249 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ClientDto {
+    client_id: String,
+    name: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ClientRecord> for ClientDto {
+    fn from(value: persistence::ClientRecord) -> Self {
+        Self {
+            client_id: value.client_id,
+            name: value.name,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceTypeDto {
+    service_type_id: String,
+    name: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ServiceTypeRecord> for ServiceTypeDto {
+    fn from(value: persistence::ServiceTypeRecord) -> Self {
+        Self {
+            service_type_id: value.service_type_id,
+            name: value.name,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngagementDto {
+    engagement_id: String,
+    client_id: String,
+    service_type_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::EngagementRecord> for EngagementDto {
+    fn from(value: persistence::EngagementRecord) -> Self {
+        Self {
+            engagement_id: value.engagement_id,
+            client_id: value.client_id,
+            service_type_id: value.service_type_id,
+            name: value.name,
+            period_start: value.period_start,
+            period_end: value.period_end,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngagementAreaDto {
+    engagement_area_id: String,
+    engagement_id: String,
+    parent_area_id: Option<String>,
+    name: String,
+    code: Option<String>,
+    display_order: i64,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::EngagementAreaRecord> for EngagementAreaDto {
+    fn from(value: persistence::EngagementAreaRecord) -> Self {
+        Self {
+            engagement_area_id: value.engagement_area_id,
+            engagement_id: value.engagement_id,
+            parent_area_id: value.parent_area_id,
+            name: value.name,
+            code: value.code,
+            display_order: value.display_order,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcedureDto {
+    procedure_id: String,
+    engagement_id: String,
+    engagement_area_id: Option<String>,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ProcedureRecord> for ProcedureDto {
+    fn from(value: persistence::ProcedureRecord) -> Self {
+        Self {
+            procedure_id: value.procedure_id,
+            engagement_id: value.engagement_id,
+            engagement_area_id: value.engagement_area_id,
+            reference: value.reference,
+            title: value.title,
+            description: value.description,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperDto {
+    workpaper_id: String,
+    engagement_id: String,
+    engagement_area_id: Option<String>,
+    procedure_id: Option<String>,
+    reference: String,
+    title: String,
+    workflow_state: String,
+    created_at_ms: i64,
+    latest_revision_number: Option<u64>,
+}
+
+impl From<persistence::WorkpaperRecord> for WorkpaperDto {
+    fn from(value: persistence::WorkpaperRecord) -> Self {
+        Self {
+            workpaper_id: value.workpaper_id,
+            engagement_id: value.engagement_id,
+            engagement_area_id: value.engagement_area_id,
+            procedure_id: value.procedure_id,
+            reference: value.reference,
+            title: value.title,
+            workflow_state: value.workflow_state,
+            created_at_ms: value.created_at_ms,
+            latest_revision_number: value.latest_revision_number,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperRevisionInputDto {
+    revision_reason: Option<String>,
+    objective: String,
+    procedure_performed: String,
+    population: String,
+    sample: String,
+    exceptions: String,
+    management_explanation: String,
+    conclusion: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperRevisionDto {
+    workpaper_revision_id: String,
+    workpaper_id: String,
+    revision_number: u64,
+    created_at_ms: i64,
+    revision_reason: Option<String>,
+    supersedes_revision_id: Option<String>,
+    objective: String,
+    procedure_performed: String,
+    population: String,
+    sample: String,
+    exceptions: String,
+    management_explanation: String,
+    conclusion: String,
+    content_hash_hex: Option<String>,
+}
+
+impl From<persistence::WorkpaperRevisionRecord> for WorkpaperRevisionDto {
+    fn from(value: persistence::WorkpaperRevisionRecord) -> Self {
+        Self {
+            workpaper_revision_id: value.workpaper_revision_id,
+            workpaper_id: value.workpaper_id,
+            revision_number: value.revision_number,
+            created_at_ms: value.created_at_ms,
+            revision_reason: value.revision_reason,
+            supersedes_revision_id: value.supersedes_revision_id,
+            objective: value.objective,
+            procedure_performed: value.procedure_performed,
+            population: value.population,
+            sample: value.sample,
+            exceptions: value.exceptions,
+            management_explanation: value.management_explanation,
+            conclusion: value.conclusion,
+            content_hash_hex: value.content_hash.map(|bytes| hex_bytes(&bytes)),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperEvidenceLinkDto {
+    evidence_link_id: String,
+    workpaper_revision_id: String,
+    document_id: String,
+    content_version_id: Option<String>,
+    controlled_evidence_version_id: Option<String>,
+    relationship_type: String,
+    description: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::WorkpaperEvidenceLinkRecord> for WorkpaperEvidenceLinkDto {
+    fn from(value: persistence::WorkpaperEvidenceLinkRecord) -> Self {
+        Self {
+            evidence_link_id: value.evidence_link_id,
+            workpaper_revision_id: value.workpaper_revision_id,
+            document_id: value.document_id,
+            content_version_id: value.content_version_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            relationship_type: value.relationship_type,
+            description: value.description,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+fn validate_uuid(value: &str, label: &str) -> Result<(), String> {
+    Uuid::parse_str(value).map_err(|_| format!("Invalid {label} identifier."))?;
+    Ok(())
+}
+
+fn validate_optional_uuid(value: Option<&str>, label: &str) -> Result<(), String> {
+    if let Some(value) = value {
+        validate_uuid(value, label)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SearchResultDto {
     document_id: String,
     file_instance_id: String,
@@ -324,6 +567,265 @@ impl From<search::SearchResultRecord> for SearchResultDto {
             score: value.score,
         }
     }
+}
+
+#[tauri::command]
+fn create_client(
+    name: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ClientDto, String> {
+    persistence::create_client(database.path(), &name)
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_clients(database: State<'_, persistence::DatabaseState>) -> Result<Vec<ClientDto>, String> {
+    persistence::list_clients(database.path())
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_service_type(
+    name: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ServiceTypeDto, String> {
+    persistence::create_service_type(database.path(), &name)
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_service_types(
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ServiceTypeDto>, String> {
+    persistence::list_service_types(database.path())
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement(
+    client_id: String,
+    service_type_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementDto, String> {
+    validate_uuid(&client_id, "client")?;
+    validate_uuid(&service_type_id, "service-type")?;
+    persistence::create_engagement(
+        database.path(),
+        &client_id,
+        &service_type_id,
+        &name,
+        period_start.as_deref(),
+        period_end.as_deref(),
+        status.as_deref().unwrap_or("ACTIVE"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_engagements(
+    client_id: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<EngagementDto>, String> {
+    validate_optional_uuid(client_id.as_deref(), "client")?;
+    persistence::list_engagements(database.path(), client_id.as_deref())
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement_area(
+    engagement_id: String,
+    parent_area_id: Option<String>,
+    name: String,
+    code: Option<String>,
+    display_order: Option<i64>,
+    status: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementAreaDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_optional_uuid(parent_area_id.as_deref(), "parent-area")?;
+    persistence::create_engagement_area(
+        database.path(),
+        &engagement_id,
+        parent_area_id.as_deref(),
+        &name,
+        code.as_deref(),
+        display_order.unwrap_or(0),
+        status.as_deref().unwrap_or("ACTIVE"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_engagement_areas(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<EngagementAreaDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_engagement_areas(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_procedure(
+    engagement_id: String,
+    engagement_area_id: Option<String>,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ProcedureDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_optional_uuid(engagement_area_id.as_deref(), "engagement-area")?;
+    persistence::create_procedure(
+        database.path(),
+        &engagement_id,
+        engagement_area_id.as_deref(),
+        reference.as_deref(),
+        &title,
+        description.as_deref(),
+        status.as_deref().unwrap_or("ACTIVE"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_procedures(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ProcedureDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_procedures(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_workpaper(
+    engagement_id: String,
+    engagement_area_id: Option<String>,
+    procedure_id: Option<String>,
+    reference: String,
+    title: String,
+    workflow_state: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<WorkpaperDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_optional_uuid(engagement_area_id.as_deref(), "engagement-area")?;
+    validate_optional_uuid(procedure_id.as_deref(), "procedure")?;
+    persistence::create_workpaper(
+        database.path(),
+        &engagement_id,
+        engagement_area_id.as_deref(),
+        procedure_id.as_deref(),
+        &reference,
+        &title,
+        workflow_state.as_deref().unwrap_or("NOT_STARTED"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workpapers(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<WorkpaperDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_workpapers(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_workpaper_revision(
+    workpaper_id: String,
+    revision: WorkpaperRevisionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<WorkpaperRevisionDto, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::create_workpaper_revision(
+        database.path(),
+        &workpaper_id,
+        persistence::NewWorkpaperRevision {
+            revision_reason: revision.revision_reason.as_deref(),
+            objective: &revision.objective,
+            procedure_performed: &revision.procedure_performed,
+            population: &revision.population,
+            sample: &revision.sample,
+            exceptions: &revision.exceptions,
+            management_explanation: &revision.management_explanation,
+            conclusion: &revision.conclusion,
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workpaper_revisions(
+    workpaper_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<WorkpaperRevisionDto>, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::list_workpaper_revisions(database.path(), &workpaper_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_workpaper_evidence_link(
+    workpaper_revision_id: String,
+    document_id: String,
+    content_version_id: Option<String>,
+    controlled_evidence_version_id: Option<String>,
+    relationship_type: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<WorkpaperEvidenceLinkDto, String> {
+    validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
+    validate_uuid(&document_id, "document")?;
+    validate_optional_uuid(content_version_id.as_deref(), "content-version")?;
+    validate_optional_uuid(
+        controlled_evidence_version_id.as_deref(),
+        "controlled-evidence-version",
+    )?;
+
+    persistence::create_workpaper_evidence_link(
+        database.path(),
+        &workpaper_revision_id,
+        &document_id,
+        content_version_id.as_deref(),
+        controlled_evidence_version_id.as_deref(),
+        &relationship_type,
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workpaper_evidence_links(
+    workpaper_revision_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<WorkpaperEvidenceLinkDto>, String> {
+    validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
+    persistence::list_workpaper_evidence_links(database.path(), &workpaper_revision_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -905,6 +1407,22 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            create_client,
+            list_clients,
+            create_service_type,
+            list_service_types,
+            create_engagement,
+            list_engagements,
+            create_engagement_area,
+            list_engagement_areas,
+            create_procedure,
+            list_procedures,
+            create_workpaper,
+            list_workpapers,
+            create_workpaper_revision,
+            list_workpaper_revisions,
+            create_workpaper_evidence_link,
+            list_workpaper_evidence_links,
             choose_and_register_storage_root,
             list_storage_roots,
             start_index_job,
