@@ -3825,10 +3825,7 @@ fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Opti
 fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
     let normalized = value.trim();
     let count = normalized.chars().count();
-    if count == 0
-        || count > 255
-        || normalized.chars().any(|character| character.is_control())
-    {
+    if count == 0 || count > 255 || normalized.chars().any(|character| character.is_control()) {
         return Err(PersistenceError::Configuration(
             "review note worksheet must contain 1 to 255 printable characters".to_string(),
         ));
@@ -7552,27 +7549,20 @@ mod tests {
             )
         );
 
-        let missing_evidence =
-            normalize_review_note_location(None, Some("PAGE"), Some("2"))
-                .expect_err("sublocation without exact evidence must be rejected");
+        let missing_evidence = normalize_review_note_location(None, Some("PAGE"), Some("2"))
+            .expect_err("sublocation without exact evidence must be rejected");
         assert!(missing_evidence
             .to_string()
             .contains("requires an exact evidence link"));
 
-        let ambiguous_cell = normalize_review_note_location(
-            Some("evidence-link"),
-            Some("CELL"),
-            Some("B12"),
-        )
-        .expect_err("cell anchor without worksheet must be rejected");
+        let ambiguous_cell =
+            normalize_review_note_location(Some("evidence-link"), Some("CELL"), Some("B12"))
+                .expect_err("cell anchor without worksheet must be rejected");
         assert!(ambiguous_cell.to_string().contains("Worksheet!B12"));
 
-        let unsupported = normalize_review_note_location(
-            Some("evidence-link"),
-            Some("PARAGRAPH"),
-            Some("4"),
-        )
-        .expect_err("unsupported location kinds must be rejected");
+        let unsupported =
+            normalize_review_note_location(Some("evidence-link"), Some("PARAGRAPH"), Some("4"))
+                .expect_err("unsupported location kinds must be rejected");
         assert!(unsupported
             .to_string()
             .contains("PAGE, WORKSHEET, CELL, or RANGE"));
