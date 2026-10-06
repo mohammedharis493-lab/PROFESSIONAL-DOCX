@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 8;
+const LATEST_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -65,6 +65,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "pbc_requests",
         sql: include_str!("../migrations/0008_pbc_requests.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "revision_bound_signoffs",
+        sql: include_str!("../migrations/0009_revision_bound_signoffs.sql"),
     },
 ];
 
@@ -321,6 +326,37 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub relationship_type: String,
     pub description: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignoffRecord {
+    pub signoff_id: String,
+    pub workpaper_id: String,
+    pub workpaper_revision_id: String,
+    pub signoff_type: String,
+    pub actor_id: String,
+    pub actor_role: String,
+    pub signed_at_ms: i64,
+    pub comment: Option<String>,
+    pub superseded_at_ms: Option<i64>,
+    pub superseded_reason: Option<String>,
+    pub evidence_link_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignoffEvidenceRecord {
+    pub signoff_evidence_link_id: String,
+    pub signoff_id: String,
+    pub evidence_link_id: String,
+    pub document_id: String,
+    pub document_name: String,
+    pub content_version_id: Option<String>,
+    pub content_observed_at_ms: Option<i64>,
+    pub controlled_evidence_version_id: Option<String>,
+    pub controlled_version_number: Option<u64>,
+    pub controlled_captured_at_ms: Option<i64>,
+    pub relationship_type: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
