@@ -3868,7 +3868,11 @@ export default function App() {
                       {pbcRequests.length ? (
                         pbcRequests.map((request) => (
                           <button
-                            className={`pbc-request-row${selectedPbcRequestId === request.pbcRequestId ? " pbc-request-row-active" : ""}`}
+                            className={`pbc-request-row${
+                              selectedPbcRequestId === request.pbcRequestId
+                                ? " pbc-request-row-active"
+                                : ""
+                            }`}
                             type="button"
                             key={request.pbcRequestId}
                             onClick={() => void loadPbcRequestDetail(request.pbcRequestId)}
@@ -4096,7 +4100,11 @@ export default function App() {
                               <div className="evidence-search-results">
                                 {pbcEvidenceSearchResults.map((result) => (
                                   <button
-                                    className={`workspace-list-row${selectedPbcEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                                    className={`workspace-list-row${
+                                      selectedPbcEvidenceDocument?.documentId === result.documentId
+                                        ? " workspace-list-row-active"
+                                        : ""
+                                    }`}
                                     type="button"
                                     key={result.fileInstanceId}
                                     onClick={() => void selectPbcEvidenceDocument(result)}
