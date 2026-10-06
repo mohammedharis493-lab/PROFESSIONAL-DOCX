@@ -859,6 +859,11 @@ export default function App() {
     setSelectedEngagementId(engagementId);
     setSelectedWorkpaperId(null);
     setWorkpaperRevisions([]);
+    setWorkpaperEvidenceLinks([]);
+    setEvidenceSearchResults([]);
+    setSelectedEvidenceDocument(null);
+    setEvidenceVersionHistory([]);
+    setSelectedEvidenceVersionKey("");
     try {
       const [areas, procedureRecords, workpaperRecords] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
@@ -875,14 +880,111 @@ export default function App() {
     }
   }
 
+  async function loadWorkpaperEvidenceLinks(workpaperRevisionId: string) {
+    const links = await invoke<WorkpaperEvidenceLink[]>("list_workpaper_evidence_links", {
+      workpaperRevisionId,
+    });
+    setWorkpaperEvidenceLinks(links);
+  }
+
   async function loadWorkpaperRevisions(workpaperId: string) {
     setWorkspaceBusy(true);
     setSelectedWorkpaperId(workpaperId);
+    setEvidenceSearchResults([]);
+    setSelectedEvidenceDocument(null);
+    setEvidenceVersionHistory([]);
+    setSelectedEvidenceVersionKey("");
     try {
       const revisions = await invoke<WorkpaperRevision[]>("list_workpaper_revisions", {
         workpaperId,
       });
       setWorkpaperRevisions(revisions);
+      if (revisions.length) {
+        await loadWorkpaperEvidenceLinks(revisions[0].workpaperRevisionId);
+      } else {
+        setWorkpaperEvidenceLinks([]);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchWorkpaperEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const searchText = evidenceSearchQuery.trim();
+    if (!searchText || !workpaperRevisions.length) return;
+
+    setEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setEvidenceSearchResults(results);
+      setSelectedEvidenceDocument(null);
+      setEvidenceVersionHistory([]);
+      setSelectedEvidenceVersionKey("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectWorkpaperEvidenceDocument(document: SearchResult) {
+    setEvidenceSearchBusy(true);
+    setSelectedEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setEvidenceVersionHistory(history);
+      const controlled = history.find((entry) => entry.controlledEvidenceVersionId);
+      if (controlled?.controlledEvidenceVersionId) {
+        setSelectedEvidenceVersionKey(
+          `controlled:${controlled.controlledEvidenceVersionId}`,
+        );
+      } else if (history[0]) {
+        setSelectedEvidenceVersionKey(`content:${history[0].contentVersionId}`);
+      } else {
+        setSelectedEvidenceVersionKey("");
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setEvidenceVersionHistory([]);
+      setSelectedEvidenceVersionKey("");
+    } finally {
+      setEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitWorkpaperEvidenceLink(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const latestRevision = workpaperRevisions[0];
+    if (!latestRevision || !selectedEvidenceDocument || !selectedEvidenceVersionKey) return;
+
+    const [versionKind, versionId] = selectedEvidenceVersionKey.split(":", 2);
+    if (!versionId || (versionKind !== "content" && versionKind !== "controlled")) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<WorkpaperEvidenceLink>("create_workpaper_evidence_link", {
+        workpaperRevisionId: latestRevision.workpaperRevisionId,
+        documentId: selectedEvidenceDocument.documentId,
+        contentVersionId: versionKind === "content" ? versionId : null,
+        controlledEvidenceVersionId: versionKind === "controlled" ? versionId : null,
+        relationshipType: evidenceRelationshipType.trim() || "SUPPORTS",
+        description: evidenceDescription.trim() || null,
+      });
+      await loadWorkpaperEvidenceLinks(latestRevision.workpaperRevisionId);
+      setEvidenceDescription("");
+      setEvidenceSearchResults([]);
+      setSelectedEvidenceDocument(null);
+      setEvidenceVersionHistory([]);
+      setSelectedEvidenceVersionKey("");
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -1087,6 +1189,11 @@ export default function App() {
     setWorkpapers([]);
     setSelectedWorkpaperId(null);
     setWorkpaperRevisions([]);
+    setWorkpaperEvidenceLinks([]);
+    setEvidenceSearchResults([]);
+    setSelectedEvidenceDocument(null);
+    setEvidenceVersionHistory([]);
+    setSelectedEvidenceVersionKey("");
     showView("engagements");
   }
 
