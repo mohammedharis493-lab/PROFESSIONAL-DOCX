@@ -658,6 +658,20 @@ function sourceUnavailable(availabilityState: string) {
   return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
 }
 
+function workflowStateKey(value: string) {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isFormalReviewState(value: string) {
+  return new Set(["SUBMITTED_FOR_REVIEW", "REVIEWED", "FINALISED", "FINAL"]).has(
+    workflowStateKey(value),
+  );
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
@@ -2672,6 +2686,22 @@ export default function App() {
     engagementAreas.map((area) => [area.engagementAreaId, area.name]),
   );
   const evidenceVersionOptions = workpaperEvidenceVersionOptions(evidenceVersionHistory);
+  const selectedReviewNote =
+    reviewNotes.find((note) => note.reviewNoteId === selectedReviewNoteId) ?? null;
+  const revisionNumberById = Object.fromEntries(
+    workpaperRevisions.map((revision) => [
+      revision.workpaperRevisionId,
+      revision.revisionNumber,
+    ]),
+  );
+  const evidenceLinkNameById = Object.fromEntries(
+    workpaperEvidenceLinks.map((link) => [
+      link.evidenceLinkId,
+      `${link.documentName} · ${link.relationshipType}`,
+    ]),
+  );
+  const reviewLocationIncomplete =
+    Boolean(newReviewLocationKind.trim()) !== Boolean(newReviewLocationValue.trim());
 
   return (
     <div className="app-shell">
@@ -3670,6 +3700,357 @@ export default function App() {
                             </div>
                           )}
                         </div>
+                      </div>
+                    </div>
+
+                    <div className="workspace-review-panel">
+                      <div className="workspace-detail-heading">
+                        <div>
+                          <span className="workspace-label">PREPARE / REVIEW WORKFLOW</span>
+                          <h3>
+                            {selectedWorkpaper.workflowState.replaceAll("_", " ")} · Revision{" "}
+                            {workpaperRevisions[0]?.revisionNumber ?? "—"}
+                          </h3>
+                        </div>
+                        <span>
+                          {workpaperWorkflowEvents.length} transition
+                          {workpaperWorkflowEvents.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+
+                      <div className="workspace-grid workspace-grid-two">
+                        <form className="workspace-card workspace-form" onSubmit={submitWorkflowTransition}>
+                          <label>
+                            <span>Next state</span>
+                            <input
+                              list="workpaper-workflow-state-options"
+                              value={nextWorkflowState}
+                              onChange={(event) => setNextWorkflowState(event.target.value)}
+                              placeholder="PREPARED"
+                              maxLength={80}
+                            />
+                            <datalist id="workpaper-workflow-state-options">
+                              <option value="NOT_STARTED" />
+                              <option value="IN_PROGRESS" />
+                              <option value="PREPARED" />
+                              <option value="SUBMITTED_FOR_REVIEW" />
+                              <option value="REVIEW_POINT_RAISED" />
+                              <option value="RESPONSE_SUBMITTED" />
+                              <option value="CLEARED" />
+                              <option value="FINALISED" />
+                            </datalist>
+                          </label>
+                          <label>
+                            <span>Actor identifier</span>
+                            <input
+                              value={workflowActorId}
+                              onChange={(event) => setWorkflowActorId(event.target.value)}
+                              placeholder="preparer@example.com"
+                              maxLength={160}
+                            />
+                          </label>
+                          <label>
+                            <span>Transition comment</span>
+                            <textarea
+                              value={workflowComment}
+                              onChange={(event) => setWorkflowComment(event.target.value)}
+                              rows={2}
+                              placeholder="Why is the workpaper moving to this state?"
+                            />
+                          </label>
+                          {isFormalReviewState(nextWorkflowState) ? (
+                            <p className="evidence-integrity-note">
+                              Formal review/final states require a current revision. Any linked
+                              evidence on that revision must be immutable hash-verified controlled
+                              evidence; working observations will be rejected.
+                            </p>
+                          ) : null}
+                          <button
+                            className="primary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !nextWorkflowState.trim()}
+                          >
+                            Record transition
+                          </button>
+                        </form>
+
+                        <div className="workspace-card workflow-event-list">
+                          {workpaperWorkflowEvents.length ? (
+                            [...workpaperWorkflowEvents].reverse().map((event) => (
+                              <article key={event.workpaperWorkflowEventId}>
+                                <div>
+                                  <strong>
+                                    {event.fromState.replaceAll("_", " ")} →{" "}
+                                    {event.toState.replaceAll("_", " ")}
+                                  </strong>
+                                  <span>{formatTimestamp(event.occurredAtMs)}</span>
+                                </div>
+                                <p>
+                                  Revision{" "}
+                                  {event.workpaperRevisionId
+                                    ? revisionNumberById[event.workpaperRevisionId] ?? "historical"
+                                    : "—"}
+                                  {event.actorId ? ` · ${event.actorId}` : ""}
+                                </p>
+                                {event.comment ? <p>{event.comment}</p> : null}
+                              </article>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              State transitions will appear here as append-only history.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="review-notes-section">
+                        <div className="workspace-detail-heading">
+                          <div>
+                            <span className="workspace-label">REVIEW NOTES</span>
+                            <h3>
+                              {reviewNotes.length} note{reviewNotes.length === 1 ? "" : "s"}
+                            </h3>
+                          </div>
+                          <span>Raised against the latest exact workpaper revision</span>
+                        </div>
+
+                        <div className="workspace-grid workspace-grid-two">
+                          <form className="workspace-card workspace-form" onSubmit={submitReviewNote}>
+                            <label>
+                              <span>Title</span>
+                              <input
+                                value={newReviewTitle}
+                                onChange={(event) => setNewReviewTitle(event.target.value)}
+                                placeholder="Explain exception treatment"
+                                maxLength={240}
+                              />
+                            </label>
+                            <label>
+                              <span>Review point</span>
+                              <textarea
+                                value={newReviewBody}
+                                onChange={(event) => setNewReviewBody(event.target.value)}
+                                rows={4}
+                                placeholder="Describe the review point and required action."
+                              />
+                            </label>
+                            <div className="workspace-form-pair">
+                              <label>
+                                <span>Owner</span>
+                                <input
+                                  value={newReviewOwnerId}
+                                  onChange={(event) => setNewReviewOwnerId(event.target.value)}
+                                  placeholder="preparer@example.com"
+                                  maxLength={160}
+                                />
+                              </label>
+                              <label>
+                                <span>Due</span>
+                                <input
+                                  type="datetime-local"
+                                  value={newReviewDueLocal}
+                                  onChange={(event) => setNewReviewDueLocal(event.target.value)}
+                                />
+                              </label>
+                            </div>
+                            <label>
+                              <span>Exact evidence link (optional)</span>
+                              <select
+                                value={newReviewEvidenceLinkId}
+                                onChange={(event) => setNewReviewEvidenceLinkId(event.target.value)}
+                              >
+                                <option value="">Workpaper revision only</option>
+                                {workpaperEvidenceLinks.map((link) => (
+                                  <option key={link.evidenceLinkId} value={link.evidenceLinkId}>
+                                    {link.documentName} · {link.relationshipType}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="workspace-form-pair">
+                              <label>
+                                <span>Location kind</span>
+                                <input
+                                  list="review-location-kind-options"
+                                  value={newReviewLocationKind}
+                                  onChange={(event) => setNewReviewLocationKind(event.target.value)}
+                                  placeholder="PAGE / WORKSHEET / CELL / RANGE"
+                                  maxLength={80}
+                                />
+                                <datalist id="review-location-kind-options">
+                                  <option value="PAGE" />
+                                  <option value="WORKSHEET" />
+                                  <option value="CELL" />
+                                  <option value="RANGE" />
+                                </datalist>
+                              </label>
+                              <label>
+                                <span>Location value</span>
+                                <input
+                                  value={newReviewLocationValue}
+                                  onChange={(event) => setNewReviewLocationValue(event.target.value)}
+                                  placeholder="2 / Sheet1 / B12 / B12:D20"
+                                />
+                              </label>
+                            </div>
+                            {reviewLocationIncomplete ? (
+                              <p className="evidence-integrity-note">
+                                Location kind and location value must be supplied together.
+                              </p>
+                            ) : null}
+                            <label>
+                              <span>Raised by</span>
+                              <input
+                                value={newReviewRaisedBy}
+                                onChange={(event) => setNewReviewRaisedBy(event.target.value)}
+                                placeholder="reviewer@example.com"
+                                maxLength={160}
+                              />
+                            </label>
+                            <button
+                              className="primary-button"
+                              type="submit"
+                              disabled={
+                                workspaceBusy ||
+                                !workpaperRevisions.length ||
+                                !newReviewTitle.trim() ||
+                                !newReviewBody.trim() ||
+                                reviewLocationIncomplete
+                              }
+                            >
+                              Raise review note
+                            </button>
+                          </form>
+
+                          <div className="workspace-card review-note-list">
+                            {reviewNotes.length ? (
+                              reviewNotes.map((note) => (
+                                <button
+                                  className={`review-note-row${selectedReviewNoteId === note.reviewNoteId ? " review-note-row-active" : ""}`}
+                                  type="button"
+                                  key={note.reviewNoteId}
+                                  onClick={() => void loadReviewNoteEvents(note.reviewNoteId)}
+                                >
+                                  <span className={`review-note-state review-note-state-${note.currentState.toLowerCase()}`}>
+                                    {note.currentState.replaceAll("_", " ")}
+                                  </span>
+                                  <strong>{note.title}</strong>
+                                  <small>
+                                    Revision {revisionNumberById[note.workpaperRevisionId] ?? "historical"}
+                                    {note.evidenceLinkId
+                                      ? ` · ${evidenceLinkNameById[note.evidenceLinkId] ?? "exact evidence"}`
+                                      : ""}
+                                  </small>
+                                  <small>
+                                    {note.ownerId ? `Owner ${note.ownerId}` : "No owner"}
+                                    {note.dueAtMs ? ` · Due ${formatTimestamp(note.dueAtMs)}` : ""}
+                                  </small>
+                                  <p>{note.body}</p>
+                                </button>
+                              ))
+                            ) : (
+                              <div className="empty-result">
+                                No review notes have been raised for this workpaper.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {selectedReviewNote ? (
+                          <div className="review-note-history-panel">
+                            <div className="workspace-detail-heading">
+                              <div>
+                                <span className="workspace-label">REVIEW NOTE HISTORY</span>
+                                <h3>{selectedReviewNote.title}</h3>
+                              </div>
+                              <span>{selectedReviewNote.currentState.replaceAll("_", " ")}</span>
+                            </div>
+                            <div className="workspace-grid workspace-grid-two">
+                              <form className="workspace-card workspace-form" onSubmit={submitReviewNoteResponse}>
+                                <label>
+                                  <span>Action actor</span>
+                                  <input
+                                    value={reviewActionActorId}
+                                    onChange={(event) => setReviewActionActorId(event.target.value)}
+                                    placeholder="preparer@example.com"
+                                    maxLength={160}
+                                  />
+                                </label>
+                                <label>
+                                  <span>Response</span>
+                                  <textarea
+                                    value={reviewResponseText}
+                                    onChange={(event) => setReviewResponseText(event.target.value)}
+                                    rows={3}
+                                    placeholder="Respond to the review point."
+                                    disabled={selectedReviewNote.currentState === "CLEARED"}
+                                  />
+                                </label>
+                                <label>
+                                  <span>Action comment</span>
+                                  <textarea
+                                    value={reviewActionComment}
+                                    onChange={(event) => setReviewActionComment(event.target.value)}
+                                    rows={2}
+                                    placeholder="Optional clearance/reopen comment."
+                                  />
+                                </label>
+                                <button
+                                  className="secondary-button"
+                                  type="submit"
+                                  disabled={
+                                    workspaceBusy ||
+                                    selectedReviewNote.currentState === "CLEARED" ||
+                                    !reviewResponseText.trim()
+                                  }
+                                >
+                                  Submit response
+                                </button>
+                                <div className="review-note-actions">
+                                  {selectedReviewNote.currentState === "CLEARED" ? (
+                                    <button
+                                      className="secondary-button"
+                                      type="button"
+                                      onClick={() => void changeReviewNoteState("reopen_review_note")}
+                                      disabled={workspaceBusy}
+                                    >
+                                      Reopen note
+                                    </button>
+                                  ) : (
+                                    <button
+                                      className="primary-button"
+                                      type="button"
+                                      onClick={() => void changeReviewNoteState("clear_review_note")}
+                                      disabled={workspaceBusy}
+                                    >
+                                      Clear note
+                                    </button>
+                                  )}
+                                </div>
+                              </form>
+
+                              <div className="workspace-card review-note-event-list">
+                                {reviewNoteEvents.length ? (
+                                  reviewNoteEvents.map((event) => (
+                                    <article key={event.reviewNoteEventId}>
+                                      <div>
+                                        <strong>{event.eventType.replaceAll("_", " ")}</strong>
+                                        <span>{formatTimestamp(event.occurredAtMs)}</span>
+                                      </div>
+                                      {event.actorId ? <p>Actor: {event.actorId}</p> : null}
+                                      {event.responseText ? (
+                                        <p><b>Response:</b> {event.responseText}</p>
+                                      ) : null}
+                                      {event.comment ? <p>{event.comment}</p> : null}
+                                    </article>
+                                  ))
+                                ) : (
+                                  <div className="empty-result">Loading review-note history…</div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>
