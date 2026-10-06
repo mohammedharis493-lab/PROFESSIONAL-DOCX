@@ -8,7 +8,7 @@ mod search;
 mod spreadsheet;
 mod word;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -444,6 +444,19 @@ impl From<persistence::WorkpaperRecord> for WorkpaperDto {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperRevisionInputDto {
+    revision_reason: Option<String>,
+    objective: String,
+    procedure_performed: String,
+    population: String,
+    sample: String,
+    exceptions: String,
+    management_explanation: String,
+    conclusion: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkpaperRevisionDto {
@@ -740,14 +753,7 @@ fn list_workpapers(
 #[tauri::command]
 fn create_workpaper_revision(
     workpaper_id: String,
-    revision_reason: Option<String>,
-    objective: String,
-    procedure_performed: String,
-    population: String,
-    sample: String,
-    exceptions: String,
-    management_explanation: String,
-    conclusion: String,
+    revision: WorkpaperRevisionInputDto,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<WorkpaperRevisionDto, String> {
     validate_uuid(&workpaper_id, "workpaper")?;
@@ -755,14 +761,14 @@ fn create_workpaper_revision(
         database.path(),
         &workpaper_id,
         persistence::NewWorkpaperRevision {
-            revision_reason: revision_reason.as_deref(),
-            objective: &objective,
-            procedure_performed: &procedure_performed,
-            population: &population,
-            sample: &sample,
-            exceptions: &exceptions,
-            management_explanation: &management_explanation,
-            conclusion: &conclusion,
+            revision_reason: revision.revision_reason.as_deref(),
+            objective: &revision.objective,
+            procedure_performed: &revision.procedure_performed,
+            population: &revision.population,
+            sample: &revision.sample,
+            exceptions: &revision.exceptions,
+            management_explanation: &revision.management_explanation,
+            conclusion: &revision.conclusion,
         },
     )
     .map(Into::into)
