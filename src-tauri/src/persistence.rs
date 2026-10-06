@@ -4800,8 +4800,7 @@ pub fn list_workpaper_evidence_links(
             content_version_id: row.get(4)?,
             content_observed_at_ms: row.get(5)?,
             controlled_evidence_version_id: row.get(6)?,
-            controlled_version_number: controlled_version_number
-                .map(|value| value.max(0) as u64),
+            controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
             controlled_captured_at_ms: row.get(8)?,
             relationship_type: row.get(9)?,
             description: row.get(10)?,
@@ -6358,7 +6357,10 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].evidence_link_id, evidence_link.evidence_link_id);
         assert_eq!(links[0].document_name, "Support A.pdf");
-        assert_eq!(links[0].content_version_id.as_deref(), Some(version_a.as_str()));
+        assert_eq!(
+            links[0].content_version_id.as_deref(),
+            Some(version_a.as_str())
+        );
         assert!(links[0].content_observed_at_ms.is_some());
 
         let connection =
