@@ -730,6 +730,10 @@ function isFormalReviewState(value: string) {
   );
 }
 
+function isFormalSignoffType(value: string) {
+  return new Set(["REVIEWED", "FINAL_APPROVAL", "FINAL"]).has(workflowStateKey(value));
+}
+
 export default function App() {
   const [query, setQuery] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
@@ -1161,7 +1165,7 @@ export default function App() {
   async function searchWorkpaperEvidence(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const searchText = evidenceSearchQuery.trim();
-    if (!searchText || !workpaperRevisions.length) return;
+    if (latestRevisionSigned || !searchText || !workpaperRevisions.length) return;
 
     setEvidenceSearchBusy(true);
     try {
@@ -1211,7 +1215,14 @@ export default function App() {
   async function submitWorkpaperEvidenceLink(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const latestRevision = workpaperRevisions[0];
-    if (!latestRevision || !selectedEvidenceDocument || !selectedEvidenceVersionKey) return;
+    if (
+      latestRevisionSigned ||
+      !latestRevision ||
+      !selectedEvidenceDocument ||
+      !selectedEvidenceVersionKey
+    ) {
+      return;
+    }
 
     const [versionKind, versionId] = selectedEvidenceVersionKey.split(":", 2);
     if (!versionId || (versionKind !== "content" && versionKind !== "controlled")) return;
@@ -4394,6 +4405,13 @@ export default function App() {
 
                       <div className="workspace-grid workspace-grid-two">
                         <div className="workspace-card evidence-link-builder">
+                          {latestRevisionSigned ? (
+                            <p className="evidence-integrity-note evidence-integrity-strong signoff-evidence-lock">
+                              Revision {workpaperRevisions[0]?.revisionNumber ?? "—"} has an active
+                              sign-off. Its evidence set is locked; create a new revision to change
+                              evidence.
+                            </p>
+                          ) : null}
                           <form className="workspace-inline-form evidence-search-form" onSubmit={searchWorkpaperEvidence}>
                             <label>
                               <span>Find indexed evidence</span>
@@ -4408,6 +4426,7 @@ export default function App() {
                               type="submit"
                               disabled={
                                 evidenceSearchBusy ||
+                                latestRevisionSigned ||
                                 !evidenceSearchQuery.trim() ||
                                 !workpaperRevisions.length
                               }
@@ -4495,6 +4514,7 @@ export default function App() {
                                 type="submit"
                                 disabled={
                                   workspaceBusy ||
+                                  latestRevisionSigned ||
                                   !selectedEvidenceVersionKey ||
                                   !evidenceRelationshipType.trim()
                                 }
@@ -4634,6 +4654,145 @@ export default function App() {
                               State transitions will appear here as append-only history.
                             </div>
                           )}
+                        </div>
+                      </div>
+
+                      <div className="workpaper-signoff-section">
+                        <div className="workspace-detail-heading">
+                          <div>
+                            <span className="workspace-label">ROLE-AWARE SIGN-OFF</span>
+                            <h3>
+                              {workpaperSignoffs.length} historical sign-off
+                              {workpaperSignoffs.length === 1 ? "" : "s"}
+                            </h3>
+                          </div>
+                          <span>
+                            {activeSignoffsForLatestRevision.length} active on revision{" "}
+                            {workpaperRevisions[0]?.revisionNumber ?? "—"}
+                          </span>
+                        </div>
+
+                        <div className="workspace-grid workspace-grid-two">
+                          <form className="workspace-card workspace-form" onSubmit={submitWorkpaperSignoff}>
+                            <label>
+                              <span>Sign-off type</span>
+                              <input
+                                list="workpaper-signoff-type-options"
+                                value={newSignoffType}
+                                onChange={(event) => setNewSignoffType(event.target.value)}
+                                placeholder="PREPARED"
+                                maxLength={80}
+                              />
+                              <datalist id="workpaper-signoff-type-options">
+                                <option value="PREPARED" />
+                                <option value="REVIEWED" />
+                                <option value="FINAL_APPROVAL" />
+                              </datalist>
+                            </label>
+                            <div className="workspace-form-pair">
+                              <label>
+                                <span>Actor identifier</span>
+                                <input
+                                  value={newSignoffActorId}
+                                  onChange={(event) => setNewSignoffActorId(event.target.value)}
+                                  placeholder="manager@example.com"
+                                  maxLength={160}
+                                />
+                              </label>
+                              <label>
+                                <span>Actor role</span>
+                                <input
+                                  value={newSignoffActorRole}
+                                  onChange={(event) => setNewSignoffActorRole(event.target.value)}
+                                  placeholder="Engagement Manager"
+                                  maxLength={160}
+                                />
+                              </label>
+                            </div>
+                            <label>
+                              <span>Comment</span>
+                              <textarea
+                                value={newSignoffComment}
+                                onChange={(event) => setNewSignoffComment(event.target.value)}
+                                rows={2}
+                                placeholder="Optional sign-off comment."
+                              />
+                            </label>
+                            {isFormalSignoffType(newSignoffType) ? (
+                              <p className="evidence-integrity-note">
+                                Reviewer/final sign-off requires every linked evidence item on the
+                                latest revision to be hash-verified controlled evidence and all
+                                review notes on that revision to be cleared.
+                              </p>
+                            ) : null}
+                            <p className="signoff-authority-note">
+                              Actor and role are recorded for professional history. Authentication
+                              and role-authority enforcement are not claimed by this phase.
+                            </p>
+                            <button
+                              className="primary-button"
+                              type="submit"
+                              disabled={
+                                workspaceBusy ||
+                                !workpaperRevisions.length ||
+                                !newSignoffType.trim() ||
+                                !newSignoffActorId.trim() ||
+                                !newSignoffActorRole.trim()
+                              }
+                            >
+                              Record sign-off
+                            </button>
+                          </form>
+
+                          <div className="workspace-card workpaper-signoff-list">
+                            {workpaperSignoffs.length ? (
+                              workpaperSignoffs.map((signoff) => (
+                                <article
+                                  className={signoff.supersededAtMs ? "signoff-superseded" : ""}
+                                  key={signoff.signoffId}
+                                >
+                                  <div>
+                                    <strong>
+                                      {signoff.signoffType.replaceAll("_", " ")} · Revision{" "}
+                                      {signoff.revisionNumber}
+                                    </strong>
+                                    <span
+                                      className={
+                                        signoff.supersededAtMs
+                                          ? "signoff-state signoff-state-superseded"
+                                          : "signoff-state signoff-state-active"
+                                      }
+                                    >
+                                      {signoff.supersededAtMs ? "SUPERSEDED" : "ACTIVE"}
+                                    </span>
+                                  </div>
+                                  <p>
+                                    {signoff.actorId} · {signoff.actorRole} ·{" "}
+                                    {formatTimestamp(signoff.signedAtMs)}
+                                  </p>
+                                  <p>
+                                    Evidence snapshot: {signoff.evidenceLinkIds.length} exact link
+                                    {signoff.evidenceLinkIds.length === 1 ? "" : "s"}
+                                  </p>
+                                  {signoff.comment ? <p>{signoff.comment}</p> : null}
+                                  {signoff.supersededAtMs ? (
+                                    <p className="signoff-supersession-note">
+                                      Superseded {formatTimestamp(signoff.supersededAtMs)}
+                                      {signoff.supersededByRevisionId
+                                        ? " by a later revision"
+                                        : ""}
+                                      {signoff.supersededReason ? " · " : ""}
+                                      {signoff.supersededReason ?? ""}
+                                    </p>
+                                  ) : null}
+                                </article>
+                              ))
+                            ) : (
+                              <div className="empty-result">
+                                No professional sign-offs have been recorded for this workpaper.
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
