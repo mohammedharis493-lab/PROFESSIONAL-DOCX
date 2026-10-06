@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 6;
+const LATEST_SCHEMA_VERSION: i64 = 7;
 
 struct Migration {
     version: i64,
@@ -55,6 +55,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "engagement_workpapers",
         sql: include_str!("../migrations/0006_engagement_workpapers.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "review_workflow",
+        sql: include_str!("../migrations/0007_review_workflow.sql"),
     },
 ];
 
@@ -311,6 +316,67 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub relationship_type: String,
     pub description: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperWorkflowEventRecord {
+    pub workpaper_workflow_event_id: String,
+    pub workpaper_id: String,
+    pub workpaper_revision_id: Option<String>,
+    pub from_state: String,
+    pub to_state: String,
+    pub actor_id: Option<String>,
+    pub comment: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewNoteRecord {
+    pub review_note_id: String,
+    pub workpaper_id: String,
+    pub workpaper_revision_id: String,
+    pub evidence_link_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub owner_id: Option<String>,
+    pub due_at_ms: Option<i64>,
+    pub location_kind: Option<String>,
+    pub location_value: Option<String>,
+    pub current_state: String,
+    pub raised_by: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_event_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewNoteEventRecord {
+    pub review_note_event_id: String,
+    pub review_note_id: String,
+    pub event_type: String,
+    pub actor_id: Option<String>,
+    pub response_text: Option<String>,
+    pub comment: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct NewReviewNote<'a> {
+    pub workpaper_id: &'a str,
+    pub workpaper_revision_id: &'a str,
+    pub evidence_link_id: Option<&'a str>,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub owner_id: Option<&'a str>,
+    pub due_at_ms: Option<i64>,
+    pub location_kind: Option<&'a str>,
+    pub location_value: Option<&'a str>,
+    pub raised_by: Option<&'a str>,
+}
+
+pub struct ReviewNoteAction<'a> {
+    pub review_note_id: &'a str,
+    pub actor_id: Option<&'a str>,
+    pub response_text: Option<&'a str>,
+    pub comment: Option<&'a str>,
 }
 
 pub struct NewWorkpaperRevision<'a> {
@@ -4814,6 +4880,598 @@ pub fn list_workpaper_evidence_links(
     Ok(result)
 }
 
+fn workflow_state_key(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn state_requires_controlled_evidence(value: &str) -> bool {
+    matches!(
+        workflow_state_key(value).as_str(),
+        "SUBMITTED_FOR_REVIEW" | "REVIEWED" | "FINALISED" | "FINAL"
+    )
+}
+
+pub fn transition_workpaper_state(
+    database_path: &Path,
+    workpaper_id: &str,
+    to_state: &str,
+    actor_id: Option<&str>,
+    comment: Option<&str>,
+) -> Result<WorkpaperWorkflowEventRecord, PersistenceError> {
+    let to_state = normalize_domain_label(to_state, "workflow state", 80)?;
+    let actor_id = normalize_optional_domain_text(actor_id, 160);
+    let comment = comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let from_state: Option<String> = transaction
+        .query_row(
+            "SELECT workflow_state
+             FROM workpapers
+             WHERE workpaper_id = ?1
+               AND archived_at_ms IS NULL",
+            [workpaper_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(from_state) = from_state else {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper {workpaper_id} does not exist"
+        )));
+    };
+
+    let latest_revision_id: Option<String> = transaction
+        .query_row(
+            "SELECT workpaper_revision_id
+             FROM workpaper_revisions
+             WHERE workpaper_id = ?1
+             ORDER BY revision_number DESC
+             LIMIT 1",
+            [workpaper_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    if state_requires_controlled_evidence(&to_state) {
+        let Some(revision_id) = latest_revision_id.as_deref() else {
+            return Err(PersistenceError::Configuration(
+                "formal review requires a current workpaper revision".to_string(),
+            ));
+        };
+
+        let unsafe_evidence_count: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM workpaper_evidence_links wel
+             LEFT JOIN controlled_evidence_versions cev
+               ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+             WHERE wel.workpaper_revision_id = ?1
+               AND (
+                   wel.controlled_evidence_version_id IS NULL
+                   OR cev.verification_state <> 'HASH_VERIFIED'
+               )",
+            [revision_id],
+            |row| row.get(0),
+        )?;
+        if unsafe_evidence_count > 0 {
+            return Err(PersistenceError::Configuration(
+                "formal review requires all linked evidence on the current revision to be immutable hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let now = now_unix_ms()?;
+    let event_id = Uuid::new_v4().to_string();
+    transaction.execute(
+        "INSERT INTO workpaper_workflow_events (
+            workpaper_workflow_event_id,
+            workpaper_id,
+            workpaper_revision_id,
+            from_state,
+            to_state,
+            actor_id,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &event_id,
+            workpaper_id,
+            latest_revision_id.as_deref(),
+            &from_state,
+            &to_state,
+            actor_id.as_deref(),
+            comment.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE workpapers
+         SET workflow_state = ?1
+         WHERE workpaper_id = ?2",
+        params![&to_state, workpaper_id],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "WORKPAPER_STATE_TRANSITIONED",
+            entity_type: "WORKPAPER",
+            entity_id: workpaper_id,
+            related_entity_type: latest_revision_id.as_ref().map(|_| "WORKPAPER_REVISION"),
+            related_entity_id: latest_revision_id.as_deref(),
+            occurred_at_ms: now,
+            details: json!({
+                "fromState": from_state,
+                "toState": to_state,
+                "actorId": actor_id,
+                "comment": comment
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperWorkflowEventRecord {
+        workpaper_workflow_event_id: event_id,
+        workpaper_id: workpaper_id.to_string(),
+        workpaper_revision_id: latest_revision_id,
+        from_state,
+        to_state,
+        actor_id,
+        comment,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn list_workpaper_workflow_events(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<WorkpaperWorkflowEventRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            workpaper_workflow_event_id,
+            workpaper_id,
+            workpaper_revision_id,
+            from_state,
+            to_state,
+            actor_id,
+            comment,
+            occurred_at_ms
+         FROM workpaper_workflow_events
+         WHERE workpaper_id = ?1
+         ORDER BY occurred_at_ms, rowid",
+    )?;
+    let rows = statement.query_map([workpaper_id], |row| {
+        Ok(WorkpaperWorkflowEventRecord {
+            workpaper_workflow_event_id: row.get(0)?,
+            workpaper_id: row.get(1)?,
+            workpaper_revision_id: row.get(2)?,
+            from_state: row.get(3)?,
+            to_state: row.get(4)?,
+            actor_id: row.get(5)?,
+            comment: row.get(6)?,
+            occurred_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_review_note(
+    database_path: &Path,
+    note: NewReviewNote<'_>,
+) -> Result<ReviewNoteRecord, PersistenceError> {
+    let title = normalize_domain_label(note.title, "review note title", 240)?;
+    let body = note.body.trim().to_string();
+    if body.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "review note body must not be empty".to_string(),
+        ));
+    }
+    let owner_id = normalize_optional_domain_text(note.owner_id, 160);
+    let location_kind = normalize_optional_domain_text(note.location_kind, 80);
+    let location_value = note
+        .location_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let raised_by = normalize_optional_domain_text(note.raised_by, 160);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let revision_workpaper: Option<String> = transaction
+        .query_row(
+            "SELECT workpaper_id
+             FROM workpaper_revisions
+             WHERE workpaper_revision_id = ?1",
+            [note.workpaper_revision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if revision_workpaper.as_deref() != Some(note.workpaper_id) {
+        return Err(PersistenceError::Configuration(
+            "review note revision must belong to the selected workpaper".to_string(),
+        ));
+    }
+
+    if let Some(evidence_link_id) = note.evidence_link_id {
+        let evidence_revision: Option<String> = transaction
+            .query_row(
+                "SELECT workpaper_revision_id
+                 FROM workpaper_evidence_links
+                 WHERE evidence_link_id = ?1",
+                [evidence_link_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if evidence_revision.as_deref() != Some(note.workpaper_revision_id) {
+            return Err(PersistenceError::Configuration(
+                "review note evidence link must belong to the selected workpaper revision"
+                    .to_string(),
+            ));
+        }
+    }
+
+    if location_kind.is_some() != location_value.is_some() {
+        return Err(PersistenceError::Configuration(
+            "review note location kind and value must be supplied together".to_string(),
+        ));
+    }
+
+    let review_note_id = Uuid::new_v4().to_string();
+    let event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO review_notes (
+            review_note_id,
+            workpaper_id,
+            workpaper_revision_id,
+            evidence_link_id,
+            title,
+            body,
+            owner_id,
+            due_at_ms,
+            location_kind,
+            location_value,
+            current_state,
+            raised_by,
+            created_at_ms,
+            latest_event_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'OPEN', ?11, ?12, ?12)",
+        params![
+            &review_note_id,
+            note.workpaper_id,
+            note.workpaper_revision_id,
+            note.evidence_link_id,
+            &title,
+            &body,
+            owner_id.as_deref(),
+            note.due_at_ms,
+            location_kind.as_deref(),
+            location_value.as_deref(),
+            raised_by.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO review_note_events (
+            review_note_event_id,
+            review_note_id,
+            event_type,
+            actor_id,
+            response_text,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, 'RAISED', ?3, NULL, ?4, ?5)",
+        params![&event_id, &review_note_id, raised_by.as_deref(), &body, now],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "REVIEW_NOTE_RAISED",
+            entity_type: "REVIEW_NOTE",
+            entity_id: &review_note_id,
+            related_entity_type: Some("WORKPAPER_REVISION"),
+            related_entity_id: Some(note.workpaper_revision_id),
+            occurred_at_ms: now,
+            details: json!({
+                "workpaperId": note.workpaper_id,
+                "evidenceLinkId": note.evidence_link_id,
+                "ownerId": owner_id,
+                "dueAtMs": note.due_at_ms,
+                "locationKind": location_kind,
+                "locationValue": location_value
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(ReviewNoteRecord {
+        review_note_id,
+        workpaper_id: note.workpaper_id.to_string(),
+        workpaper_revision_id: note.workpaper_revision_id.to_string(),
+        evidence_link_id: note.evidence_link_id.map(str::to_string),
+        title,
+        body,
+        owner_id,
+        due_at_ms: note.due_at_ms,
+        location_kind,
+        location_value,
+        current_state: "OPEN".to_string(),
+        raised_by,
+        created_at_ms: now,
+        latest_event_at_ms: now,
+    })
+}
+
+pub fn list_review_notes(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<ReviewNoteRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            review_note_id,
+            workpaper_id,
+            workpaper_revision_id,
+            evidence_link_id,
+            title,
+            body,
+            owner_id,
+            due_at_ms,
+            location_kind,
+            location_value,
+            current_state,
+            raised_by,
+            created_at_ms,
+            latest_event_at_ms
+         FROM review_notes
+         WHERE workpaper_id = ?1
+         ORDER BY
+            CASE current_state WHEN 'CLEARED' THEN 1 ELSE 0 END,
+            latest_event_at_ms DESC,
+            rowid DESC",
+    )?;
+    let rows = statement.query_map([workpaper_id], |row| {
+        Ok(ReviewNoteRecord {
+            review_note_id: row.get(0)?,
+            workpaper_id: row.get(1)?,
+            workpaper_revision_id: row.get(2)?,
+            evidence_link_id: row.get(3)?,
+            title: row.get(4)?,
+            body: row.get(5)?,
+            owner_id: row.get(6)?,
+            due_at_ms: row.get(7)?,
+            location_kind: row.get(8)?,
+            location_value: row.get(9)?,
+            current_state: row.get(10)?,
+            raised_by: row.get(11)?,
+            created_at_ms: row.get(12)?,
+            latest_event_at_ms: row.get(13)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+fn append_review_note_event(
+    database_path: &Path,
+    action: ReviewNoteAction<'_>,
+    event_type: &str,
+    next_state: &str,
+    require_response: bool,
+) -> Result<ReviewNoteEventRecord, PersistenceError> {
+    let actor_id = normalize_optional_domain_text(action.actor_id, 160);
+    let response_text = action
+        .response_text
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let comment = action
+        .comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if require_response && response_text.is_none() {
+        return Err(PersistenceError::Configuration(
+            "review note response text is required".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current_state: Option<String> = transaction
+        .query_row(
+            "SELECT current_state
+             FROM review_notes
+             WHERE review_note_id = ?1",
+            [action.review_note_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(current_state) = current_state else {
+        return Err(PersistenceError::Configuration(format!(
+            "review note {} does not exist",
+            action.review_note_id
+        )));
+    };
+
+    match event_type {
+        "RESPONSE_SUBMITTED" if current_state == "CLEARED" => {
+            return Err(PersistenceError::Configuration(
+                "cleared review note must be reopened before another response".to_string(),
+            ));
+        }
+        "CLEARED" if current_state == "CLEARED" => {
+            return Err(PersistenceError::Configuration(
+                "review note is already cleared".to_string(),
+            ));
+        }
+        "REOPENED" if current_state != "CLEARED" => {
+            return Err(PersistenceError::Configuration(
+                "only a cleared review note can be reopened".to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    let event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO review_note_events (
+            review_note_event_id,
+            review_note_id,
+            event_type,
+            actor_id,
+            response_text,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &event_id,
+            action.review_note_id,
+            event_type,
+            actor_id.as_deref(),
+            response_text.as_deref(),
+            comment.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE review_notes
+         SET current_state = ?1,
+             latest_event_at_ms = ?2
+         WHERE review_note_id = ?3",
+        params![next_state, now, action.review_note_id],
+    )?;
+
+    let audit_type = match event_type {
+        "RESPONSE_SUBMITTED" => "REVIEW_NOTE_RESPONSE_SUBMITTED",
+        "CLEARED" => "REVIEW_NOTE_CLEARED",
+        "REOPENED" => "REVIEW_NOTE_REOPENED",
+        _ => "REVIEW_NOTE_EVENT",
+    };
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: audit_type,
+            entity_type: "REVIEW_NOTE",
+            entity_id: action.review_note_id,
+            related_entity_type: None,
+            related_entity_id: None,
+            occurred_at_ms: now,
+            details: json!({
+                "eventType": event_type,
+                "fromState": current_state,
+                "toState": next_state,
+                "actorId": actor_id,
+                "hasResponse": response_text.is_some(),
+                "comment": comment
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(ReviewNoteEventRecord {
+        review_note_event_id: event_id,
+        review_note_id: action.review_note_id.to_string(),
+        event_type: event_type.to_string(),
+        actor_id,
+        response_text,
+        comment,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn respond_to_review_note(
+    database_path: &Path,
+    action: ReviewNoteAction<'_>,
+) -> Result<ReviewNoteEventRecord, PersistenceError> {
+    append_review_note_event(
+        database_path,
+        action,
+        "RESPONSE_SUBMITTED",
+        "RESPONSE_SUBMITTED",
+        true,
+    )
+}
+
+pub fn clear_review_note(
+    database_path: &Path,
+    action: ReviewNoteAction<'_>,
+) -> Result<ReviewNoteEventRecord, PersistenceError> {
+    append_review_note_event(database_path, action, "CLEARED", "CLEARED", false)
+}
+
+pub fn reopen_review_note(
+    database_path: &Path,
+    action: ReviewNoteAction<'_>,
+) -> Result<ReviewNoteEventRecord, PersistenceError> {
+    append_review_note_event(database_path, action, "REOPENED", "OPEN", false)
+}
+
+pub fn list_review_note_events(
+    database_path: &Path,
+    review_note_id: &str,
+) -> Result<Vec<ReviewNoteEventRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            review_note_event_id,
+            review_note_id,
+            event_type,
+            actor_id,
+            response_text,
+            comment,
+            occurred_at_ms
+         FROM review_note_events
+         WHERE review_note_id = ?1
+         ORDER BY occurred_at_ms, rowid",
+    )?;
+    let rows = statement.query_map([review_note_id], |row| {
+        Ok(ReviewNoteEventRecord {
+            review_note_event_id: row.get(0)?,
+            review_note_id: row.get(1)?,
+            event_type: row.get(2)?,
+            actor_id: row.get(3)?,
+            response_text: row.get(4)?,
+            comment: row.get(5)?,
+            occurred_at_ms: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn resolve_file_instance_source(
     database_path: &Path,
     file_instance_id: &str,
@@ -5771,7 +6429,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, 7);
 
         let table_count: i64 = connection
             .query_row(
@@ -5801,14 +6459,17 @@ mod tests {
                        'procedures',
                        'workpapers',
                        'workpaper_revisions',
-                       'workpaper_evidence_links'
+                       'workpaper_evidence_links',
+                       'workpaper_workflow_events',
+                       'review_notes',
+                       'review_note_events'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 24);
+        assert_eq!(table_count, 27);
     }
 
     #[test]
@@ -5844,7 +6505,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 7);
 
         let table_count: i64 = connection
             .query_row(
@@ -5885,14 +6546,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 6");
+        initialize_database(&database.path).expect("database should upgrade through version 7");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 7);
 
         let table_exists: i64 = connection
             .query_row(
@@ -5934,14 +6595,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 6");
+        initialize_database(&database.path).expect("database should upgrade through version 7");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 7);
 
         let table_count: i64 = connection
             .query_row(
@@ -5986,14 +6647,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 6");
+        initialize_database(&database.path).expect("database should upgrade to version 7");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 7);
 
         let table_exists: bool = connection
             .query_row(
@@ -6035,14 +6696,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 6");
+        initialize_database(&database.path).expect("database should upgrade to version 7");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 7);
 
         let table_count: i64 = connection
             .query_row(
@@ -6063,6 +6724,58 @@ mod tests {
             )
             .expect("engagement and workpaper tables should exist");
         assert_eq!(table_count, 8);
+    }
+
+    #[test]
+    fn seventh_migration_upgrades_existing_v6_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..6] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 6);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 7");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 7);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'workpaper_workflow_events',
+                       'review_notes',
+                       'review_note_events'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("review workflow tables should exist");
+        assert_eq!(table_count, 3);
     }
 
     #[test]
@@ -6362,6 +7075,119 @@ mod tests {
             Some(version_a.as_str())
         );
         assert!(links[0].content_observed_at_ms.is_some());
+
+        let prepared_event = transition_workpaper_state(
+            &database.path,
+            &workpaper.workpaper_id,
+            "PREPARED",
+            Some("preparer@example.test"),
+            Some("Preparation complete"),
+        )
+        .expect("prepared transition should succeed");
+        assert_eq!(prepared_event.from_state, "IN_PROGRESS");
+        assert_eq!(prepared_event.to_state, "PREPARED");
+        assert_eq!(
+            prepared_event.workpaper_revision_id.as_deref(),
+            Some(revision_two.workpaper_revision_id.as_str())
+        );
+
+        let formal_review_error = transition_workpaper_state(
+            &database.path,
+            &workpaper.workpaper_id,
+            "SUBMITTED_FOR_REVIEW",
+            Some("preparer@example.test"),
+            None,
+        )
+        .expect_err("raw observed evidence must block formal review");
+        assert!(formal_review_error
+            .to_string()
+            .contains("immutable hash-verified controlled evidence"));
+
+        let workflow_events =
+            list_workpaper_workflow_events(&database.path, &workpaper.workpaper_id)
+                .expect("workflow history should load");
+        assert_eq!(workflow_events.len(), 1);
+        assert_eq!(workflow_events[0].to_state, "PREPARED");
+
+        let review_note = create_review_note(
+            &database.path,
+            NewReviewNote {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                evidence_link_id: Some(&evidence_link.evidence_link_id),
+                title: "Explain timing exception",
+                body: "Please document why the delayed approval does not change the conclusion.",
+                owner_id: Some("preparer@example.test"),
+                due_at_ms: Some(9_999_999),
+                location_kind: Some("PAGE"),
+                location_value: Some("2"),
+                raised_by: Some("reviewer@example.test"),
+            },
+        )
+        .expect("review note should be raised");
+        assert_eq!(review_note.current_state, "OPEN");
+        assert_eq!(
+            review_note.evidence_link_id.as_deref(),
+            Some(evidence_link.evidence_link_id.as_str())
+        );
+
+        respond_to_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("preparer@example.test"),
+                response_text: Some("The approval was completed the next business day."),
+                comment: None,
+            },
+        )
+        .expect("review note response should be recorded");
+        clear_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("reviewer@example.test"),
+                response_text: None,
+                comment: Some("Response accepted."),
+            },
+        )
+        .expect("review note should clear");
+        reopen_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("reviewer@example.test"),
+                response_text: None,
+                comment: Some("Reopened after additional evidence arrived."),
+            },
+        )
+        .expect("cleared review note should reopen");
+
+        let notes = list_review_notes(&database.path, &workpaper.workpaper_id)
+            .expect("review notes should load");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].current_state, "OPEN");
+
+        let note_events = list_review_note_events(&database.path, &review_note.review_note_id)
+            .expect("review note history should load");
+        assert_eq!(note_events.len(), 4);
+        assert_eq!(note_events[0].event_type, "RAISED");
+        assert_eq!(note_events[1].event_type, "RESPONSE_SUBMITTED");
+        assert_eq!(note_events[2].event_type, "CLEARED");
+        assert_eq!(note_events[3].event_type, "REOPENED");
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let event_mutation_error = connection
+            .execute(
+                "UPDATE review_note_events
+                 SET comment = 'tampered'
+                 WHERE review_note_event_id = ?1",
+                [&note_events[1].review_note_event_id],
+            )
+            .expect_err("review note event history must be immutable");
+        assert!(event_mutation_error
+            .to_string()
+            .contains("review note events are immutable"));
 
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
