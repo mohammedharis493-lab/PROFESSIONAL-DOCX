@@ -4403,9 +4403,13 @@ pub fn create_engagement_template_from_engagement(
 
     for procedure in &procedures {
         if let Some(source_area_id) = procedure.source_area_id.as_deref() {
-            if !areas.iter().any(|area| area.source_area_id == source_area_id) {
+            if !areas
+                .iter()
+                .any(|area| area.source_area_id == source_area_id)
+            {
                 return Err(PersistenceError::Configuration(
-                    "active template procedure references an unavailable engagement area".to_string(),
+                    "active template procedure references an unavailable engagement area"
+                        .to_string(),
                 ));
             }
         }
@@ -8845,11 +8849,13 @@ mod tests {
             Some(target_root.engagement_area_id.as_str())
         );
         assert_ne!(target_root.engagement_area_id, root_area.engagement_area_id);
-        assert_ne!(target_child.engagement_area_id, child_area.engagement_area_id);
+        assert_ne!(
+            target_child.engagement_area_id,
+            child_area.engagement_area_id
+        );
 
-        let target_procedures =
-            list_procedures(&database.path, &target_engagement.engagement_id)
-                .expect("target procedures should load");
+        let target_procedures = list_procedures(&database.path, &target_engagement.engagement_id)
+            .expect("target procedures should load");
         assert_eq!(target_procedures.len(), 1);
         assert_eq!(target_procedures[0].reference.as_deref(), Some("REV-01"));
 
