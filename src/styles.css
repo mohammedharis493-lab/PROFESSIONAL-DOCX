@@ -758,6 +758,118 @@ textarea:focus-visible {
   font-size: 11px;
 }
 
+.workspace-evidence-panel {
+  border-top: 1px solid #dfe5ed;
+  background: #f8fafc;
+}
+
+.evidence-link-builder {
+  align-self: start;
+}
+
+.evidence-search-form {
+  padding: 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.evidence-search-results {
+  display: grid;
+  max-height: 240px;
+  overflow: auto;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.evidence-version-form {
+  border-top: 0;
+}
+
+.evidence-selected-document {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 9px;
+  background: #f6f8fb;
+}
+
+.evidence-selected-document strong,
+.evidence-selected-document small {
+  display: block;
+}
+
+.evidence-selected-document strong {
+  color: #243046;
+}
+
+.evidence-selected-document small {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #7b8798;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-integrity-note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #fde2a7;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #805d1b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.evidence-integrity-strong {
+  border-color: #bbdfc9;
+  background: #f0f9f4;
+  color: #276749;
+}
+
+.workpaper-evidence-list {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.workpaper-evidence-list article {
+  padding: 16px 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.workpaper-evidence-list article:last-child {
+  border-bottom: 0;
+}
+
+.workpaper-evidence-list article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workpaper-evidence-list article > div span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #eef2f7;
+  color: #526174;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.workpaper-evidence-list p {
+  margin: 8px 0 0;
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workpaper-evidence-list code {
+  display: inline-block;
+  margin-top: 9px;
+  color: #718096;
+  font-size: 10px;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 1fr;
