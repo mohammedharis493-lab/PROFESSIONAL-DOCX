@@ -60,6 +60,80 @@ type RecentSearch = {
   useCount: number;
 };
 
+type Client = {
+  clientId: string;
+  name: string;
+  createdAtMs: number;
+};
+
+type ServiceType = {
+  serviceTypeId: string;
+  name: string;
+  createdAtMs: number;
+};
+
+type Engagement = {
+  engagementId: string;
+  clientId: string;
+  serviceTypeId: string;
+  name: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type EngagementArea = {
+  engagementAreaId: string;
+  engagementId: string;
+  parentAreaId: string | null;
+  name: string;
+  code: string | null;
+  displayOrder: number;
+  status: string;
+  createdAtMs: number;
+};
+
+type Procedure = {
+  procedureId: string;
+  engagementId: string;
+  engagementAreaId: string | null;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type Workpaper = {
+  workpaperId: string;
+  engagementId: string;
+  engagementAreaId: string | null;
+  procedureId: string | null;
+  reference: string;
+  title: string;
+  workflowState: string;
+  createdAtMs: number;
+  latestRevisionNumber: number | null;
+};
+
+type WorkpaperRevision = {
+  workpaperRevisionId: string;
+  workpaperId: string;
+  revisionNumber: number;
+  createdAtMs: number;
+  revisionReason: string | null;
+  supersedesRevisionId: string | null;
+  objective: string;
+  procedurePerformed: string;
+  population: string;
+  sample: string;
+  exceptions: string;
+  managementExplanation: string;
+  conclusion: string;
+  contentHashHex: string | null;
+};
+
 type ControlledEvidenceVersion = {
   controlledEvidenceVersionId: string;
   evidenceCaptureJobId: string;
@@ -262,7 +336,7 @@ type ViewerLocalMatch = {
   index: number;
 };
 
-type ViewMode = "home" | "recent" | "searches" | "pinned";
+type ViewMode = "home" | "clients" | "engagements" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
   viewMode: ViewMode;
@@ -494,6 +568,33 @@ function sourceUnavailable(availabilityState: string) {
 
 export default function App() {
   const [query, setQuery] = useState("");
+  const [clients, setClients] = useState<Client[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<ServiceType[]>([]);
+  const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [selectedEngagementId, setSelectedEngagementId] = useState<string | null>(null);
+  const [engagementAreas, setEngagementAreas] = useState<EngagementArea[]>([]);
+  const [procedures, setProcedures] = useState<Procedure[]>([]);
+  const [workpapers, setWorkpapers] = useState<Workpaper[]>([]);
+  const [selectedWorkpaperId, setSelectedWorkpaperId] = useState<string | null>(null);
+  const [workpaperRevisions, setWorkpaperRevisions] = useState<WorkpaperRevision[]>([]);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [newClientName, setNewClientName] = useState("");
+  const [newServiceTypeName, setNewServiceTypeName] = useState("");
+  const [newEngagementName, setNewEngagementName] = useState("");
+  const [newEngagementServiceTypeId, setNewEngagementServiceTypeId] = useState("");
+  const [newEngagementPeriodStart, setNewEngagementPeriodStart] = useState("");
+  const [newEngagementPeriodEnd, setNewEngagementPeriodEnd] = useState("");
+  const [newAreaName, setNewAreaName] = useState("");
+  const [newAreaParentId, setNewAreaParentId] = useState("");
+  const [newProcedureTitle, setNewProcedureTitle] = useState("");
+  const [newProcedureAreaId, setNewProcedureAreaId] = useState("");
+  const [newWorkpaperReference, setNewWorkpaperReference] = useState("");
+  const [newWorkpaperTitle, setNewWorkpaperTitle] = useState("");
+  const [newWorkpaperAreaId, setNewWorkpaperAreaId] = useState("");
+  const [newRevisionObjective, setNewRevisionObjective] = useState("");
+  const [newRevisionProcedure, setNewRevisionProcedure] = useState("");
+  const [newRevisionConclusion, setNewRevisionConclusion] = useState("");
   const [roots, setRoots] = useState<ApprovedStorageRoot[]>([]);
   const [selectedRoot, setSelectedRoot] = useState<ApprovedStorageRoot | null>(null);
   const [latestJobs, setLatestJobs] = useState<Record<string, IndexJob | null>>({});
@@ -563,6 +664,7 @@ export default function App() {
   useEffect(() => {
     void refreshRoots();
     void refreshQuickAccess();
+    void refreshProfessionalWorkspace();
   }, []);
 
   useEffect(() => {
