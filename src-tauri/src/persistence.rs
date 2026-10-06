@@ -4514,8 +4514,8 @@ pub fn create_engagement_template_version_from_engagement(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    let (name, description, template_created_at_ms, expected_service_type_id) =
-        template.ok_or_else(|| {
+    let (name, description, template_created_at_ms, expected_service_type_id) = template
+        .ok_or_else(|| {
             PersistenceError::Configuration(format!(
                 "engagement template {engagement_template_id} does not exist"
             ))
