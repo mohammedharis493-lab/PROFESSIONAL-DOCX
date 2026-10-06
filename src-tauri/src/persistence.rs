@@ -303,6 +303,14 @@ pub struct FirmLibraryVersionRecord {
     pub created_at_ms: i64,
 }
 
+struct FirmLibraryItemIdentity {
+    category: String,
+    name: String,
+    description: Option<String>,
+    service_type_id: Option<String>,
+    created_at_ms: i64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EngagementTemplateDefinition {
     areas: Vec<EngagementTemplateAreaDefinition>,
@@ -3931,7 +3939,7 @@ fn normalize_firm_library_description(
 fn normalize_firm_library_definition(
     definition_json: &str,
 ) -> Result<(String, Vec<u8>), PersistenceError> {
-    if definition_json.as_bytes().len() > FIRM_LIBRARY_DEFINITION_MAX_BYTES {
+    if definition_json.len() > FIRM_LIBRARY_DEFINITION_MAX_BYTES {
         return Err(PersistenceError::Configuration(format!(
             "firm library definition must be at most {FIRM_LIBRARY_DEFINITION_MAX_BYTES} bytes"
         )));
@@ -4840,7 +4848,7 @@ pub fn publish_firm_library_version(
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    let item: Option<(String, String, Option<String>, Option<String>, i64)> = transaction
+    let item: Option<FirmLibraryItemIdentity> = transaction
         .query_row(
             "SELECT
                 category,
@@ -4853,22 +4861,21 @@ pub fn publish_firm_library_version(
                AND archived_at_ms IS NULL",
             [firm_library_item_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
+                Ok(FirmLibraryItemIdentity {
+                    category: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    service_type_id: row.get(3)?,
+                    created_at_ms: row.get(4)?,
+                })
             },
         )
         .optional()?;
-    let (category, name, description, service_type_id, item_created_at_ms) =
-        item.ok_or_else(|| {
-            PersistenceError::Configuration(format!(
-                "firm library item {firm_library_item_id} does not exist"
-            ))
-        })?;
+    let item = item.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "firm library item {firm_library_item_id} does not exist"
+        ))
+    })?;
 
     let next_version_number: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(version_number), 0) + 1
@@ -4914,7 +4921,7 @@ pub fn publish_firm_library_version(
             related_entity_id: Some(firm_library_item_id),
             occurred_at_ms: now,
             details: json!({
-                "category": category.as_str(),
+                "category": item.category.as_str(),
                 "versionNumber": next_version_number,
                 "definitionHash": bytes_to_lower_hex(&definition_hash)
             }),
@@ -4924,14 +4931,14 @@ pub fn publish_firm_library_version(
     transaction.commit()?;
     Ok(FirmLibraryItemRecord {
         firm_library_item_id: firm_library_item_id.to_string(),
-        category,
-        name,
-        description,
-        service_type_id,
+        category: item.category,
+        name: item.name,
+        description: item.description,
+        service_type_id: item.service_type_id,
         latest_version_id: firm_library_version_id,
         latest_version_number: next_version_number as u64,
         latest_definition_hash: definition_hash,
-        created_at_ms: item_created_at_ms,
+        created_at_ms: item.created_at_ms,
     })
 }
 
