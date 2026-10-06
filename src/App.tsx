@@ -149,6 +149,22 @@ type WorkpaperEvidenceLink = {
   createdAtMs: number;
 };
 
+type WorkpaperSignoff = {
+  signoffId: string;
+  workpaperId: string;
+  workpaperRevisionId: string;
+  revisionNumber: number;
+  signoffType: string;
+  actorId: string;
+  actorRole: string;
+  signedAtMs: number;
+  comment: string | null;
+  evidenceLinkIds: string[];
+  supersededAtMs: number | null;
+  supersededReason: string | null;
+  supersededByRevisionId: string | null;
+};
+
 type PbcRequest = {
   pbcRequestId: string;
   engagementId: string;
@@ -740,6 +756,11 @@ export default function App() {
   const [evidenceSearchBusy, setEvidenceSearchBusy] = useState(false);
   const [workpaperWorkflowEvents, setWorkpaperWorkflowEvents] =
     useState<WorkpaperWorkflowEvent[]>([]);
+  const [workpaperSignoffs, setWorkpaperSignoffs] = useState<WorkpaperSignoff[]>([]);
+  const [newSignoffType, setNewSignoffType] = useState("PREPARED");
+  const [newSignoffActorId, setNewSignoffActorId] = useState("");
+  const [newSignoffActorRole, setNewSignoffActorRole] = useState("");
+  const [newSignoffComment, setNewSignoffComment] = useState("");
   const [reviewNotes, setReviewNotes] = useState<ReviewNote[]>([]);
   const [selectedReviewNoteId, setSelectedReviewNoteId] = useState<string | null>(null);
   const [reviewNoteEvents, setReviewNoteEvents] = useState<ReviewNoteEvent[]>([]);
@@ -1037,6 +1058,7 @@ export default function App() {
     setWorkpaperRevisions([]);
     setWorkpaperEvidenceLinks([]);
     setWorkpaperWorkflowEvents([]);
+    setWorkpaperSignoffs([]);
     setReviewNotes([]);
     setSelectedReviewNoteId(null);
     setReviewNoteEvents([]);
@@ -1095,14 +1117,16 @@ export default function App() {
   }
 
   async function refreshWorkpaperReviewState(workpaperId: string) {
-    const [workflowEvents, notes] = await Promise.all([
+    const [workflowEvents, notes, signoffs] = await Promise.all([
       invoke<WorkpaperWorkflowEvent[]>("list_workpaper_workflow_events", {
         workpaperId,
       }),
       invoke<ReviewNote[]>("list_review_notes", { workpaperId }),
+      invoke<WorkpaperSignoff[]>("list_workpaper_signoffs", { workpaperId }),
     ]);
     setWorkpaperWorkflowEvents(workflowEvents);
     setReviewNotes(notes);
+    setWorkpaperSignoffs(signoffs);
     return notes;
   }
 
@@ -1115,6 +1139,7 @@ export default function App() {
     setSelectedEvidenceVersionKey("");
     setSelectedReviewNoteId(null);
     setReviewNoteEvents([]);
+    setWorkpaperSignoffs([]);
     try {
       const [revisions] = await Promise.all([
         invoke<WorkpaperRevision[]>("list_workpaper_revisions", { workpaperId }),
@@ -1234,6 +1259,40 @@ export default function App() {
         });
         setWorkpapers(refreshed);
       }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitWorkpaperSignoff(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const latestRevision = workpaperRevisions[0];
+    if (
+      !selectedWorkpaperId ||
+      !latestRevision ||
+      !newSignoffType.trim() ||
+      !newSignoffActorId.trim() ||
+      !newSignoffActorRole.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<WorkpaperSignoff>("create_workpaper_signoff", {
+        workpaperId: selectedWorkpaperId,
+        signoff: {
+          workpaperRevisionId: latestRevision.workpaperRevisionId,
+          signoffType: newSignoffType.trim(),
+          actorId: newSignoffActorId.trim(),
+          actorRole: newSignoffActorRole.trim(),
+          comment: newSignoffComment.trim() || null,
+        },
+      });
+      setNewSignoffComment("");
+      await refreshWorkpaperReviewState(selectedWorkpaperId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -1742,6 +1801,7 @@ export default function App() {
     setWorkpaperRevisions([]);
     setWorkpaperEvidenceLinks([]);
     setWorkpaperWorkflowEvents([]);
+    setWorkpaperSignoffs([]);
     setReviewNotes([]);
     setSelectedReviewNoteId(null);
     setReviewNoteEvents([]);
@@ -2994,6 +3054,13 @@ export default function App() {
   );
   const reviewLocationIncomplete =
     Boolean(newReviewLocationKind.trim()) !== Boolean(newReviewLocationValue.trim());
+  const latestRevisionId = workpaperRevisions[0]?.workpaperRevisionId ?? null;
+  const activeSignoffsForLatestRevision = workpaperSignoffs.filter(
+    (signoff) =>
+      signoff.workpaperRevisionId === latestRevisionId &&
+      signoff.supersededAtMs === null,
+  );
+  const latestRevisionSigned = activeSignoffsForLatestRevision.length > 0;
 
   return (
     <div className="app-shell">
