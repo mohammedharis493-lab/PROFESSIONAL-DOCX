@@ -4377,6 +4377,432 @@ pub fn list_procedures(
     Ok(result)
 }
 
+fn active_signoff_actor(
+    transaction: &rusqlite::Transaction<'_>,
+    workpaper_revision_id: &str,
+    signoff_type: &str,
+) -> Result<Option<String>, PersistenceError> {
+    transaction
+        .query_row(
+            "SELECT s.actor_id
+             FROM signoffs s
+             LEFT JOIN signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+             WHERE s.workpaper_revision_id = ?1
+               AND lower(trim(s.signoff_type)) = lower(trim(?2))
+               AND ss.signoff_id IS NULL
+             ORDER BY s.signed_at_ms DESC, s.rowid DESC
+             LIMIT 1",
+            params![workpaper_revision_id, signoff_type],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn revision_has_active_signoffs(
+    transaction: &rusqlite::Transaction<'_>,
+    workpaper_revision_id: &str,
+) -> Result<bool, PersistenceError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM signoffs s
+                LEFT JOIN signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+                WHERE s.workpaper_revision_id = ?1
+                  AND ss.signoff_id IS NULL
+            )",
+            [workpaper_revision_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn supersede_active_signoffs_for_revision(
+    transaction: &rusqlite::Transaction<'_>,
+    workpaper_revision_id: &str,
+    superseded_at_ms: i64,
+    reason: &str,
+) -> Result<Vec<String>, PersistenceError> {
+    let mut statement = transaction.prepare(
+        "SELECT s.signoff_id
+         FROM signoffs s
+         LEFT JOIN signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+         WHERE s.workpaper_revision_id = ?1
+           AND ss.signoff_id IS NULL
+         ORDER BY s.signed_at_ms, s.rowid",
+    )?;
+    let rows = statement.query_map([workpaper_revision_id], |row| row.get::<_, String>(0))?;
+    let mut signoff_ids = Vec::new();
+    for row in rows {
+        signoff_ids.push(row?);
+    }
+    drop(statement);
+
+    for signoff_id in &signoff_ids {
+        transaction.execute(
+            "INSERT INTO signoff_supersessions (
+                signoff_supersession_id,
+                signoff_id,
+                superseded_at_ms,
+                superseded_reason
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                signoff_id,
+                superseded_at_ms,
+                reason
+            ],
+        )?;
+
+        insert_domain_audit_event(
+            transaction,
+            DomainAuditEvent {
+                event_type: "SIGNOFF_SUPERSEDED",
+                entity_type: "SIGNOFF",
+                entity_id: signoff_id,
+                related_entity_type: Some("WORKPAPER_REVISION"),
+                related_entity_id: Some(workpaper_revision_id),
+                occurred_at_ms: superseded_at_ms,
+                details: json!({
+                    "reason": reason,
+                    "workpaperRevisionId": workpaper_revision_id
+                }),
+            },
+        )?;
+    }
+
+    Ok(signoff_ids)
+}
+
+fn signoff_requires_controlled_evidence(signoff_type: &str) -> bool {
+    matches!(
+        workflow_state_key(signoff_type).as_str(),
+        "REVIEWED" | "FINAL_APPROVAL" | "FINAL_APPROVED"
+    )
+}
+
+pub fn create_signoff(
+    database_path: &Path,
+    workpaper_id: &str,
+    workpaper_revision_id: &str,
+    signoff_type: &str,
+    actor_id: &str,
+    actor_role: &str,
+    comment: Option<&str>,
+) -> Result<SignoffRecord, PersistenceError> {
+    let signoff_type = normalize_domain_label(signoff_type, "sign-off type", 80)?;
+    let actor_id = normalize_domain_label(actor_id, "sign-off actor", 160)?;
+    let actor_role = normalize_domain_label(actor_role, "sign-off actor role", 160)?;
+    let comment = comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let revision_context: Option<(String, i64, i64)> = transaction
+        .query_row(
+            "SELECT
+                wr.workpaper_id,
+                wr.revision_number,
+                (
+                    SELECT MAX(latest.revision_number)
+                    FROM workpaper_revisions latest
+                    WHERE latest.workpaper_id = wr.workpaper_id
+                )
+             FROM workpaper_revisions wr
+             WHERE wr.workpaper_revision_id = ?1",
+            [workpaper_revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((revision_workpaper_id, revision_number, latest_revision_number)) = revision_context
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper revision {workpaper_revision_id} does not exist"
+        )));
+    };
+    if revision_workpaper_id != workpaper_id {
+        return Err(PersistenceError::Configuration(
+            "sign-off revision must belong to the selected workpaper".to_string(),
+        ));
+    }
+    if revision_number != latest_revision_number {
+        return Err(PersistenceError::Configuration(
+            "only the latest workpaper revision can receive a new sign-off".to_string(),
+        ));
+    }
+
+    let existing_active: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM signoffs s
+            LEFT JOIN signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+            WHERE s.workpaper_revision_id = ?1
+              AND lower(trim(s.signoff_type)) = lower(trim(?2))
+              AND ss.signoff_id IS NULL
+        )",
+        params![workpaper_revision_id, &signoff_type],
+        |row| row.get(0),
+    )?;
+    if existing_active {
+        return Err(PersistenceError::Configuration(format!(
+            "an active {signoff_type} sign-off already exists for this revision"
+        )));
+    }
+
+    let signoff_key = workflow_state_key(&signoff_type);
+    let prepared_actor = active_signoff_actor(&transaction, workpaper_revision_id, "PREPARED")?;
+    let reviewed_actor = active_signoff_actor(&transaction, workpaper_revision_id, "REVIEWED")?;
+
+    match signoff_key.as_str() {
+        "REVIEWED" => {
+            let Some(prepared_actor) = prepared_actor.as_deref() else {
+                return Err(PersistenceError::Configuration(
+                    "review sign-off requires an active preparer sign-off on the same revision"
+                        .to_string(),
+                ));
+            };
+            if prepared_actor == actor_id {
+                return Err(PersistenceError::Configuration(
+                    "reviewer must be different from the preparer".to_string(),
+                ));
+            }
+        }
+        "FINAL_APPROVAL" | "FINAL_APPROVED" => {
+            let Some(reviewed_actor) = reviewed_actor.as_deref() else {
+                return Err(PersistenceError::Configuration(
+                    "final approval requires an active reviewer sign-off on the same revision"
+                        .to_string(),
+                ));
+            };
+            if reviewed_actor == actor_id || prepared_actor.as_deref() == Some(actor_id.as_str()) {
+                return Err(PersistenceError::Configuration(
+                    "final approver must be different from the preparer and reviewer".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    if signoff_requires_controlled_evidence(&signoff_type) {
+        let unsafe_evidence_count: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM workpaper_evidence_links wel
+             LEFT JOIN controlled_evidence_versions cev
+               ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+             WHERE wel.workpaper_revision_id = ?1
+               AND (
+                   wel.controlled_evidence_version_id IS NULL
+                   OR cev.verification_state <> 'HASH_VERIFIED'
+               )",
+            [workpaper_revision_id],
+            |row| row.get(0),
+        )?;
+        if unsafe_evidence_count > 0 {
+            return Err(PersistenceError::Configuration(
+                "review/final sign-off requires all linked evidence to be immutable hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let signoff_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO signoffs (
+            signoff_id,
+            workpaper_id,
+            workpaper_revision_id,
+            signoff_type,
+            actor_id,
+            actor_role,
+            signed_at_ms,
+            comment
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &signoff_id,
+            workpaper_id,
+            workpaper_revision_id,
+            &signoff_type,
+            &actor_id,
+            &actor_role,
+            now,
+            comment.as_deref()
+        ],
+    )?;
+
+    let mut evidence_statement = transaction.prepare(
+        "SELECT evidence_link_id
+         FROM workpaper_evidence_links
+         WHERE workpaper_revision_id = ?1
+         ORDER BY created_at_ms, rowid",
+    )?;
+    let evidence_rows =
+        evidence_statement.query_map([workpaper_revision_id], |row| row.get::<_, String>(0))?;
+    let mut evidence_link_ids = Vec::new();
+    for row in evidence_rows {
+        evidence_link_ids.push(row?);
+    }
+    drop(evidence_statement);
+
+    for evidence_link_id in &evidence_link_ids {
+        transaction.execute(
+            "INSERT INTO signoff_evidence_links (
+                signoff_evidence_link_id,
+                signoff_id,
+                evidence_link_id,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                &signoff_id,
+                evidence_link_id,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "SIGNOFF_CREATED",
+            entity_type: "SIGNOFF",
+            entity_id: &signoff_id,
+            related_entity_type: Some("WORKPAPER_REVISION"),
+            related_entity_id: Some(workpaper_revision_id),
+            occurred_at_ms: now,
+            details: json!({
+                "workpaperId": workpaper_id,
+                "signoffType": signoff_type,
+                "actorId": actor_id,
+                "actorRole": actor_role,
+                "evidenceLinkCount": evidence_link_ids.len()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(SignoffRecord {
+        signoff_id,
+        workpaper_id: workpaper_id.to_string(),
+        workpaper_revision_id: workpaper_revision_id.to_string(),
+        signoff_type,
+        actor_id,
+        actor_role,
+        signed_at_ms: now,
+        comment,
+        superseded_at_ms: None,
+        superseded_reason: None,
+        evidence_link_count: evidence_link_ids.len() as u64,
+    })
+}
+
+pub fn list_signoffs(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<SignoffRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            s.signoff_id,
+            s.workpaper_id,
+            s.workpaper_revision_id,
+            s.signoff_type,
+            s.actor_id,
+            s.actor_role,
+            s.signed_at_ms,
+            s.comment,
+            ss.superseded_at_ms,
+            ss.superseded_reason,
+            (
+                SELECT COUNT(*)
+                FROM signoff_evidence_links sel
+                WHERE sel.signoff_id = s.signoff_id
+            )
+         FROM signoffs s
+         LEFT JOIN signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+         WHERE s.workpaper_id = ?1
+         ORDER BY s.signed_at_ms DESC, s.rowid DESC",
+    )?;
+    let rows = statement.query_map([workpaper_id], |row| {
+        let evidence_link_count: i64 = row.get(10)?;
+        Ok(SignoffRecord {
+            signoff_id: row.get(0)?,
+            workpaper_id: row.get(1)?,
+            workpaper_revision_id: row.get(2)?,
+            signoff_type: row.get(3)?,
+            actor_id: row.get(4)?,
+            actor_role: row.get(5)?,
+            signed_at_ms: row.get(6)?,
+            comment: row.get(7)?,
+            superseded_at_ms: row.get(8)?,
+            superseded_reason: row.get(9)?,
+            evidence_link_count: evidence_link_count.max(0) as u64,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_signoff_evidence(
+    database_path: &Path,
+    signoff_id: &str,
+) -> Result<Vec<SignoffEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            sel.signoff_evidence_link_id,
+            sel.signoff_id,
+            sel.evidence_link_id,
+            wel.document_id,
+            d.display_name,
+            wel.content_version_id,
+            cv.observed_at_ms,
+            wel.controlled_evidence_version_id,
+            cev.version_number,
+            cev.captured_at_ms,
+            wel.relationship_type,
+            wel.description
+         FROM signoff_evidence_links sel
+         JOIN workpaper_evidence_links wel ON wel.evidence_link_id = sel.evidence_link_id
+         JOIN documents d ON d.document_id = wel.document_id
+         LEFT JOIN content_versions cv ON cv.content_version_id = wel.content_version_id
+         LEFT JOIN controlled_evidence_versions cev
+           ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+         WHERE sel.signoff_id = ?1
+         ORDER BY sel.created_at_ms, sel.rowid",
+    )?;
+    let rows = statement.query_map([signoff_id], |row| {
+        let controlled_version_number: Option<i64> = row.get(8)?;
+        Ok(SignoffEvidenceRecord {
+            signoff_evidence_link_id: row.get(0)?,
+            signoff_id: row.get(1)?,
+            evidence_link_id: row.get(2)?,
+            document_id: row.get(3)?,
+            document_name: row.get(4)?,
+            content_version_id: row.get(5)?,
+            content_observed_at_ms: row.get(6)?,
+            controlled_evidence_version_id: row.get(7)?,
+            controlled_version_number: controlled_version_number
+                .map(|value| value.max(0) as u64),
+            controlled_captured_at_ms: row.get(9)?,
+            relationship_type: row.get(10)?,
+            description: row.get(11)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_workpaper(
     database_path: &Path,
     engagement_id: &str,
@@ -4659,6 +5085,18 @@ pub fn create_workpaper_revision(
         ],
     )?;
 
+    if let Some(previous_revision_id) = supersedes_revision_id.as_deref() {
+        let supersession_reason = revision_reason
+            .as_deref()
+            .unwrap_or("New workpaper revision created");
+        supersede_active_signoffs_for_revision(
+            &transaction,
+            previous_revision_id,
+            now,
+            supersession_reason,
+        )?;
+    }
+
     insert_domain_audit_event(
         &transaction,
         DomainAuditEvent {
@@ -4797,6 +5235,13 @@ pub fn create_workpaper_evidence_link(
     if revision_number != latest_revision_number {
         return Err(PersistenceError::Configuration(
             "evidence can only be linked to the latest workpaper revision; create a new revision instead of changing historical evidence"
+                .to_string(),
+        ));
+    }
+
+    if revision_has_active_signoffs(&transaction, workpaper_revision_id)? {
+        return Err(PersistenceError::Configuration(
+            "signed workpaper revision is frozen; create a new revision before changing evidence"
                 .to_string(),
         ));
     }
