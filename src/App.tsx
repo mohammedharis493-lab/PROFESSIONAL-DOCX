@@ -2579,6 +2579,552 @@ export default function App() {
           </section>
         ) : null}
 
+        {!hasQuery && !selectedRoot && viewMode === "clients" ? (
+          <section className="results-panel professional-panel" aria-label="Clients">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">CLIENTS</p>
+                <h2>Continuing client records</h2>
+              </div>
+              <span>
+                Client identity is separate from engagements, periods, and storage locations.
+              </span>
+            </div>
+            <div className="workspace-grid workspace-grid-two">
+              <form className="workspace-card workspace-form" onSubmit={submitClient}>
+                <div>
+                  <span className="workspace-label">NEW CLIENT</span>
+                  <h3>Create client</h3>
+                </div>
+                <label>
+                  <span>Client name</span>
+                  <input
+                    value={newClientName}
+                    onChange={(event) => setNewClientName(event.target.value)}
+                    placeholder="Example Ltd"
+                    maxLength={200}
+                  />
+                </label>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={workspaceBusy || !newClientName.trim()}
+                >
+                  Create client
+                </button>
+              </form>
+
+              <div className="workspace-card">
+                <div className="workspace-card-heading">
+                  <div>
+                    <span className="workspace-label">CLIENT LIST</span>
+                    <h3>{clients.length} active client{clients.length === 1 ? "" : "s"}</h3>
+                  </div>
+                </div>
+                <div className="workspace-list">
+                  {clients.length ? (
+                    clients.map((client) => {
+                      const engagementCount = engagements.filter(
+                        (engagement) => engagement.clientId === client.clientId,
+                      ).length;
+                      return (
+                        <button
+                          className="workspace-list-row"
+                          type="button"
+                          key={client.clientId}
+                          onClick={() => openClientEngagements(client.clientId)}
+                        >
+                          <span>
+                            <strong>{client.name}</strong>
+                            <small>
+                              {engagementCount} engagement{engagementCount === 1 ? "" : "s"}
+                            </small>
+                          </span>
+                          <span className="workspace-row-action">Open engagements →</span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-result">Create the first client to begin an engagement.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {!hasQuery && !selectedRoot && viewMode === "engagements" ? (
+          <section className="results-panel professional-panel" aria-label="Engagements and workpapers">
+            <div className="results-heading">
+              <div>
+                <p className="eyebrow">ENGAGEMENTS</p>
+                <h2>
+                  {selectedClient ? selectedClient.name : "Engagement workspace"}
+                </h2>
+              </div>
+              <span>
+                Service type and area hierarchy are configurable data, not fixed audit modules.
+              </span>
+            </div>
+
+            <div className="workspace-toolbar">
+              <label>
+                <span>Client filter</span>
+                <select
+                  value={selectedClientId ?? ""}
+                  onChange={(event) => {
+                    const clientId = event.target.value || null;
+                    setSelectedClientId(clientId);
+                    setSelectedEngagementId(null);
+                    setEngagementAreas([]);
+                    setProcedures([]);
+                    setWorkpapers([]);
+                    setSelectedWorkpaperId(null);
+                    setWorkpaperRevisions([]);
+                  }}
+                >
+                  <option value="">All clients</option>
+                  {clients.map((client) => (
+                    <option key={client.clientId} value={client.clientId}>
+                      {client.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <form className="workspace-inline-form" onSubmit={submitServiceType}>
+                <label>
+                  <span>New service type</span>
+                  <input
+                    value={newServiceTypeName}
+                    onChange={(event) => setNewServiceTypeName(event.target.value)}
+                    placeholder="Internal Audit"
+                    maxLength={120}
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  type="submit"
+                  disabled={workspaceBusy || !newServiceTypeName.trim()}
+                >
+                  Add service type
+                </button>
+              </form>
+            </div>
+
+            <div className="workspace-grid workspace-grid-two">
+              <form className="workspace-card workspace-form" onSubmit={submitEngagement}>
+                <div>
+                  <span className="workspace-label">NEW ENGAGEMENT</span>
+                  <h3>Create assignment</h3>
+                </div>
+                <label>
+                  <span>Client</span>
+                  <select
+                    value={selectedClientId ?? ""}
+                    onChange={(event) => setSelectedClientId(event.target.value || null)}
+                  >
+                    <option value="">Select client</option>
+                    {clients.map((client) => (
+                      <option key={client.clientId} value={client.clientId}>
+                        {client.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Service type</span>
+                  <select
+                    value={newEngagementServiceTypeId}
+                    onChange={(event) => setNewEngagementServiceTypeId(event.target.value)}
+                  >
+                    <option value="">Select service type</option>
+                    {serviceTypes.map((serviceType) => (
+                      <option key={serviceType.serviceTypeId} value={serviceType.serviceTypeId}>
+                        {serviceType.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Engagement name</span>
+                  <input
+                    value={newEngagementName}
+                    onChange={(event) => setNewEngagementName(event.target.value)}
+                    placeholder="Example Ltd — Review 2026"
+                    maxLength={240}
+                  />
+                </label>
+                <div className="workspace-form-pair">
+                  <label>
+                    <span>Period start</span>
+                    <input
+                      value={newEngagementPeriodStart}
+                      onChange={(event) => setNewEngagementPeriodStart(event.target.value)}
+                      placeholder="2026-04-01"
+                    />
+                  </label>
+                  <label>
+                    <span>Period end</span>
+                    <input
+                      value={newEngagementPeriodEnd}
+                      onChange={(event) => setNewEngagementPeriodEnd(event.target.value)}
+                      placeholder="2027-03-31"
+                    />
+                  </label>
+                </div>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={
+                    workspaceBusy ||
+                    !selectedClientId ||
+                    !newEngagementServiceTypeId ||
+                    !newEngagementName.trim()
+                  }
+                >
+                  Create engagement
+                </button>
+              </form>
+
+              <div className="workspace-card">
+                <div className="workspace-card-heading">
+                  <div>
+                    <span className="workspace-label">ENGAGEMENT LIST</span>
+                    <h3>
+                      {visibleEngagements.length} engagement
+                      {visibleEngagements.length === 1 ? "" : "s"}
+                    </h3>
+                  </div>
+                </div>
+                <div className="workspace-list">
+                  {visibleEngagements.length ? (
+                    visibleEngagements.map((engagement) => (
+                      <button
+                        className={`workspace-list-row${selectedEngagementId === engagement.engagementId ? " workspace-list-row-active" : ""}`}
+                        type="button"
+                        key={engagement.engagementId}
+                        onClick={() => void loadEngagementWorkspace(engagement.engagementId)}
+                      >
+                        <span>
+                          <strong>{engagement.name}</strong>
+                          <small>
+                            {clientNameById[engagement.clientId] ?? "Unknown client"} ·{" "}
+                            {serviceTypeNameById[engagement.serviceTypeId] ?? "Service"} ·{" "}
+                            {engagement.status}
+                          </small>
+                          {engagement.periodStart || engagement.periodEnd ? (
+                            <small>
+                              {engagement.periodStart ?? "—"} → {engagement.periodEnd ?? "—"}
+                            </small>
+                          ) : null}
+                        </span>
+                        <span className="workspace-row-action">Open →</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="empty-result">
+                      {selectedClient
+                        ? "No engagement exists for this client yet."
+                        : "Create or select a client to begin."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {selectedEngagement ? (
+              <div className="workspace-detail">
+                <div className="workspace-detail-heading">
+                  <div>
+                    <span className="workspace-label">ACTIVE ENGAGEMENT</span>
+                    <h3>{selectedEngagement.name}</h3>
+                  </div>
+                  <span>{workspaceBusy ? "Updating…" : "Ready"}</span>
+                </div>
+
+                <div className="workspace-grid workspace-grid-three">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">AREAS</span>
+                        <h3>{engagementAreas.length} configured</h3>
+                      </div>
+                    </div>
+                    <form className="workspace-form compact" onSubmit={submitEngagementArea}>
+                      <label>
+                        <span>Parent area</span>
+                        <select
+                          value={newAreaParentId}
+                          onChange={(event) => setNewAreaParentId(event.target.value)}
+                        >
+                          <option value="">Top level</option>
+                          {engagementAreas.map((area) => (
+                            <option key={area.engagementAreaId} value={area.engagementAreaId}>
+                              {area.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Area name</span>
+                        <input
+                          value={newAreaName}
+                          onChange={(event) => setNewAreaName(event.target.value)}
+                          placeholder="Revenue, GST, Procurement…"
+                          maxLength={160}
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={workspaceBusy || !newAreaName.trim()}
+                      >
+                        Add area
+                      </button>
+                    </form>
+                    <div className="workspace-mini-list">
+                      {engagementAreas.map((area) => (
+                        <span key={area.engagementAreaId}>
+                          <strong>
+                            {area.parentAreaId ? "↳ " : ""}
+                            {area.name}
+                          </strong>
+                          <small>
+                            {area.parentAreaId
+                              ? `under ${areaNameById[area.parentAreaId] ?? "parent"}`
+                              : "top level"}
+                          </small>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">PROCEDURES</span>
+                        <h3>{procedures.length} configured</h3>
+                      </div>
+                    </div>
+                    <form className="workspace-form compact" onSubmit={submitProcedure}>
+                      <label>
+                        <span>Area</span>
+                        <select
+                          value={newProcedureAreaId}
+                          onChange={(event) => setNewProcedureAreaId(event.target.value)}
+                        >
+                          <option value="">No area</option>
+                          {engagementAreas.map((area) => (
+                            <option key={area.engagementAreaId} value={area.engagementAreaId}>
+                              {area.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Procedure title</span>
+                        <input
+                          value={newProcedureTitle}
+                          onChange={(event) => setNewProcedureTitle(event.target.value)}
+                          placeholder="Inspect approval evidence"
+                          maxLength={240}
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={workspaceBusy || !newProcedureTitle.trim()}
+                      >
+                        Add procedure
+                      </button>
+                    </form>
+                    <div className="workspace-mini-list">
+                      {procedures.map((procedure) => (
+                        <span key={procedure.procedureId}>
+                          <strong>{procedure.title}</strong>
+                          <small>
+                            {procedure.engagementAreaId
+                              ? areaNameById[procedure.engagementAreaId] ?? "Area"
+                              : "No area"}
+                          </small>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">WORKPAPERS</span>
+                        <h3>{workpapers.length} active</h3>
+                      </div>
+                    </div>
+                    <form className="workspace-form compact" onSubmit={submitWorkpaper}>
+                      <label>
+                        <span>Area</span>
+                        <select
+                          value={newWorkpaperAreaId}
+                          onChange={(event) => setNewWorkpaperAreaId(event.target.value)}
+                        >
+                          <option value="">No area</option>
+                          {engagementAreas.map((area) => (
+                            <option key={area.engagementAreaId} value={area.engagementAreaId}>
+                              {area.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="workspace-form-pair">
+                        <label>
+                          <span>Reference</span>
+                          <input
+                            value={newWorkpaperReference}
+                            onChange={(event) => setNewWorkpaperReference(event.target.value)}
+                            placeholder="REV-01"
+                            maxLength={80}
+                          />
+                        </label>
+                        <label>
+                          <span>Title</span>
+                          <input
+                            value={newWorkpaperTitle}
+                            onChange={(event) => setNewWorkpaperTitle(event.target.value)}
+                            placeholder="Revenue testing"
+                            maxLength={240}
+                          />
+                        </label>
+                      </div>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !newWorkpaperReference.trim() ||
+                          !newWorkpaperTitle.trim()
+                        }
+                      >
+                        Add workpaper
+                      </button>
+                    </form>
+                    <div className="workspace-list compact-list">
+                      {workpapers.map((workpaper) => (
+                        <button
+                          className={`workspace-list-row${selectedWorkpaperId === workpaper.workpaperId ? " workspace-list-row-active" : ""}`}
+                          type="button"
+                          key={workpaper.workpaperId}
+                          onClick={() => void loadWorkpaperRevisions(workpaper.workpaperId)}
+                        >
+                          <span>
+                            <strong>
+                              {workpaper.reference} · {workpaper.title}
+                            </strong>
+                            <small>
+                              {workpaper.workflowState.replaceAll("_", " ")} · Revision{" "}
+                              {workpaper.latestRevisionNumber ?? "—"}
+                            </small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {selectedWorkpaper ? (
+                  <div className="workspace-revision-panel">
+                    <div className="workspace-detail-heading">
+                      <div>
+                        <span className="workspace-label">WORKPAPER REVISIONS</span>
+                        <h3>
+                          {selectedWorkpaper.reference} · {selectedWorkpaper.title}
+                        </h3>
+                      </div>
+                      <span>
+                        {workpaperRevisions.length} immutable revision
+                        {workpaperRevisions.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="workspace-grid workspace-grid-two">
+                      <form className="workspace-card workspace-form" onSubmit={submitWorkpaperRevision}>
+                        <label>
+                          <span>Objective</span>
+                          <textarea
+                            value={newRevisionObjective}
+                            onChange={(event) => setNewRevisionObjective(event.target.value)}
+                            rows={3}
+                            placeholder="What is this workpaper designed to establish?"
+                          />
+                        </label>
+                        <label>
+                          <span>Procedure performed</span>
+                          <textarea
+                            value={newRevisionProcedure}
+                            onChange={(event) => setNewRevisionProcedure(event.target.value)}
+                            rows={4}
+                            placeholder="Document the work performed."
+                          />
+                        </label>
+                        <label>
+                          <span>Conclusion</span>
+                          <textarea
+                            value={newRevisionConclusion}
+                            onChange={(event) => setNewRevisionConclusion(event.target.value)}
+                            rows={3}
+                            placeholder="Record the professional conclusion."
+                          />
+                        </label>
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={
+                            workspaceBusy ||
+                            (!newRevisionObjective.trim() &&
+                              !newRevisionProcedure.trim() &&
+                              !newRevisionConclusion.trim())
+                          }
+                        >
+                          Create next revision
+                        </button>
+                      </form>
+
+                      <div className="workspace-card workspace-revision-list">
+                        {workpaperRevisions.length ? (
+                          workpaperRevisions.map((revision) => (
+                            <article key={revision.workpaperRevisionId}>
+                              <div>
+                                <strong>Revision {revision.revisionNumber}</strong>
+                                <span>{formatTimestamp(revision.createdAtMs)}</span>
+                              </div>
+                              {revision.revisionReason ? <p>{revision.revisionReason}</p> : null}
+                              {revision.objective ? (
+                                <p><b>Objective:</b> {revision.objective}</p>
+                              ) : null}
+                              {revision.procedurePerformed ? (
+                                <p><b>Procedure:</b> {revision.procedurePerformed}</p>
+                              ) : null}
+                              {revision.conclusion ? (
+                                <p><b>Conclusion:</b> {revision.conclusion}</p>
+                              ) : null}
+                              {revision.contentHashHex ? (
+                                <code title={revision.contentHashHex}>
+                                  SHA-256 {revision.contentHashHex.slice(0, 18)}…
+                                </code>
+                              ) : null}
+                            </article>
+                          ))
+                        ) : (
+                          <div className="empty-result">
+                            Create the first immutable revision for this workpaper.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         {!hasQuery && !selectedRoot && viewMode === "recent" ? (
           <section className="results-panel quick-access-panel" aria-label="Recent documents">
             <div className="results-heading">
