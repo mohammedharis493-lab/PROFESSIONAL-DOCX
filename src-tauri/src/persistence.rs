@@ -8260,14 +8260,16 @@ mod tests {
                        'pbc_request_evidence_links',
                        'workpaper_signoffs',
                        'workpaper_signoff_evidence',
-                       'workpaper_signoff_supersessions'
+                       'workpaper_signoff_supersessions',
+                       'engagement_templates',
+                       'engagement_template_versions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 33);
+        assert_eq!(table_count, 35);
     }
 
     #[test]
@@ -8678,6 +8680,226 @@ mod tests {
             )
             .expect("sign-off tables should exist");
         assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn tenth_migration_upgrades_existing_v9_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..9] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 9);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 10");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 10);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'engagement_templates',
+                       'engagement_template_versions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("engagement template tables should exist");
+        assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn engagement_templates_copy_exact_methodology_without_live_linkage() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let source_client =
+            create_client(&database.path, "Template Source Client").expect("source client");
+        let target_client =
+            create_client(&database.path, "Template Target Client").expect("target client");
+        let service =
+            create_service_type(&database.path, "Reusable Assurance").expect("service type");
+
+        let source_engagement = create_engagement(
+            &database.path,
+            &source_client.client_id,
+            &service.service_type_id,
+            "Source methodology engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("source engagement");
+
+        let root_area = create_engagement_area(
+            &database.path,
+            &source_engagement.engagement_id,
+            None,
+            "Revenue",
+            Some("REV"),
+            10,
+            "ACTIVE",
+        )
+        .expect("root area");
+        let child_area = create_engagement_area(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            "Cut-off",
+            Some("CUT"),
+            20,
+            "ACTIVE",
+        )
+        .expect("child area");
+        create_procedure(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&child_area.engagement_area_id),
+            Some("REV-01"),
+            "Test revenue cut-off",
+            Some("Inspect transactions around period end."),
+            "ACTIVE",
+        )
+        .expect("source procedure");
+
+        let template = create_engagement_template_from_engagement(
+            &database.path,
+            &source_engagement.engagement_id,
+            "Core revenue methodology",
+            Some("Reusable revenue areas and procedures."),
+        )
+        .expect("template should be captured");
+        assert_eq!(template.latest_version_number, 1);
+        assert_eq!(template.service_type_id, service.service_type_id);
+        assert_eq!(
+            template.source_engagement_id.as_deref(),
+            Some(source_engagement.engagement_id.as_str())
+        );
+
+        let templates =
+            list_engagement_templates(&database.path).expect("template list should load");
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].latest_version_id, template.latest_version_id);
+
+        create_procedure(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            Some("REV-LATER"),
+            "Procedure added after template capture",
+            None,
+            "ACTIVE",
+        )
+        .expect("later source procedure");
+
+        let target_engagement = create_engagement_from_template(
+            &database.path,
+            &template.latest_version_id,
+            &target_client.client_id,
+            "Target engagement from template",
+            Some("2026-04-01"),
+            Some("2027-03-31"),
+            "ACTIVE",
+        )
+        .expect("engagement should instantiate from exact template version");
+        assert_eq!(target_engagement.service_type_id, service.service_type_id);
+
+        let target_areas = list_engagement_areas(&database.path, &target_engagement.engagement_id)
+            .expect("target areas should load");
+        assert_eq!(target_areas.len(), 2);
+        let target_root = target_areas
+            .iter()
+            .find(|area| area.name == "Revenue")
+            .expect("target root area");
+        let target_child = target_areas
+            .iter()
+            .find(|area| area.name == "Cut-off")
+            .expect("target child area");
+        assert_eq!(
+            target_child.parent_area_id.as_deref(),
+            Some(target_root.engagement_area_id.as_str())
+        );
+        assert_ne!(target_root.engagement_area_id, root_area.engagement_area_id);
+        assert_ne!(target_child.engagement_area_id, child_area.engagement_area_id);
+
+        let target_procedures =
+            list_procedures(&database.path, &target_engagement.engagement_id)
+                .expect("target procedures should load");
+        assert_eq!(target_procedures.len(), 1);
+        assert_eq!(target_procedures[0].reference.as_deref(), Some("REV-01"));
+
+        create_engagement_area(
+            &database.path,
+            &target_engagement.engagement_id,
+            None,
+            "Client-specific addition",
+            None,
+            30,
+            "ACTIVE",
+        )
+        .expect("instantiated engagement should remain customizable");
+
+        let second_target = create_engagement_from_template(
+            &database.path,
+            &template.latest_version_id,
+            &target_client.client_id,
+            "Second target from same version",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("same exact template version should remain reusable");
+        assert_eq!(
+            list_engagement_areas(&database.path, &second_target.engagement_id)
+                .expect("second target areas")
+                .len(),
+            2
+        );
+        assert_eq!(
+            list_procedures(&database.path, &second_target.engagement_id)
+                .expect("second target procedures")
+                .len(),
+            1
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE engagement_template_versions
+                 SET definition_json = '{}'
+                 WHERE engagement_template_version_id = ?1",
+                [&template.latest_version_id],
+            )
+            .expect_err("template versions must be immutable");
+        assert!(mutation_error
+            .to_string()
+            .contains("engagement template versions are immutable"));
     }
 
     #[test]
