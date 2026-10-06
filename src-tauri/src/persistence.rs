@@ -8538,6 +8538,254 @@ mod tests {
             .to_string()
             .contains("review note events are immutable"));
 
+        let reviewer_signoff_error = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                signoff_type: "REVIEWED",
+                actor_id: "manager@example.test",
+                actor_role: "Engagement Manager",
+                comment: Some("Attempted reviewer sign-off."),
+            },
+        )
+        .expect_err("reviewer sign-off must reject raw observed evidence");
+        assert!(reviewer_signoff_error
+            .to_string()
+            .contains("immutable hash-verified controlled evidence"));
+
+        let prepared_signoff = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                signoff_type: "PREPARED",
+                actor_id: "preparer@example.test",
+                actor_role: "Senior Associate",
+                comment: Some("Prepared revision 2 for review."),
+            },
+        )
+        .expect("preparer sign-off should succeed before formal reviewer reliance");
+        assert_eq!(prepared_signoff.revision_number, 2);
+        assert_eq!(
+            prepared_signoff.evidence_link_ids,
+            vec![evidence_link.evidence_link_id.clone()]
+        );
+        assert_eq!(prepared_signoff.superseded_at_ms, None);
+
+        let post_signoff_link_error = create_workpaper_evidence_link(
+            &database.path,
+            &revision_two.workpaper_revision_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            Some("Attempted evidence mutation after sign-off"),
+        )
+        .expect_err("signed revision must reject additional evidence");
+        assert!(post_signoff_link_error
+            .to_string()
+            .contains("signed workpaper revision cannot receive additional evidence"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let signoff_mutation_error = connection
+            .execute(
+                "UPDATE workpaper_signoffs
+                 SET actor_role = 'tampered'
+                 WHERE signoff_id = ?1",
+                [&prepared_signoff.signoff_id],
+            )
+            .expect_err("sign-off row must be immutable");
+        assert!(signoff_mutation_error
+            .to_string()
+            .contains("workpaper sign-offs are immutable"));
+
+        let revision_three = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Rework after review and controlled evidence capture"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Reperformed the expanded onboarding review.",
+                population: "All vendors added during the period.",
+                sample: "Eight judgmentally selected vendors.",
+                exceptions: "One delayed approval noted and evaluated.",
+                management_explanation: "Approval was completed the following business day.",
+                conclusion: "Control operated with one documented timing exception.",
+            },
+        )
+        .expect("new material revision should be created");
+
+        let signoffs_after_revision_three =
+            list_workpaper_signoffs(&database.path, &workpaper.workpaper_id)
+                .expect("sign-off history should load");
+        assert_eq!(signoffs_after_revision_three.len(), 1);
+        assert_eq!(
+            signoffs_after_revision_three[0].signoff_id,
+            prepared_signoff.signoff_id
+        );
+        assert_eq!(
+            signoffs_after_revision_three[0]
+                .superseded_by_revision_id
+                .as_deref(),
+            Some(revision_three.workpaper_revision_id.as_str())
+        );
+        assert!(signoffs_after_revision_three[0].superseded_at_ms.is_some());
+
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_version_id = Uuid::new_v4().to_string();
+        let controlled_locator = format!("test-controlled://{controlled_version_id}");
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        connection
+            .execute(
+                "INSERT INTO evidence_capture_jobs (
+                    evidence_capture_job_id,
+                    file_instance_id,
+                    document_id,
+                    status,
+                    requested_at_ms,
+                    started_at_ms,
+                    completed_at_ms,
+                    capture_reason,
+                    capture_policy,
+                    failure_code,
+                    failure_message
+                 ) VALUES (?1, ?2, ?3, 'COMPLETE', 3000, 3001, 3002, ?4, ?5, NULL, NULL)",
+                params![
+                    &capture_job_id,
+                    &support_a.file_instance_id,
+                    &support_a.document_id,
+                    "Formal review support",
+                    "TEST_CONTROLLED"
+                ],
+            )
+            .expect("controlled evidence capture job should insert");
+        connection
+            .execute(
+                "INSERT INTO controlled_evidence_versions (
+                    controlled_evidence_version_id,
+                    document_id,
+                    source_file_instance_id,
+                    source_content_version_id,
+                    evidence_capture_job_id,
+                    version_number,
+                    controlled_storage_locator,
+                    sha256,
+                    size_bytes,
+                    captured_at_ms,
+                    captured_by,
+                    capture_reason,
+                    capture_policy,
+                    retention_state,
+                    verification_state,
+                    source_stable_during_read
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 64, 3002, ?8, ?9, ?10, 'RETAINED', 'HASH_VERIFIED', 1)",
+                params![
+                    &controlled_version_id,
+                    &support_a.document_id,
+                    &support_a.file_instance_id,
+                    &version_a,
+                    &capture_job_id,
+                    &controlled_locator,
+                    vec![0xA5; 32],
+                    "preparer@example.test",
+                    "Formal review support",
+                    "TEST_CONTROLLED"
+                ],
+            )
+            .expect("hash-verified controlled evidence should insert");
+
+        let controlled_link = create_workpaper_evidence_link(
+            &database.path,
+            &revision_three.workpaper_revision_id,
+            &support_a.document_id,
+            None,
+            Some(&controlled_version_id),
+            "SUPPORTS",
+            Some("Controlled onboarding evidence"),
+        )
+        .expect("new revision should accept controlled evidence");
+        assert_eq!(
+            controlled_link.controlled_evidence_version_id.as_deref(),
+            Some(controlled_version_id.as_str())
+        );
+
+        let reviewer_signoff = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_three.workpaper_revision_id,
+                signoff_type: "REVIEWED",
+                actor_id: "manager@example.test",
+                actor_role: "Engagement Manager",
+                comment: Some("Reviewed controlled evidence and revision 3."),
+            },
+        )
+        .expect("reviewer sign-off should succeed on controlled evidence");
+        assert_eq!(reviewer_signoff.revision_number, 3);
+        assert_eq!(
+            reviewer_signoff.evidence_link_ids,
+            vec![controlled_link.evidence_link_id.clone()]
+        );
+
+        let revision_four = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Post-review conclusion refinement"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Reperformed the expanded onboarding review.",
+                population: "All vendors added during the period.",
+                sample: "Eight judgmentally selected vendors.",
+                exceptions: "One delayed approval noted and evaluated.",
+                management_explanation: "Approval was completed the following business day.",
+                conclusion: "Control operated effectively subject to one documented timing exception.",
+            },
+        )
+        .expect("post-review material change should create a new revision");
+
+        let signoff_history = list_workpaper_signoffs(&database.path, &workpaper.workpaper_id)
+            .expect("sign-off history should load");
+        assert_eq!(signoff_history.len(), 2);
+        let reviewed_history = signoff_history
+            .iter()
+            .find(|entry| entry.signoff_id == reviewer_signoff.signoff_id)
+            .expect("reviewer sign-off should remain historical");
+        assert_eq!(
+            reviewed_history.superseded_by_revision_id.as_deref(),
+            Some(revision_four.workpaper_revision_id.as_str())
+        );
+        assert!(reviewed_history.superseded_at_ms.is_some());
+        let prepared_history = signoff_history
+            .iter()
+            .find(|entry| entry.signoff_id == prepared_signoff.signoff_id)
+            .expect("preparer sign-off should remain historical");
+        assert_eq!(
+            prepared_history.superseded_by_revision_id.as_deref(),
+            Some(revision_three.workpaper_revision_id.as_str())
+        );
+
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_SIGNOFF_CREATED",
+                &prepared_signoff.signoff_id,
+            )
+            .expect("preparer sign-off audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_SIGNOFF_SUPERSEDED",
+                &reviewer_signoff.signoff_id,
+            )
+            .expect("reviewer sign-off supersession audit count should load"),
+            1
+        );
+
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
         let delete_error = connection
@@ -8582,7 +8830,7 @@ mod tests {
         let workpapers = list_workpapers(&database.path, &engagement.engagement_id)
             .expect("workpapers should list");
         assert_eq!(workpapers.len(), 1);
-        assert_eq!(workpapers[0].latest_revision_number, Some(2));
+        assert_eq!(workpapers[0].latest_revision_number, Some(4));
 
         let areas = list_engagement_areas(&database.path, &engagement.engagement_id)
             .expect("engagement areas should list");
