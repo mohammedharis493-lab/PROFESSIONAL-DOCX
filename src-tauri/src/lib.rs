@@ -533,6 +533,54 @@ impl From<persistence::WorkpaperEvidenceLinkRecord> for WorkpaperEvidenceLinkDto
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperSignoffInputDto {
+    workpaper_revision_id: String,
+    signoff_type: String,
+    actor_id: String,
+    actor_role: String,
+    comment: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperSignoffDto {
+    signoff_id: String,
+    workpaper_id: String,
+    workpaper_revision_id: String,
+    revision_number: u64,
+    signoff_type: String,
+    actor_id: String,
+    actor_role: String,
+    signed_at_ms: i64,
+    comment: Option<String>,
+    evidence_link_ids: Vec<String>,
+    superseded_at_ms: Option<i64>,
+    superseded_reason: Option<String>,
+    superseded_by_revision_id: Option<String>,
+}
+
+impl From<persistence::WorkpaperSignoffRecord> for WorkpaperSignoffDto {
+    fn from(value: persistence::WorkpaperSignoffRecord) -> Self {
+        Self {
+            signoff_id: value.signoff_id,
+            workpaper_id: value.workpaper_id,
+            workpaper_revision_id: value.workpaper_revision_id,
+            revision_number: value.revision_number,
+            signoff_type: value.signoff_type,
+            actor_id: value.actor_id,
+            actor_role: value.actor_role,
+            signed_at_ms: value.signed_at_ms,
+            comment: value.comment,
+            evidence_link_ids: value.evidence_link_ids,
+            superseded_at_ms: value.superseded_at_ms,
+            superseded_reason: value.superseded_reason,
+            superseded_by_revision_id: value.superseded_by_revision_id,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PbcRequestDto {
@@ -1063,6 +1111,41 @@ fn list_workpaper_evidence_links(
 ) -> Result<Vec<WorkpaperEvidenceLinkDto>, String> {
     validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
     persistence::list_workpaper_evidence_links(database.path(), &workpaper_revision_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_workpaper_signoff(
+    workpaper_id: String,
+    signoff: WorkpaperSignoffInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<WorkpaperSignoffDto, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    validate_uuid(&signoff.workpaper_revision_id, "workpaper-revision")?;
+
+    persistence::create_workpaper_signoff(
+        database.path(),
+        persistence::NewWorkpaperSignoff {
+            workpaper_id: &workpaper_id,
+            workpaper_revision_id: &signoff.workpaper_revision_id,
+            signoff_type: &signoff.signoff_type,
+            actor_id: &signoff.actor_id,
+            actor_role: &signoff.actor_role,
+            comment: signoff.comment.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workpaper_signoffs(
+    workpaper_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<WorkpaperSignoffDto>, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::list_workpaper_signoffs(database.path(), &workpaper_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -1928,6 +2011,8 @@ pub fn run() {
             list_workpaper_revisions,
             create_workpaper_evidence_link,
             list_workpaper_evidence_links,
+            create_workpaper_signoff,
+            list_workpaper_signoffs,
             create_pbc_request,
             list_pbc_requests,
             transition_pbc_request_status,
