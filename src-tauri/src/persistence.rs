@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 7;
+const LATEST_SCHEMA_VERSION: i64 = 8;
 
 struct Migration {
     version: i64,
@@ -60,6 +60,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "review_workflow",
         sql: include_str!("../migrations/0007_review_workflow.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "pbc_requests",
+        sql: include_str!("../migrations/0008_pbc_requests.sql"),
     },
 ];
 
@@ -377,6 +382,63 @@ pub struct ReviewNoteAction<'a> {
     pub actor_id: Option<&'a str>,
     pub response_text: Option<&'a str>,
     pub comment: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestRecord {
+    pub pbc_request_id: String,
+    pub engagement_id: String,
+    pub engagement_area_id: Option<String>,
+    pub request_number: String,
+    pub description: String,
+    pub requested_from_party: String,
+    pub due_at_ms: Option<i64>,
+    pub status: String,
+    pub client_visible_content: Option<String>,
+    pub internal_notes: Option<String>,
+    pub latest_assessment: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestEventRecord {
+    pub pbc_request_event_id: String,
+    pub pbc_request_id: String,
+    pub event_type: String,
+    pub actor_id: Option<String>,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub assessment_text: Option<String>,
+    pub comment: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestEvidenceLinkRecord {
+    pub pbc_request_evidence_link_id: String,
+    pub pbc_request_id: String,
+    pub document_id: String,
+    pub document_name: String,
+    pub content_version_id: Option<String>,
+    pub content_observed_at_ms: Option<i64>,
+    pub controlled_evidence_version_id: Option<String>,
+    pub controlled_version_number: Option<u64>,
+    pub controlled_captured_at_ms: Option<i64>,
+    pub description: Option<String>,
+    pub created_at_ms: i64,
+}
+
+pub struct NewPbcRequest<'a> {
+    pub engagement_id: &'a str,
+    pub engagement_area_id: Option<&'a str>,
+    pub request_number: &'a str,
+    pub description: &'a str,
+    pub requested_from_party: &'a str,
+    pub due_at_ms: Option<i64>,
+    pub status: &'a str,
+    pub client_visible_content: Option<&'a str>,
+    pub internal_notes: Option<&'a str>,
 }
 
 pub struct NewWorkpaperRevision<'a> {
@@ -5472,6 +5534,648 @@ pub fn list_review_note_events(
     Ok(result)
 }
 
+pub fn create_pbc_request(
+    database_path: &Path,
+    request: NewPbcRequest<'_>,
+) -> Result<PbcRequestRecord, PersistenceError> {
+    let request_number = normalize_domain_label(request.request_number, "PBC request number", 80)?;
+    let description = request.description.trim().to_string();
+    if description.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "PBC request description must not be empty".to_string(),
+        ));
+    }
+    let requested_from_party =
+        normalize_domain_label(request.requested_from_party, "requested-from party", 200)?;
+    let status = normalize_domain_label(request.status, "PBC request status", 80)?;
+    let client_visible_content = request
+        .client_visible_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let internal_notes = request
+        .internal_notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [request.engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {} does not exist",
+            request.engagement_id
+        )));
+    }
+
+    if let Some(area_id) = request.engagement_area_id {
+        let area_engagement: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM engagement_areas
+                 WHERE engagement_area_id = ?1
+                   AND archived_at_ms IS NULL",
+                [area_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if area_engagement.as_deref() != Some(request.engagement_id) {
+            return Err(PersistenceError::Configuration(
+                "PBC request area must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let request_id = Uuid::new_v4().to_string();
+    let event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO pbc_requests (
+            pbc_request_id,
+            engagement_id,
+            engagement_area_id,
+            request_number,
+            description,
+            requested_from_party,
+            due_at_ms,
+            status,
+            client_visible_content,
+            internal_notes,
+            created_at_ms,
+            updated_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL)",
+        params![
+            &request_id,
+            request.engagement_id,
+            request.engagement_area_id,
+            &request_number,
+            &description,
+            &requested_from_party,
+            request.due_at_ms,
+            &status,
+            client_visible_content.as_deref(),
+            internal_notes.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO pbc_request_events (
+            pbc_request_event_id,
+            pbc_request_id,
+            event_type,
+            actor_id,
+            from_status,
+            to_status,
+            assessment_text,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, 'CREATED', NULL, NULL, ?3, NULL, NULL, ?4)",
+        params![&event_id, &request_id, &status, now],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "PBC_REQUEST_CREATED",
+            entity_type: "PBC_REQUEST",
+            entity_id: &request_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(request.engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "requestNumber": request_number,
+                "engagementAreaId": request.engagement_area_id,
+                "requestedFromParty": requested_from_party,
+                "dueAtMs": request.due_at_ms,
+                "status": status,
+                "hasClientVisibleContent": client_visible_content.is_some(),
+                "hasInternalNotes": internal_notes.is_some()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(PbcRequestRecord {
+        pbc_request_id: request_id,
+        engagement_id: request.engagement_id.to_string(),
+        engagement_area_id: request.engagement_area_id.map(str::to_string),
+        request_number,
+        description,
+        requested_from_party,
+        due_at_ms: request.due_at_ms,
+        status,
+        client_visible_content,
+        internal_notes,
+        latest_assessment: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+    })
+}
+
+pub fn list_pbc_requests(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<PbcRequestRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            p.pbc_request_id,
+            p.engagement_id,
+            p.engagement_area_id,
+            p.request_number,
+            p.description,
+            p.requested_from_party,
+            p.due_at_ms,
+            p.status,
+            p.client_visible_content,
+            p.internal_notes,
+            (
+                SELECT e.assessment_text
+                FROM pbc_request_events e
+                WHERE e.pbc_request_id = p.pbc_request_id
+                  AND e.event_type = 'ASSESSMENT_ADDED'
+                ORDER BY e.occurred_at_ms DESC, e.rowid DESC
+                LIMIT 1
+            ),
+            p.created_at_ms,
+            p.updated_at_ms
+         FROM pbc_requests p
+         WHERE p.engagement_id = ?1
+           AND p.archived_at_ms IS NULL
+         ORDER BY
+            CASE WHEN p.due_at_ms IS NULL THEN 1 ELSE 0 END,
+            p.due_at_ms,
+            p.request_number COLLATE NOCASE",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(PbcRequestRecord {
+            pbc_request_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            engagement_area_id: row.get(2)?,
+            request_number: row.get(3)?,
+            description: row.get(4)?,
+            requested_from_party: row.get(5)?,
+            due_at_ms: row.get(6)?,
+            status: row.get(7)?,
+            client_visible_content: row.get(8)?,
+            internal_notes: row.get(9)?,
+            latest_assessment: row.get(10)?,
+            created_at_ms: row.get(11)?,
+            updated_at_ms: row.get(12)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn transition_pbc_request_status(
+    database_path: &Path,
+    pbc_request_id: &str,
+    to_status: &str,
+    actor_id: Option<&str>,
+    comment: Option<&str>,
+) -> Result<PbcRequestEventRecord, PersistenceError> {
+    let to_status = normalize_domain_label(to_status, "PBC request status", 80)?;
+    let actor_id = normalize_optional_domain_text(actor_id, 160);
+    let comment = comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let from_status: Option<String> = transaction
+        .query_row(
+            "SELECT status
+             FROM pbc_requests
+             WHERE pbc_request_id = ?1
+               AND archived_at_ms IS NULL",
+            [pbc_request_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(from_status) = from_status else {
+        return Err(PersistenceError::Configuration(format!(
+            "PBC request {pbc_request_id} does not exist"
+        )));
+    };
+
+    let event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO pbc_request_events (
+            pbc_request_event_id,
+            pbc_request_id,
+            event_type,
+            actor_id,
+            from_status,
+            to_status,
+            assessment_text,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, 'STATUS_CHANGED', ?3, ?4, ?5, NULL, ?6, ?7)",
+        params![
+            &event_id,
+            pbc_request_id,
+            actor_id.as_deref(),
+            &from_status,
+            &to_status,
+            comment.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE pbc_requests
+         SET status = ?1,
+             updated_at_ms = ?2
+         WHERE pbc_request_id = ?3",
+        params![&to_status, now, pbc_request_id],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "PBC_REQUEST_STATUS_CHANGED",
+            entity_type: "PBC_REQUEST",
+            entity_id: pbc_request_id,
+            related_entity_type: None,
+            related_entity_id: None,
+            occurred_at_ms: now,
+            details: json!({
+                "fromStatus": from_status,
+                "toStatus": to_status,
+                "actorId": actor_id,
+                "comment": comment
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(PbcRequestEventRecord {
+        pbc_request_event_id: event_id,
+        pbc_request_id: pbc_request_id.to_string(),
+        event_type: "STATUS_CHANGED".to_string(),
+        actor_id,
+        from_status: Some(from_status),
+        to_status: Some(to_status),
+        assessment_text: None,
+        comment,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn add_pbc_request_assessment(
+    database_path: &Path,
+    pbc_request_id: &str,
+    assessment_text: &str,
+    actor_id: Option<&str>,
+) -> Result<PbcRequestEventRecord, PersistenceError> {
+    let assessment_text = assessment_text.trim().to_string();
+    if assessment_text.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "PBC auditor assessment must not be empty".to_string(),
+        ));
+    }
+    let actor_id = normalize_optional_domain_text(actor_id, 160);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let request_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pbc_requests
+            WHERE pbc_request_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [pbc_request_id],
+        |row| row.get(0),
+    )?;
+    if !request_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "PBC request {pbc_request_id} does not exist"
+        )));
+    }
+
+    let event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO pbc_request_events (
+            pbc_request_event_id,
+            pbc_request_id,
+            event_type,
+            actor_id,
+            from_status,
+            to_status,
+            assessment_text,
+            comment,
+            occurred_at_ms
+         ) VALUES (?1, ?2, 'ASSESSMENT_ADDED', ?3, NULL, NULL, ?4, NULL, ?5)",
+        params![
+            &event_id,
+            pbc_request_id,
+            actor_id.as_deref(),
+            &assessment_text,
+            now
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE pbc_requests
+         SET updated_at_ms = ?1
+         WHERE pbc_request_id = ?2",
+        params![now, pbc_request_id],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "PBC_REQUEST_ASSESSMENT_ADDED",
+            entity_type: "PBC_REQUEST",
+            entity_id: pbc_request_id,
+            related_entity_type: None,
+            related_entity_id: None,
+            occurred_at_ms: now,
+            details: json!({
+                "actorId": actor_id,
+                "assessmentLength": assessment_text.chars().count()
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(PbcRequestEventRecord {
+        pbc_request_event_id: event_id,
+        pbc_request_id: pbc_request_id.to_string(),
+        event_type: "ASSESSMENT_ADDED".to_string(),
+        actor_id,
+        from_status: None,
+        to_status: None,
+        assessment_text: Some(assessment_text),
+        comment: None,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn list_pbc_request_events(
+    database_path: &Path,
+    pbc_request_id: &str,
+) -> Result<Vec<PbcRequestEventRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            pbc_request_event_id,
+            pbc_request_id,
+            event_type,
+            actor_id,
+            from_status,
+            to_status,
+            assessment_text,
+            comment,
+            occurred_at_ms
+         FROM pbc_request_events
+         WHERE pbc_request_id = ?1
+         ORDER BY occurred_at_ms, rowid",
+    )?;
+    let rows = statement.query_map([pbc_request_id], |row| {
+        Ok(PbcRequestEventRecord {
+            pbc_request_event_id: row.get(0)?,
+            pbc_request_id: row.get(1)?,
+            event_type: row.get(2)?,
+            actor_id: row.get(3)?,
+            from_status: row.get(4)?,
+            to_status: row.get(5)?,
+            assessment_text: row.get(6)?,
+            comment: row.get(7)?,
+            occurred_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_pbc_request_evidence_link(
+    database_path: &Path,
+    pbc_request_id: &str,
+    document_id: &str,
+    content_version_id: Option<&str>,
+    controlled_evidence_version_id: Option<&str>,
+    description: Option<&str>,
+) -> Result<PbcRequestEvidenceLinkRecord, PersistenceError> {
+    if content_version_id.is_some() == controlled_evidence_version_id.is_some() {
+        return Err(PersistenceError::Configuration(
+            "PBC received evidence must reference exactly one content version or controlled evidence version"
+                .to_string(),
+        ));
+    }
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let request_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pbc_requests
+            WHERE pbc_request_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [pbc_request_id],
+        |row| row.get(0),
+    )?;
+    if !request_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "PBC request {pbc_request_id} does not exist"
+        )));
+    }
+
+    let document_name: Option<String> = transaction
+        .query_row(
+            "SELECT display_name
+             FROM documents
+             WHERE document_id = ?1
+               AND archived_at_ms IS NULL",
+            [document_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(document_name) = document_name else {
+        return Err(PersistenceError::Configuration(format!(
+            "document {document_id} does not exist"
+        )));
+    };
+
+    let mut content_observed_at_ms = None;
+    if let Some(content_version_id) = content_version_id {
+        let version_context: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT document_id, observed_at_ms
+                 FROM content_versions
+                 WHERE content_version_id = ?1",
+                [content_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((version_document, observed_at_ms)) = version_context else {
+            return Err(PersistenceError::Configuration(
+                "content version does not exist".to_string(),
+            ));
+        };
+        if version_document != document_id {
+            return Err(PersistenceError::Configuration(
+                "content version does not belong to the selected document".to_string(),
+            ));
+        }
+        content_observed_at_ms = Some(observed_at_ms);
+    }
+
+    let mut controlled_version_number = None;
+    let mut controlled_captured_at_ms = None;
+    if let Some(controlled_version_id) = controlled_evidence_version_id {
+        let version_context: Option<(String, i64, i64)> = transaction
+            .query_row(
+                "SELECT document_id, version_number, captured_at_ms
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [controlled_version_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((version_document, version_number, captured_at_ms)) = version_context else {
+            return Err(PersistenceError::Configuration(
+                "controlled evidence version does not exist".to_string(),
+            ));
+        };
+        if version_document != document_id {
+            return Err(PersistenceError::Configuration(
+                "controlled evidence version does not belong to the selected document".to_string(),
+            ));
+        }
+        controlled_version_number = Some(version_number.max(0) as u64);
+        controlled_captured_at_ms = Some(captured_at_ms);
+    }
+
+    let link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO pbc_request_evidence_links (
+            pbc_request_evidence_link_id,
+            pbc_request_id,
+            document_id,
+            content_version_id,
+            controlled_evidence_version_id,
+            description,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &link_id,
+            pbc_request_id,
+            document_id,
+            content_version_id,
+            controlled_evidence_version_id,
+            description.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "PBC_REQUEST_EVIDENCE_LINKED",
+            entity_type: "PBC_REQUEST_EVIDENCE_LINK",
+            entity_id: &link_id,
+            related_entity_type: Some("PBC_REQUEST"),
+            related_entity_id: Some(pbc_request_id),
+            occurred_at_ms: now,
+            details: json!({
+                "documentId": document_id,
+                "contentVersionId": content_version_id,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "description": description
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(PbcRequestEvidenceLinkRecord {
+        pbc_request_evidence_link_id: link_id,
+        pbc_request_id: pbc_request_id.to_string(),
+        document_id: document_id.to_string(),
+        document_name,
+        content_version_id: content_version_id.map(str::to_string),
+        content_observed_at_ms,
+        controlled_evidence_version_id: controlled_evidence_version_id.map(str::to_string),
+        controlled_version_number,
+        controlled_captured_at_ms,
+        description,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_pbc_request_evidence_links(
+    database_path: &Path,
+    pbc_request_id: &str,
+) -> Result<Vec<PbcRequestEvidenceLinkRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            pel.pbc_request_evidence_link_id,
+            pel.pbc_request_id,
+            pel.document_id,
+            d.display_name,
+            pel.content_version_id,
+            cv.observed_at_ms,
+            pel.controlled_evidence_version_id,
+            cev.version_number,
+            cev.captured_at_ms,
+            pel.description,
+            pel.created_at_ms
+         FROM pbc_request_evidence_links pel
+         JOIN documents d ON d.document_id = pel.document_id
+         LEFT JOIN content_versions cv ON cv.content_version_id = pel.content_version_id
+         LEFT JOIN controlled_evidence_versions cev
+           ON cev.controlled_evidence_version_id = pel.controlled_evidence_version_id
+         WHERE pel.pbc_request_id = ?1
+         ORDER BY pel.created_at_ms, pel.rowid",
+    )?;
+    let rows = statement.query_map([pbc_request_id], |row| {
+        let controlled_version_number: Option<i64> = row.get(7)?;
+        Ok(PbcRequestEvidenceLinkRecord {
+            pbc_request_evidence_link_id: row.get(0)?,
+            pbc_request_id: row.get(1)?,
+            document_id: row.get(2)?,
+            document_name: row.get(3)?,
+            content_version_id: row.get(4)?,
+            content_observed_at_ms: row.get(5)?,
+            controlled_evidence_version_id: row.get(6)?,
+            controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
+            controlled_captured_at_ms: row.get(8)?,
+            description: row.get(9)?,
+            created_at_ms: row.get(10)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn resolve_file_instance_source(
     database_path: &Path,
     file_instance_id: &str,
@@ -6429,7 +7133,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 7);
+        assert_eq!(migration_count, 8);
 
         let table_count: i64 = connection
             .query_row(
@@ -6462,14 +7166,17 @@ mod tests {
                        'workpaper_evidence_links',
                        'workpaper_workflow_events',
                        'review_notes',
-                       'review_note_events'
+                       'review_note_events',
+                       'pbc_requests',
+                       'pbc_request_events',
+                       'pbc_request_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 27);
+        assert_eq!(table_count, 30);
     }
 
     #[test]
@@ -6505,7 +7212,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_count: i64 = connection
             .query_row(
@@ -6546,14 +7253,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 7");
+        initialize_database(&database.path).expect("database should upgrade through version 8");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_exists: i64 = connection
             .query_row(
@@ -6595,14 +7302,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 7");
+        initialize_database(&database.path).expect("database should upgrade through version 8");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_count: i64 = connection
             .query_row(
@@ -6647,14 +7354,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 7");
+        initialize_database(&database.path).expect("database should upgrade to version 8");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_exists: bool = connection
             .query_row(
@@ -6696,14 +7403,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 7");
+        initialize_database(&database.path).expect("database should upgrade to version 8");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_count: i64 = connection
             .query_row(
@@ -6753,14 +7460,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 7");
+        initialize_database(&database.path).expect("database should upgrade to version 8");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
 
         let table_count: i64 = connection
             .query_row(
@@ -6775,6 +7482,58 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("review workflow tables should exist");
+        assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn eighth_migration_upgrades_existing_v7_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..7] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 7);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 8");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 8);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'pbc_requests',
+                       'pbc_request_events',
+                       'pbc_request_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("PBC request tables should exist");
         assert_eq!(table_count, 3);
     }
 
@@ -7075,6 +7834,119 @@ mod tests {
             Some(version_a.as_str())
         );
         assert!(links[0].content_observed_at_ms.is_some());
+
+        let invalid_pbc = create_pbc_request(
+            &database.path,
+            NewPbcRequest {
+                engagement_id: &second_engagement.engagement_id,
+                engagement_area_id: Some(&child_area.engagement_area_id),
+                request_number: "PBC-X",
+                description: "Invalid cross-engagement request",
+                requested_from_party: "Client finance team",
+                due_at_ms: None,
+                status: "REQUESTED",
+                client_visible_content: None,
+                internal_notes: None,
+            },
+        )
+        .expect_err("PBC area from another engagement must be rejected");
+        assert!(invalid_pbc
+            .to_string()
+            .contains("PBC request area must belong to the same engagement"));
+
+        let pbc_request = create_pbc_request(
+            &database.path,
+            NewPbcRequest {
+                engagement_id: &engagement.engagement_id,
+                engagement_area_id: Some(&child_area.engagement_area_id),
+                request_number: "PBC-001",
+                description: "Provide vendor onboarding approvals for the selected sample.",
+                requested_from_party: "Client finance team",
+                due_at_ms: Some(12_345_678),
+                status: "REQUESTED",
+                client_visible_content: Some("Please upload the approval records for the sample."),
+                internal_notes: Some("Do not disclose internal sampling rationale."),
+            },
+        )
+        .expect("PBC request should be created");
+        assert_eq!(
+            pbc_request.client_visible_content.as_deref(),
+            Some("Please upload the approval records for the sample.")
+        );
+        assert_eq!(
+            pbc_request.internal_notes.as_deref(),
+            Some("Do not disclose internal sampling rationale.")
+        );
+
+        transition_pbc_request_status(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            "RECEIVED",
+            Some("auditor@example.test"),
+            Some("Client provided the requested records."),
+        )
+        .expect("PBC status transition should be recorded");
+        add_pbc_request_assessment(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            "Received evidence is complete for the selected sample.",
+            Some("auditor@example.test"),
+        )
+        .expect("PBC assessment should be recorded");
+
+        let pbc_evidence = create_pbc_request_evidence_link(
+            &database.path,
+            &pbc_request.pbc_request_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            Some("Received vendor onboarding support"),
+        )
+        .expect("PBC received evidence should bind to an exact content version");
+        assert_eq!(pbc_evidence.document_name, "Support A.pdf");
+        assert_eq!(
+            pbc_evidence.content_version_id.as_deref(),
+            Some(version_a.as_str())
+        );
+
+        let pbc_requests = list_pbc_requests(&database.path, &engagement.engagement_id)
+            .expect("PBC requests should list");
+        assert_eq!(pbc_requests.len(), 1);
+        assert_eq!(pbc_requests[0].status, "RECEIVED");
+        assert_eq!(
+            pbc_requests[0].latest_assessment.as_deref(),
+            Some("Received evidence is complete for the selected sample.")
+        );
+
+        let pbc_events = list_pbc_request_events(&database.path, &pbc_request.pbc_request_id)
+            .expect("PBC request event history should load");
+        assert_eq!(pbc_events.len(), 3);
+        assert_eq!(pbc_events[0].event_type, "CREATED");
+        assert_eq!(pbc_events[1].event_type, "STATUS_CHANGED");
+        assert_eq!(pbc_events[2].event_type, "ASSESSMENT_ADDED");
+
+        let pbc_links =
+            list_pbc_request_evidence_links(&database.path, &pbc_request.pbc_request_id)
+                .expect("PBC received evidence should list");
+        assert_eq!(pbc_links.len(), 1);
+        assert_eq!(
+            pbc_links[0].pbc_request_evidence_link_id,
+            pbc_evidence.pbc_request_evidence_link_id
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let pbc_event_mutation_error = connection
+            .execute(
+                "UPDATE pbc_request_events
+                 SET comment = 'tampered'
+                 WHERE pbc_request_event_id = ?1",
+                [&pbc_events[1].pbc_request_event_id],
+            )
+            .expect_err("PBC request event history must be immutable");
+        assert!(pbc_event_mutation_error
+            .to_string()
+            .contains("PBC request events are immutable"));
 
         let prepared_event = transition_workpaper_state(
             &database.path,
