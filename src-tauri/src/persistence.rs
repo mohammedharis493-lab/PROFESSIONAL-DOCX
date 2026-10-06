@@ -302,8 +302,12 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub evidence_link_id: String,
     pub workpaper_revision_id: String,
     pub document_id: String,
+    pub document_name: String,
     pub content_version_id: Option<String>,
+    pub content_observed_at_ms: Option<i64>,
     pub controlled_evidence_version_id: Option<String>,
+    pub controlled_version_number: Option<u64>,
+    pub controlled_captured_at_ms: Option<i64>,
     pub relationship_type: String,
     pub description: Option<String>,
     pub created_at_ms: i64,
@@ -4605,67 +4609,98 @@ pub fn create_workpaper_evidence_link(
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    let revision_exists: bool = transaction.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM workpaper_revisions
-            WHERE workpaper_revision_id = ?1
-        )",
-        [workpaper_revision_id],
-        |row| row.get(0),
-    )?;
-    if !revision_exists {
+    let revision_context: Option<(String, i64, i64)> = transaction
+        .query_row(
+            "SELECT
+                wr.workpaper_id,
+                wr.revision_number,
+                (
+                    SELECT MAX(latest.revision_number)
+                    FROM workpaper_revisions latest
+                    WHERE latest.workpaper_id = wr.workpaper_id
+                )
+             FROM workpaper_revisions wr
+             WHERE wr.workpaper_revision_id = ?1",
+            [workpaper_revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((_workpaper_id, revision_number, latest_revision_number)) = revision_context else {
         return Err(PersistenceError::Configuration(format!(
             "workpaper revision {workpaper_revision_id} does not exist"
         )));
+    };
+    if revision_number != latest_revision_number {
+        return Err(PersistenceError::Configuration(
+            "evidence can only be linked to the latest workpaper revision; create a new revision instead of changing historical evidence"
+                .to_string(),
+        ));
     }
 
-    let document_exists: bool = transaction.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM documents
-            WHERE document_id = ?1
-              AND archived_at_ms IS NULL
-        )",
-        [document_id],
-        |row| row.get(0),
-    )?;
-    if !document_exists {
+    let document_name: Option<String> = transaction
+        .query_row(
+            "SELECT display_name
+             FROM documents
+             WHERE document_id = ?1
+               AND archived_at_ms IS NULL",
+            [document_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(document_name) = document_name else {
         return Err(PersistenceError::Configuration(format!(
             "document {document_id} does not exist"
         )));
-    }
+    };
 
+    let mut content_observed_at_ms = None;
     if let Some(content_version_id) = content_version_id {
-        let version_document: Option<String> = transaction
+        let version_context: Option<(String, i64)> = transaction
             .query_row(
-                "SELECT document_id
+                "SELECT document_id, observed_at_ms
                  FROM content_versions
                  WHERE content_version_id = ?1",
                 [content_version_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if version_document.as_deref() != Some(document_id) {
+        let Some((version_document, observed_at_ms)) = version_context else {
+            return Err(PersistenceError::Configuration(
+                "content version does not exist".to_string(),
+            ));
+        };
+        if version_document != document_id {
             return Err(PersistenceError::Configuration(
                 "content version does not belong to the selected document".to_string(),
             ));
         }
+        content_observed_at_ms = Some(observed_at_ms);
     }
 
+    let mut controlled_version_number = None;
+    let mut controlled_captured_at_ms = None;
     if let Some(controlled_version_id) = controlled_evidence_version_id {
-        let version_document: Option<String> = transaction
+        let version_context: Option<(String, i64, i64)> = transaction
             .query_row(
-                "SELECT document_id
+                "SELECT document_id, version_number, captured_at_ms
                  FROM controlled_evidence_versions
                  WHERE controlled_evidence_version_id = ?1",
                 [controlled_version_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        if version_document.as_deref() != Some(document_id) {
+        let Some((version_document, version_number, captured_at_ms)) = version_context else {
+            return Err(PersistenceError::Configuration(
+                "controlled evidence version does not exist".to_string(),
+            ));
+        };
+        if version_document != document_id {
             return Err(PersistenceError::Configuration(
                 "controlled evidence version does not belong to the selected document".to_string(),
             ));
         }
+        controlled_version_number = Some(version_number.max(0) as u64);
+        controlled_captured_at_ms = Some(captured_at_ms);
     }
 
     let evidence_link_id = Uuid::new_v4().to_string();
@@ -4716,8 +4751,12 @@ pub fn create_workpaper_evidence_link(
         evidence_link_id,
         workpaper_revision_id: workpaper_revision_id.to_string(),
         document_id: document_id.to_string(),
+        document_name,
         content_version_id: content_version_id.map(str::to_string),
+        content_observed_at_ms,
         controlled_evidence_version_id: controlled_evidence_version_id.map(str::to_string),
+        controlled_version_number,
+        controlled_captured_at_ms,
         relationship_type,
         description,
         created_at_ms: now,
@@ -4731,28 +4770,41 @@ pub fn list_workpaper_evidence_links(
     let connection = open_configured_connection(database_path)?;
     let mut statement = connection.prepare(
         "SELECT
-            evidence_link_id,
-            workpaper_revision_id,
-            document_id,
-            content_version_id,
-            controlled_evidence_version_id,
-            relationship_type,
-            description,
-            created_at_ms
-         FROM workpaper_evidence_links
-         WHERE workpaper_revision_id = ?1
-         ORDER BY created_at_ms, rowid",
+            wel.evidence_link_id,
+            wel.workpaper_revision_id,
+            wel.document_id,
+            d.display_name,
+            wel.content_version_id,
+            cv.observed_at_ms,
+            wel.controlled_evidence_version_id,
+            cev.version_number,
+            cev.captured_at_ms,
+            wel.relationship_type,
+            wel.description,
+            wel.created_at_ms
+         FROM workpaper_evidence_links wel
+         JOIN documents d ON d.document_id = wel.document_id
+         LEFT JOIN content_versions cv ON cv.content_version_id = wel.content_version_id
+         LEFT JOIN controlled_evidence_versions cev
+            ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+         WHERE wel.workpaper_revision_id = ?1
+         ORDER BY wel.created_at_ms, wel.rowid",
     )?;
     let rows = statement.query_map([workpaper_revision_id], |row| {
+        let controlled_version_number: Option<i64> = row.get(7)?;
         Ok(WorkpaperEvidenceLinkRecord {
             evidence_link_id: row.get(0)?,
             workpaper_revision_id: row.get(1)?,
             document_id: row.get(2)?,
-            content_version_id: row.get(3)?,
-            controlled_evidence_version_id: row.get(4)?,
-            relationship_type: row.get(5)?,
-            description: row.get(6)?,
-            created_at_ms: row.get(7)?,
+            document_name: row.get(3)?,
+            content_version_id: row.get(4)?,
+            content_observed_at_ms: row.get(5)?,
+            controlled_evidence_version_id: row.get(6)?,
+            controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
+            controlled_captured_at_ms: row.get(8)?,
+            relationship_type: row.get(9)?,
+            description: row.get(10)?,
+            created_at_ms: row.get(11)?,
         })
     })?;
     let mut result = Vec::new();
@@ -6252,6 +6304,20 @@ mod tests {
             )
             .expect("support A content version should load");
 
+        let historical_link_error = create_workpaper_evidence_link(
+            &database.path,
+            &revision_one.workpaper_revision_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            None,
+        )
+        .expect_err("superseded workpaper revision must reject new evidence links");
+        assert!(historical_link_error
+            .to_string()
+            .contains("evidence can only be linked to the latest workpaper revision"));
+
         let evidence_link = create_workpaper_evidence_link(
             &database.path,
             &revision_two.workpaper_revision_id,
@@ -6267,6 +6333,9 @@ mod tests {
             Some(version_a.as_str())
         );
         assert_eq!(evidence_link.controlled_evidence_version_id, None);
+        assert_eq!(evidence_link.document_name, "Support A.pdf");
+        assert!(evidence_link.content_observed_at_ms.is_some());
+        assert_eq!(evidence_link.controlled_version_number, None);
 
         let mismatch = create_workpaper_evidence_link(
             &database.path,
@@ -6287,6 +6356,12 @@ mod tests {
                 .expect("evidence links should load");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].evidence_link_id, evidence_link.evidence_link_id);
+        assert_eq!(links[0].document_name, "Support A.pdf");
+        assert_eq!(
+            links[0].content_version_id.as_deref(),
+            Some(version_a.as_str())
+        );
+        assert!(links[0].content_observed_at_ms.is_some());
 
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
