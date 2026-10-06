@@ -843,6 +843,7 @@ export default function App() {
   const [newEngagementPeriodEnd, setNewEngagementPeriodEnd] = useState("");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplateDescription, setNewTemplateDescription] = useState("");
+  const [templateUpdateId, setTemplateUpdateId] = useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1727,25 +1728,39 @@ export default function App() {
     event.preventDefault();
     if (!selectedEngagementId) return;
     const name = newTemplateName.trim();
-    if (!name) return;
+    if (!templateUpdateId && !name) return;
 
     setWorkspaceBusy(true);
     try {
-      const created = await invoke<EngagementTemplate>(
-        "create_engagement_template_from_engagement",
-        {
-          sourceEngagementId: selectedEngagementId,
-          name,
-          description: newTemplateDescription.trim() || null,
-        },
-      );
-      setEngagementTemplates((current) =>
-        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
-      );
+      const published = templateUpdateId
+        ? await invoke<EngagementTemplate>(
+            "create_engagement_template_version_from_engagement",
+            {
+              engagementTemplateId: templateUpdateId,
+              sourceEngagementId: selectedEngagementId,
+            },
+          )
+        : await invoke<EngagementTemplate>("create_engagement_template_from_engagement", {
+            sourceEngagementId: selectedEngagementId,
+            name,
+            description: newTemplateDescription.trim() || null,
+          });
+
+      setEngagementTemplates((current) => {
+        const next = templateUpdateId
+          ? current.map((template) =>
+              template.engagementTemplateId === published.engagementTemplateId
+                ? published
+                : template,
+            )
+          : [...current, published];
+        return next.sort((left, right) => left.name.localeCompare(right.name));
+      });
       setNewTemplateName("");
       setNewTemplateDescription("");
-      setNewEngagementTemplateVersionId(created.latestVersionId);
-      setNewEngagementServiceTypeId(created.serviceTypeId);
+      setTemplateUpdateId("");
+      setNewEngagementTemplateVersionId(published.latestVersionId);
+      setNewEngagementServiceTypeId(published.serviceTypeId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -3102,6 +3117,15 @@ export default function App() {
   const selectedEngagement =
     engagements.find((engagement) => engagement.engagementId === selectedEngagementId) ??
     null;
+  const selectedTemplateForUpdate =
+    engagementTemplates.find(
+      (template) => template.engagementTemplateId === templateUpdateId,
+    ) ?? null;
+  const compatibleMethodologyTemplates = selectedEngagement
+    ? engagementTemplates.filter(
+        (template) => template.serviceTypeId === selectedEngagement.serviceTypeId,
+      )
+    : [];
   const selectedWorkpaper =
     workpapers.find((workpaper) => workpaper.workpaperId === selectedWorkpaperId) ??
     null;
@@ -3755,36 +3779,78 @@ export default function App() {
                   <form className="workspace-card workspace-form" onSubmit={submitEngagementTemplate}>
                     <div>
                       <span className="workspace-label">FIRM METHODOLOGY</span>
-                      <h3>Capture as reusable template</h3>
+                      <h3>
+                        {selectedTemplateForUpdate
+                          ? "Publish controlled methodology update"
+                          : "Capture as reusable template"}
+                      </h3>
                     </div>
                     <label>
-                      <span>Template name</span>
-                      <input
-                        value={newTemplateName}
-                        onChange={(event) => setNewTemplateName(event.target.value)}
-                        placeholder="Core revenue methodology"
-                        maxLength={200}
-                      />
+                      <span>Publication target</span>
+                      <select
+                        value={templateUpdateId}
+                        onChange={(event) => {
+                          setTemplateUpdateId(event.target.value);
+                          setNewTemplateName("");
+                          setNewTemplateDescription("");
+                        }}
+                      >
+                        <option value="">New firm template</option>
+                        {compatibleMethodologyTemplates.map((template) => (
+                          <option
+                            key={template.engagementTemplateId}
+                            value={template.engagementTemplateId}
+                          >
+                            {template.name} · publish after v{template.latestVersionNumber}
+                          </option>
+                        ))}
+                      </select>
                     </label>
-                    <label>
-                      <span>Description</span>
-                      <textarea
-                        value={newTemplateDescription}
-                        onChange={(event) => setNewTemplateDescription(event.target.value)}
-                        rows={2}
-                        placeholder="What this methodology template is intended to cover."
-                      />
-                    </label>
-                    <p className="evidence-integrity-note">
-                      Captures the current active areas, sub-areas, and procedures as immutable
-                      version 1. Workpapers and client evidence are not copied into firm methodology.
-                    </p>
+                    {selectedTemplateForUpdate ? (
+                      <div className="evidence-integrity-note">
+                        Publishing from this engagement creates immutable version{" "}
+                        {selectedTemplateForUpdate.latestVersionNumber + 1} of{" "}
+                        {selectedTemplateForUpdate.name}. Earlier versions and engagements created
+                        from them remain unchanged.
+                      </div>
+                    ) : (
+                      <>
+                        <label>
+                          <span>Template name</span>
+                          <input
+                            value={newTemplateName}
+                            onChange={(event) => setNewTemplateName(event.target.value)}
+                            placeholder="Core revenue methodology"
+                            maxLength={200}
+                          />
+                        </label>
+                        <label>
+                          <span>Description</span>
+                          <textarea
+                            value={newTemplateDescription}
+                            onChange={(event) => setNewTemplateDescription(event.target.value)}
+                            rows={2}
+                            placeholder="What this methodology template is intended to cover."
+                          />
+                        </label>
+                        <p className="evidence-integrity-note">
+                          Captures the current active areas, sub-areas, and procedures as immutable
+                          version 1. Workpapers and client evidence are not copied into firm
+                          methodology.
+                        </p>
+                      </>
+                    )}
                     <button
                       className="secondary-button"
                       type="submit"
-                      disabled={workspaceBusy || !newTemplateName.trim()}
+                      disabled={
+                        workspaceBusy ||
+                        (!selectedTemplateForUpdate && !newTemplateName.trim())
+                      }
                     >
-                      Save exact methodology version
+                      {selectedTemplateForUpdate
+                        ? `Publish version ${selectedTemplateForUpdate.latestVersionNumber + 1}`
+                        : "Save exact methodology version"}
                     </button>
                   </form>
 
