@@ -3668,15 +3668,19 @@ fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     output
 }
 
-fn insert_domain_audit_event(
-    transaction: &rusqlite::Transaction<'_>,
-    event_type: &str,
-    entity_type: &str,
-    entity_id: &str,
-    related_entity_type: Option<&str>,
-    related_entity_id: Option<&str>,
+struct DomainAuditEvent<'a> {
+    event_type: &'a str,
+    entity_type: &'a str,
+    entity_id: &'a str,
+    related_entity_type: Option<&'a str>,
+    related_entity_id: Option<&'a str>,
     occurred_at_ms: i64,
     details: serde_json::Value,
+}
+
+fn insert_domain_audit_event(
+    transaction: &rusqlite::Transaction<'_>,
+    event: DomainAuditEvent<'_>,
 ) -> Result<(), PersistenceError> {
     transaction.execute(
         "INSERT INTO audit_events (
@@ -3692,13 +3696,13 @@ fn insert_domain_audit_event(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
         params![
             Uuid::new_v4().to_string(),
-            event_type,
-            entity_type,
-            entity_id,
-            related_entity_type,
-            related_entity_id,
-            occurred_at_ms,
-            details.to_string()
+            event.event_type,
+            event.entity_type,
+            event.entity_id,
+            event.related_entity_type,
+            event.related_entity_id,
+            event.occurred_at_ms,
+            event.details.to_string()
         ],
     )?;
     Ok(())
@@ -4313,19 +4317,21 @@ pub fn create_workpaper(
 
     insert_domain_audit_event(
         &transaction,
-        "WORKPAPER_CREATED",
-        "WORKPAPER",
-        &workpaper_id,
-        Some("ENGAGEMENT"),
-        Some(engagement_id),
-        now,
-        json!({
-            "reference": reference,
-            "title": title,
-            "workflowState": workflow_state,
-            "engagementAreaId": engagement_area_id,
-            "procedureId": procedure_id
-        }),
+        DomainAuditEvent {
+            event_type: "WORKPAPER_CREATED",
+            entity_type: "WORKPAPER",
+            entity_id: &workpaper_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "workflowState": workflow_state,
+                "engagementAreaId": engagement_area_id,
+                "procedureId": procedure_id
+            }),
+        },
     )?;
 
     transaction.commit()?;
@@ -4487,18 +4493,20 @@ pub fn create_workpaper_revision(
 
     insert_domain_audit_event(
         &transaction,
-        "WORKPAPER_REVISION_CREATED",
-        "WORKPAPER_REVISION",
-        &revision_id,
-        Some("WORKPAPER"),
-        Some(workpaper_id),
-        now,
-        json!({
-            "revisionNumber": next_revision,
-            "supersedesRevisionId": supersedes_revision_id,
-            "revisionReason": revision_reason,
-            "contentHash": bytes_to_lower_hex(&content_hash)
-        }),
+        DomainAuditEvent {
+            event_type: "WORKPAPER_REVISION_CREATED",
+            entity_type: "WORKPAPER_REVISION",
+            entity_id: &revision_id,
+            related_entity_type: Some("WORKPAPER"),
+            related_entity_id: Some(workpaper_id),
+            occurred_at_ms: now,
+            details: json!({
+                "revisionNumber": next_revision,
+                "supersedesRevisionId": supersedes_revision_id,
+                "revisionReason": revision_reason,
+                "contentHash": bytes_to_lower_hex(&content_hash)
+            }),
+        },
     )?;
 
     transaction.commit()?;
@@ -4687,18 +4695,20 @@ pub fn create_workpaper_evidence_link(
 
     insert_domain_audit_event(
         &transaction,
-        "WORKPAPER_EVIDENCE_LINK_ADDED",
-        "WORKPAPER_EVIDENCE_LINK",
-        &evidence_link_id,
-        Some("WORKPAPER_REVISION"),
-        Some(workpaper_revision_id),
-        now,
-        json!({
-            "documentId": document_id,
-            "contentVersionId": content_version_id,
-            "controlledEvidenceVersionId": controlled_evidence_version_id,
-            "relationshipType": relationship_type
-        }),
+        DomainAuditEvent {
+            event_type: "WORKPAPER_EVIDENCE_LINK_ADDED",
+            entity_type: "WORKPAPER_EVIDENCE_LINK",
+            entity_id: &evidence_link_id,
+            related_entity_type: Some("WORKPAPER_REVISION"),
+            related_entity_id: Some(workpaper_revision_id),
+            occurred_at_ms: now,
+            details: json!({
+                "documentId": document_id,
+                "contentVersionId": content_version_id,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "relationshipType": relationship_type
+            }),
+        },
     )?;
 
     transaction.commit()?;
