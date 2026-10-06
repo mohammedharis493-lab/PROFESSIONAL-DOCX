@@ -17,7 +17,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 10;
+const LATEST_SCHEMA_VERSION: i64 = 11;
+const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
     version: i64,
@@ -75,6 +76,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "engagement_templates",
         sql: include_str!("../migrations/0010_engagement_templates.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "firm_library",
+        sql: include_str!("../migrations/0011_firm_library.sql"),
     },
 ];
 
@@ -272,6 +278,37 @@ pub struct EngagementTemplateRecord {
     pub service_type_id: String,
     pub source_engagement_id: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmLibraryItemRecord {
+    pub firm_library_item_id: String,
+    pub category: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub service_type_id: Option<String>,
+    pub latest_version_id: String,
+    pub latest_version_number: u64,
+    pub latest_definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmLibraryVersionRecord {
+    pub firm_library_version_id: String,
+    pub firm_library_item_id: String,
+    pub version_number: u64,
+    pub definition_json: String,
+    pub definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+struct FirmLibraryItemIdentity {
+    category: String,
+    name: String,
+    description: Option<String>,
+    service_type_id: Option<String>,
+    created_at_ms: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -3864,6 +3901,70 @@ fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Opti
     })
 }
 
+fn normalize_firm_library_category(value: &str) -> Result<String, PersistenceError> {
+    let category = workflow_state_key(value);
+    if matches!(
+        category.as_str(),
+        "CHECKLIST"
+            | "AUDIT_QUERY"
+            | "RISK_TEMPLATE"
+            | "CONTROL_TEMPLATE"
+            | "LEDGER_SCRUTINY_TEST"
+            | "REPORT_TEMPLATE"
+            | "MANAGEMENT_LETTER_POINT"
+            | "STATUTORY_COMPLIANCE_REQUIREMENT"
+    ) {
+        Ok(category)
+    } else {
+        Err(PersistenceError::Configuration(
+            "firm library category is not supported".to_string(),
+        ))
+    }
+}
+
+fn normalize_firm_library_description(
+    value: Option<&str>,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.chars().count() > 2_000 {
+        return Err(PersistenceError::Configuration(
+            "firm library description must contain at most 2000 characters".to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_firm_library_definition(
+    definition_json: &str,
+) -> Result<(String, Vec<u8>), PersistenceError> {
+    if definition_json.len() > FIRM_LIBRARY_DEFINITION_MAX_BYTES {
+        return Err(PersistenceError::Configuration(format!(
+            "firm library definition must be at most {FIRM_LIBRARY_DEFINITION_MAX_BYTES} bytes"
+        )));
+    }
+
+    let definition: serde_json::Value = serde_json::from_str(definition_json).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "firm library definition must be valid JSON: {error}"
+        ))
+    })?;
+    if !definition.is_object() {
+        return Err(PersistenceError::Configuration(
+            "firm library definition must be a JSON object".to_string(),
+        ));
+    }
+
+    let canonical = serde_json::to_string(&definition).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "firm library definition could not be serialized: {error}"
+        ))
+    })?;
+    let hash = Sha256::digest(canonical.as_bytes()).to_vec();
+    Ok((canonical, hash))
+}
+
 fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
     let normalized = value.trim();
     let count = normalized.chars().count();
@@ -4616,6 +4717,329 @@ pub fn list_engagement_templates(
             created_at_ms: row.get(7)?,
         })
     })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_firm_library_item(
+    database_path: &Path,
+    category: &str,
+    name: &str,
+    description: Option<&str>,
+    service_type_id: Option<&str>,
+    definition_json: &str,
+) -> Result<FirmLibraryItemRecord, PersistenceError> {
+    let category = normalize_firm_library_category(category)?;
+    let name = normalize_domain_label(name, "firm library item name", 200)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "firm library item name must contain searchable characters".to_string(),
+        ));
+    }
+    let description = normalize_firm_library_description(description)?;
+    let (definition_json, definition_hash) = normalize_firm_library_definition(definition_json)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    if let Some(service_type_id) = service_type_id {
+        let service_exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM service_types
+                WHERE service_type_id = ?1
+                  AND archived_at_ms IS NULL
+            )",
+            [service_type_id],
+            |row| row.get(0),
+        )?;
+        if !service_exists {
+            return Err(PersistenceError::Configuration(format!(
+                "service type {service_type_id} does not exist"
+            )));
+        }
+    }
+
+    let firm_library_item_id = Uuid::new_v4().to_string();
+    let firm_library_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO firm_library_items (
+            firm_library_item_id,
+            category,
+            name,
+            normalized_name,
+            description,
+            service_type_id,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+        params![
+            &firm_library_item_id,
+            &category,
+            &name,
+            &normalized_name,
+            description.as_deref(),
+            service_type_id,
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO firm_library_versions (
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+        params![
+            &firm_library_version_id,
+            &firm_library_item_id,
+            &definition_json,
+            &definition_hash,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FIRM_LIBRARY_ITEM_CREATED",
+            entity_type: "FIRM_LIBRARY_ITEM",
+            entity_id: &firm_library_item_id,
+            related_entity_type: Some("FIRM_LIBRARY_VERSION"),
+            related_entity_id: Some(&firm_library_version_id),
+            occurred_at_ms: now,
+            details: json!({
+                "category": category.as_str(),
+                "serviceTypeId": service_type_id,
+                "versionNumber": 1,
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FirmLibraryItemRecord {
+        firm_library_item_id,
+        category,
+        name,
+        description,
+        service_type_id: service_type_id.map(str::to_string),
+        latest_version_id: firm_library_version_id,
+        latest_version_number: 1,
+        latest_definition_hash: definition_hash,
+        created_at_ms: now,
+    })
+}
+
+pub fn publish_firm_library_version(
+    database_path: &Path,
+    firm_library_item_id: &str,
+    definition_json: &str,
+) -> Result<FirmLibraryItemRecord, PersistenceError> {
+    let (definition_json, definition_hash) = normalize_firm_library_definition(definition_json)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let item: Option<FirmLibraryItemIdentity> = transaction
+        .query_row(
+            "SELECT
+                category,
+                name,
+                description,
+                service_type_id,
+                created_at_ms
+             FROM firm_library_items
+             WHERE firm_library_item_id = ?1
+               AND archived_at_ms IS NULL",
+            [firm_library_item_id],
+            |row| {
+                Ok(FirmLibraryItemIdentity {
+                    category: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    service_type_id: row.get(3)?,
+                    created_at_ms: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    let item = item.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "firm library item {firm_library_item_id} does not exist"
+        ))
+    })?;
+
+    let next_version_number: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM firm_library_versions
+         WHERE firm_library_item_id = ?1",
+        [firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if next_version_number < 1 {
+        return Err(PersistenceError::Configuration(
+            "firm library version sequence is invalid".to_string(),
+        ));
+    }
+
+    let firm_library_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO firm_library_versions (
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            &firm_library_version_id,
+            firm_library_item_id,
+            next_version_number,
+            &definition_json,
+            &definition_hash,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FIRM_LIBRARY_VERSION_PUBLISHED",
+            entity_type: "FIRM_LIBRARY_VERSION",
+            entity_id: &firm_library_version_id,
+            related_entity_type: Some("FIRM_LIBRARY_ITEM"),
+            related_entity_id: Some(firm_library_item_id),
+            occurred_at_ms: now,
+            details: json!({
+                "category": item.category.as_str(),
+                "versionNumber": next_version_number,
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FirmLibraryItemRecord {
+        firm_library_item_id: firm_library_item_id.to_string(),
+        category: item.category,
+        name: item.name,
+        description: item.description,
+        service_type_id: item.service_type_id,
+        latest_version_id: firm_library_version_id,
+        latest_version_number: next_version_number as u64,
+        latest_definition_hash: definition_hash,
+        created_at_ms: item.created_at_ms,
+    })
+}
+
+pub fn list_firm_library_items(
+    database_path: &Path,
+    category: Option<&str>,
+    service_type_id: Option<&str>,
+) -> Result<Vec<FirmLibraryItemRecord>, PersistenceError> {
+    let category = category.map(normalize_firm_library_category).transpose()?;
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            i.firm_library_item_id,
+            i.category,
+            i.name,
+            i.description,
+            i.service_type_id,
+            v.firm_library_version_id,
+            v.version_number,
+            v.definition_hash,
+            i.created_at_ms
+         FROM firm_library_items i
+         JOIN firm_library_versions v
+           ON v.firm_library_item_id = i.firm_library_item_id
+          AND v.version_number = (
+              SELECT MAX(v2.version_number)
+              FROM firm_library_versions v2
+              WHERE v2.firm_library_item_id = i.firm_library_item_id
+          )
+         WHERE i.archived_at_ms IS NULL
+           AND (?1 IS NULL OR i.category = ?1)
+           AND (?2 IS NULL OR i.service_type_id = ?2)
+         ORDER BY i.category, i.name COLLATE NOCASE, i.created_at_ms",
+    )?;
+    let rows = statement.query_map(params![category.as_deref(), service_type_id], |row| {
+        let version_number: i64 = row.get(6)?;
+        Ok(FirmLibraryItemRecord {
+            firm_library_item_id: row.get(0)?,
+            category: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            service_type_id: row.get(4)?,
+            latest_version_id: row.get(5)?,
+            latest_version_number: version_number.max(0) as u64,
+            latest_definition_hash: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_firm_library_versions(
+    database_path: &Path,
+    firm_library_item_id: &str,
+) -> Result<Vec<FirmLibraryVersionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    let item_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM firm_library_items
+            WHERE firm_library_item_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if !item_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "firm library item {firm_library_item_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         FROM firm_library_versions
+         WHERE firm_library_item_id = ?1
+         ORDER BY version_number DESC",
+    )?;
+    let rows = statement.query_map([firm_library_item_id], |row| {
+        let version_number: i64 = row.get(2)?;
+        Ok(FirmLibraryVersionRecord {
+            firm_library_version_id: row.get(0)?,
+            firm_library_item_id: row.get(1)?,
+            version_number: version_number.max(0) as u64,
+            definition_json: row.get(3)?,
+            definition_hash: row.get(4)?,
+            created_at_ms: row.get(5)?,
+        })
+    })?;
+
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
@@ -8328,7 +8752,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 10);
+        assert_eq!(migration_count, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8369,14 +8793,16 @@ mod tests {
                        'workpaper_signoff_evidence',
                        'workpaper_signoff_supersessions',
                        'engagement_templates',
-                       'engagement_template_versions'
+                       'engagement_template_versions',
+                       'firm_library_items',
+                       'firm_library_versions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 35);
+        assert_eq!(table_count, 37);
     }
 
     #[test]
@@ -8412,7 +8838,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8453,14 +8879,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 10");
+        initialize_database(&database.path).expect("database should upgrade through version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_exists: i64 = connection
             .query_row(
@@ -8502,14 +8928,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 10");
+        initialize_database(&database.path).expect("database should upgrade through version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8554,14 +8980,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_exists: bool = connection
             .query_row(
@@ -8603,14 +9029,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8660,14 +9086,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8712,14 +9138,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8764,14 +9190,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8816,14 +9242,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8838,6 +9264,196 @@ mod tests {
             )
             .expect("engagement template tables should exist");
         assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn eleventh_migration_upgrades_existing_v10_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..10] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 10);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 11");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 11);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'firm_library_items',
+                       'firm_library_versions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("firm library tables should exist");
+        assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn firm_library_versions_are_exact_immutable_and_scoped() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        for category in [
+            "CHECKLIST",
+            "AUDIT_QUERY",
+            "RISK_TEMPLATE",
+            "CONTROL_TEMPLATE",
+            "LEDGER_SCRUTINY_TEST",
+            "REPORT_TEMPLATE",
+            "MANAGEMENT_LETTER_POINT",
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+        ] {
+            assert_eq!(
+                normalize_firm_library_category(category).expect("category should normalize"),
+                category
+            );
+        }
+        assert!(normalize_firm_library_category("unsupported")
+            .expect_err("unsupported category should fail")
+            .to_string()
+            .contains("not supported"));
+
+        let service =
+            create_service_type(&database.path, "Firm Library Assurance").expect("service type");
+
+        let checklist = create_firm_library_item(
+            &database.path,
+            "checklist",
+            "Revenue completion checklist",
+            Some("Firm completion steps for revenue testing."),
+            Some(&service.service_type_id),
+            r#"{"items":[{"id":"rev-1","text":"Agree final revenue schedule"}],"required":true}"#,
+        )
+        .expect("checklist should be created");
+        assert_eq!(checklist.category, "CHECKLIST");
+        assert_eq!(checklist.latest_version_number, 1);
+        assert_eq!(checklist.latest_definition_hash.len(), 32);
+        assert_eq!(
+            checklist.service_type_id.as_deref(),
+            Some(service.service_type_id.as_str())
+        );
+
+        let global_query = create_firm_library_item(
+            &database.path,
+            "audit query",
+            "Unexpected journal descriptions",
+            None,
+            None,
+            r#"{"query":"description contains unusual terms","severity":"review"}"#,
+        )
+        .expect("global audit query should be created");
+        assert_eq!(global_query.category, "AUDIT_QUERY");
+        assert_eq!(global_query.service_type_id, None);
+
+        let scoped_checklists = list_firm_library_items(
+            &database.path,
+            Some("CHECKLIST"),
+            Some(&service.service_type_id),
+        )
+        .expect("scoped checklist list should load");
+        assert_eq!(scoped_checklists.len(), 1);
+        assert_eq!(
+            scoped_checklists[0].firm_library_item_id,
+            checklist.firm_library_item_id
+        );
+
+        let all_items =
+            list_firm_library_items(&database.path, None, None).expect("library should load");
+        assert_eq!(all_items.len(), 2);
+
+        let invalid_definition = create_firm_library_item(
+            &database.path,
+            "RISK_TEMPLATE",
+            "Invalid definition",
+            None,
+            None,
+            r#"["not","an","object"]"#,
+        )
+        .expect_err("array definitions must be rejected");
+        assert!(invalid_definition
+            .to_string()
+            .contains("must be a JSON object"));
+
+        let invalid_category = create_firm_library_item(
+            &database.path,
+            "OTHER",
+            "Unsupported category",
+            None,
+            None,
+            r#"{"value":1}"#,
+        )
+        .expect_err("unsupported categories must be rejected");
+        assert!(invalid_category.to_string().contains("not supported"));
+
+        let updated = publish_firm_library_version(
+            &database.path,
+            &checklist.firm_library_item_id,
+            r#"{"items":[{"id":"rev-1","text":"Agree final revenue schedule"},{"id":"rev-2","text":"Document cut-off conclusion"}],"required":true}"#,
+        )
+        .expect("new library version should publish");
+        assert_eq!(updated.latest_version_number, 2);
+        assert_ne!(updated.latest_version_id, checklist.latest_version_id);
+        assert_ne!(
+            updated.latest_definition_hash,
+            checklist.latest_definition_hash
+        );
+
+        let versions = list_firm_library_versions(&database.path, &checklist.firm_library_item_id)
+            .expect("version history should load");
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version_number, 2);
+        assert_eq!(versions[1].version_number, 1);
+        assert_eq!(versions[0].definition_hash.len(), 32);
+        assert_eq!(versions[1].definition_hash.len(), 32);
+        assert!(versions[0]
+            .definition_json
+            .contains("Document cut-off conclusion"));
+        assert!(!versions[1]
+            .definition_json
+            .contains("Document cut-off conclusion"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE firm_library_versions
+                 SET definition_json = '{}'
+                 WHERE firm_library_version_id = ?1",
+                [&versions[1].firm_library_version_id],
+            )
+            .expect_err("firm library version updates must be rejected");
+        assert!(mutation_error
+            .to_string()
+            .contains("firm library versions are immutable"));
     }
 
     #[test]
