@@ -653,6 +653,21 @@ function formatTimestamp(timestampMs: number | null) {
   return new Date(timestampMs).toLocaleString();
 }
 
+function reviewLocationValuePlaceholder(locationKind: string) {
+  switch (locationKind) {
+    case "PAGE":
+      return "2";
+    case "WORKSHEET":
+      return "Trial Balance";
+    case "CELL":
+      return "Trial Balance!B12";
+    case "RANGE":
+      return "Trial Balance!B12:D20";
+    default:
+      return "Select a location kind";
+  }
+}
+
 type EvidenceVersionOption = {
   key: string;
   label: string;
@@ -4850,7 +4865,14 @@ export default function App() {
                               <span>Exact evidence link (optional)</span>
                               <select
                                 value={newReviewEvidenceLinkId}
-                                onChange={(event) => setNewReviewEvidenceLinkId(event.target.value)}
+                                onChange={(event) => {
+                                  const evidenceLinkId = event.target.value;
+                                  setNewReviewEvidenceLinkId(evidenceLinkId);
+                                  if (!evidenceLinkId) {
+                                    setNewReviewLocationKind("");
+                                    setNewReviewLocationValue("");
+                                  }
+                                }}
                               >
                                 <option value="">Workpaper revision only</option>
                                 {workpaperEvidenceLinks.map((link) => (
@@ -4862,30 +4884,37 @@ export default function App() {
                             </label>
                             <div className="workspace-form-pair">
                               <label>
-                                <span>Location kind</span>
-                                <input
-                                  list="review-location-kind-options"
+                                <span>Exact sublocation</span>
+                                <select
                                   value={newReviewLocationKind}
-                                  onChange={(event) => setNewReviewLocationKind(event.target.value)}
-                                  placeholder="PAGE / WORKSHEET / CELL / RANGE"
-                                  maxLength={80}
-                                />
-                                <datalist id="review-location-kind-options">
-                                  <option value="PAGE" />
-                                  <option value="WORKSHEET" />
-                                  <option value="CELL" />
-                                  <option value="RANGE" />
-                                </datalist>
+                                  onChange={(event) => {
+                                    setNewReviewLocationKind(event.target.value);
+                                    setNewReviewLocationValue("");
+                                  }}
+                                  disabled={!newReviewEvidenceLinkId}
+                                >
+                                  <option value="">Document only / no sublocation</option>
+                                  <option value="PAGE">Page</option>
+                                  <option value="WORKSHEET">Worksheet</option>
+                                  <option value="CELL">Cell</option>
+                                  <option value="RANGE">Cell range</option>
+                                </select>
                               </label>
                               <label>
-                                <span>Location value</span>
+                                <span>Anchor</span>
                                 <input
                                   value={newReviewLocationValue}
                                   onChange={(event) => setNewReviewLocationValue(event.target.value)}
-                                  placeholder="2 / Sheet1 / B12 / B12:D20"
+                                  placeholder={reviewLocationValuePlaceholder(newReviewLocationKind)}
+                                  disabled={!newReviewEvidenceLinkId || !newReviewLocationKind}
                                 />
                               </label>
                             </div>
+                            <p className="evidence-integrity-note">
+                              Select an exact evidence link before adding a page, worksheet, cell, or
+                              range anchor. Cell and range anchors include the worksheet, for example
+                              Trial Balance!B12.
+                            </p>
                             {reviewLocationIncomplete ? (
                               <p className="evidence-integrity-note">
                                 Location kind and location value must be supplied together.
@@ -4932,6 +4961,9 @@ export default function App() {
                                     Revision {revisionNumberById[note.workpaperRevisionId] ?? "historical"}
                                     {note.evidenceLinkId
                                       ? ` · ${evidenceLinkNameById[note.evidenceLinkId] ?? "exact evidence"}`
+                                      : ""}
+                                    {note.locationKind && note.locationValue
+                                      ? ` · ${note.locationKind} ${note.locationValue}`
                                       : ""}
                                   </small>
                                   <small>
