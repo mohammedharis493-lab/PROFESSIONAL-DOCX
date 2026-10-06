@@ -6305,6 +6305,20 @@ mod tests {
             )
             .expect("support A content version should load");
 
+        let historical_link_error = create_workpaper_evidence_link(
+            &database.path,
+            &revision_one.workpaper_revision_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            None,
+        )
+        .expect_err("superseded workpaper revision must reject new evidence links");
+        assert!(historical_link_error
+            .to_string()
+            .contains("evidence can only be linked to the latest workpaper revision"));
+
         let evidence_link = create_workpaper_evidence_link(
             &database.path,
             &revision_two.workpaper_revision_id,
@@ -6320,6 +6334,9 @@ mod tests {
             Some(version_a.as_str())
         );
         assert_eq!(evidence_link.controlled_evidence_version_id, None);
+        assert_eq!(evidence_link.document_name, "Support A.pdf");
+        assert!(evidence_link.content_observed_at_ms.is_some());
+        assert_eq!(evidence_link.controlled_version_number, None);
 
         let mismatch = create_workpaper_evidence_link(
             &database.path,
@@ -6340,6 +6357,9 @@ mod tests {
                 .expect("evidence links should load");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].evidence_link_id, evidence_link.evidence_link_id);
+        assert_eq!(links[0].document_name, "Support A.pdf");
+        assert_eq!(links[0].content_version_id.as_deref(), Some(version_a.as_str()));
+        assert!(links[0].content_observed_at_ms.is_some());
 
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
