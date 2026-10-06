@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 8;
+const LATEST_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -65,6 +65,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "pbc_requests",
         sql: include_str!("../migrations/0008_pbc_requests.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "workpaper_signoffs",
+        sql: include_str!("../migrations/0009_workpaper_signoffs.sql"),
     },
 ];
 
@@ -321,6 +326,32 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub relationship_type: String,
     pub description: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperSignoffRecord {
+    pub signoff_id: String,
+    pub workpaper_id: String,
+    pub workpaper_revision_id: String,
+    pub revision_number: u64,
+    pub signoff_type: String,
+    pub actor_id: String,
+    pub actor_role: String,
+    pub signed_at_ms: i64,
+    pub comment: Option<String>,
+    pub evidence_link_ids: Vec<String>,
+    pub superseded_at_ms: Option<i64>,
+    pub superseded_reason: Option<String>,
+    pub superseded_by_revision_id: Option<String>,
+}
+
+pub struct NewWorkpaperSignoff<'a> {
+    pub workpaper_id: &'a str,
+    pub workpaper_revision_id: &'a str,
+    pub signoff_type: &'a str,
+    pub actor_id: &'a str,
+    pub actor_role: &'a str,
+    pub comment: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -4623,6 +4654,21 @@ pub fn create_workpaper_revision(
         ],
     )?;
 
+    if let Some(previous_revision_id) = supersedes_revision_id.as_deref() {
+        let supersede_reason = revision_reason
+            .as_deref()
+            .map(|reason| format!("New workpaper revision created: {reason}"))
+            .unwrap_or_else(|| "New workpaper revision created.".to_string());
+        supersede_revision_signoffs(
+            &transaction,
+            previous_revision_id,
+            &revision_id,
+            now,
+            &supersede_reason,
+            None,
+        )?;
+    }
+
     insert_domain_audit_event(
         &transaction,
         DomainAuditEvent {
@@ -4761,6 +4807,22 @@ pub fn create_workpaper_evidence_link(
     if revision_number != latest_revision_number {
         return Err(PersistenceError::Configuration(
             "evidence can only be linked to the latest workpaper revision; create a new revision instead of changing historical evidence"
+                .to_string(),
+        ));
+    }
+
+    let active_signoff_count: i64 = transaction.query_row(
+        "SELECT COUNT(*)
+         FROM workpaper_signoffs s
+         LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+         WHERE s.workpaper_revision_id = ?1
+           AND ss.signoff_id IS NULL",
+        [workpaper_revision_id],
+        |row| row.get(0),
+    )?;
+    if active_signoff_count > 0 {
+        return Err(PersistenceError::Configuration(
+            "signed workpaper revision cannot receive additional evidence; create a new revision"
                 .to_string(),
         ));
     }
@@ -4939,6 +5001,367 @@ pub fn list_workpaper_evidence_links(
     for row in rows {
         result.push(row?);
     }
+    Ok(result)
+}
+
+fn signoff_type_key(value: &str) -> String {
+    workflow_state_key(value)
+}
+
+fn signoff_requires_controlled_evidence(value: &str) -> bool {
+    matches!(
+        signoff_type_key(value).as_str(),
+        "REVIEWED" | "FINAL_APPROVAL" | "FINAL"
+    )
+}
+
+fn supersede_revision_signoffs(
+    transaction: &rusqlite::Transaction<'_>,
+    workpaper_revision_id: &str,
+    superseded_by_revision_id: &str,
+    superseded_at_ms: i64,
+    reason: &str,
+    actor_id: Option<&str>,
+) -> Result<Vec<String>, PersistenceError> {
+    let signoff_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT s.signoff_id
+             FROM workpaper_signoffs s
+             LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+             WHERE s.workpaper_revision_id = ?1
+               AND ss.signoff_id IS NULL
+             ORDER BY s.signed_at_ms, s.rowid",
+        )?;
+        let rows = statement.query_map([workpaper_revision_id], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+
+    for signoff_id in &signoff_ids {
+        transaction.execute(
+            "INSERT INTO workpaper_signoff_supersessions (
+                signoff_supersession_id,
+                signoff_id,
+                superseded_by_revision_id,
+                superseded_at_ms,
+                superseded_reason,
+                actor_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                Uuid::new_v4().to_string(),
+                signoff_id,
+                superseded_by_revision_id,
+                superseded_at_ms,
+                reason,
+                actor_id
+            ],
+        )?;
+
+        insert_domain_audit_event(
+            transaction,
+            DomainAuditEvent {
+                event_type: "WORKPAPER_SIGNOFF_SUPERSEDED",
+                entity_type: "WORKPAPER_SIGNOFF",
+                entity_id: signoff_id,
+                related_entity_type: Some("WORKPAPER_REVISION"),
+                related_entity_id: Some(superseded_by_revision_id),
+                occurred_at_ms: superseded_at_ms,
+                details: json!({
+                    "supersededRevisionId": workpaper_revision_id,
+                    "supersededByRevisionId": superseded_by_revision_id,
+                    "reason": reason,
+                    "actorId": actor_id
+                }),
+            },
+        )?;
+    }
+
+    Ok(signoff_ids)
+}
+
+pub fn create_workpaper_signoff(
+    database_path: &Path,
+    signoff: NewWorkpaperSignoff<'_>,
+) -> Result<WorkpaperSignoffRecord, PersistenceError> {
+    let signoff_type = normalize_domain_label(signoff.signoff_type, "sign-off type", 80)?;
+    let actor_id = normalize_domain_label(signoff.actor_id, "sign-off actor", 160)?;
+    let actor_role = normalize_domain_label(signoff.actor_role, "sign-off actor role", 160)?;
+    let comment = signoff
+        .comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let revision_context: Option<(String, i64, i64)> = transaction
+        .query_row(
+            "SELECT
+                wr.workpaper_id,
+                wr.revision_number,
+                (
+                    SELECT MAX(latest.revision_number)
+                    FROM workpaper_revisions latest
+                    WHERE latest.workpaper_id = wr.workpaper_id
+                )
+             FROM workpaper_revisions wr
+             WHERE wr.workpaper_revision_id = ?1",
+            [signoff.workpaper_revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((revision_workpaper_id, revision_number, latest_revision_number)) = revision_context
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper revision {} does not exist",
+            signoff.workpaper_revision_id
+        )));
+    };
+    if revision_workpaper_id != signoff.workpaper_id {
+        return Err(PersistenceError::Configuration(
+            "sign-off revision must belong to the selected workpaper".to_string(),
+        ));
+    }
+    if revision_number != latest_revision_number {
+        return Err(PersistenceError::Configuration(
+            "sign-off can only be recorded against the latest workpaper revision".to_string(),
+        ));
+    }
+
+    if signoff_requires_controlled_evidence(&signoff_type) {
+        let unsafe_evidence_count: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM workpaper_evidence_links wel
+             LEFT JOIN controlled_evidence_versions cev
+               ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+             WHERE wel.workpaper_revision_id = ?1
+               AND (
+                   wel.controlled_evidence_version_id IS NULL
+                   OR cev.verification_state <> 'HASH_VERIFIED'
+               )",
+            [signoff.workpaper_revision_id],
+            |row| row.get(0),
+        )?;
+        if unsafe_evidence_count > 0 {
+            return Err(PersistenceError::Configuration(
+                "reviewer/final sign-off requires all linked evidence to be immutable hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+
+        let unresolved_review_notes: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM review_notes
+             WHERE workpaper_revision_id = ?1
+               AND current_state <> 'CLEARED'",
+            [signoff.workpaper_revision_id],
+            |row| row.get(0),
+        )?;
+        if unresolved_review_notes > 0 {
+            return Err(PersistenceError::Configuration(
+                "reviewer/final sign-off requires all review notes on the revision to be cleared"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let evidence_link_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT evidence_link_id
+             FROM workpaper_evidence_links
+             WHERE workpaper_revision_id = ?1
+             ORDER BY created_at_ms, rowid",
+        )?;
+        let rows = statement.query_map([signoff.workpaper_revision_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+
+    let signoff_id = Uuid::new_v4().to_string();
+    let signed_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO workpaper_signoffs (
+            signoff_id,
+            workpaper_id,
+            workpaper_revision_id,
+            signoff_type,
+            actor_id,
+            actor_role,
+            signed_at_ms,
+            comment
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &signoff_id,
+            signoff.workpaper_id,
+            signoff.workpaper_revision_id,
+            &signoff_type,
+            &actor_id,
+            &actor_role,
+            signed_at_ms,
+            comment.as_deref()
+        ],
+    )?;
+
+    for evidence_link_id in &evidence_link_ids {
+        transaction.execute(
+            "INSERT INTO workpaper_signoff_evidence (
+                signoff_evidence_id,
+                signoff_id,
+                evidence_link_id,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                &signoff_id,
+                evidence_link_id,
+                signed_at_ms
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "WORKPAPER_SIGNOFF_CREATED",
+            entity_type: "WORKPAPER_SIGNOFF",
+            entity_id: &signoff_id,
+            related_entity_type: Some("WORKPAPER_REVISION"),
+            related_entity_id: Some(signoff.workpaper_revision_id),
+            occurred_at_ms: signed_at_ms,
+            details: json!({
+                "workpaperId": signoff.workpaper_id,
+                "revisionNumber": revision_number,
+                "signoffType": signoff_type,
+                "actorId": actor_id,
+                "actorRole": actor_role,
+                "evidenceLinkIds": evidence_link_ids
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperSignoffRecord {
+        signoff_id,
+        workpaper_id: signoff.workpaper_id.to_string(),
+        workpaper_revision_id: signoff.workpaper_revision_id.to_string(),
+        revision_number: revision_number.max(0) as u64,
+        signoff_type,
+        actor_id,
+        actor_role,
+        signed_at_ms,
+        comment,
+        evidence_link_ids,
+        superseded_at_ms: None,
+        superseded_reason: None,
+        superseded_by_revision_id: None,
+    })
+}
+
+pub fn list_workpaper_signoffs(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<WorkpaperSignoffRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let base_rows = {
+        let mut statement = connection.prepare(
+            "SELECT
+                s.signoff_id,
+                s.workpaper_id,
+                s.workpaper_revision_id,
+                wr.revision_number,
+                s.signoff_type,
+                s.actor_id,
+                s.actor_role,
+                s.signed_at_ms,
+                s.comment,
+                ss.superseded_at_ms,
+                ss.superseded_reason,
+                ss.superseded_by_revision_id
+             FROM workpaper_signoffs s
+             JOIN workpaper_revisions wr
+               ON wr.workpaper_revision_id = s.workpaper_revision_id
+             LEFT JOIN workpaper_signoff_supersessions ss
+               ON ss.signoff_id = s.signoff_id
+             WHERE s.workpaper_id = ?1
+             ORDER BY wr.revision_number DESC, s.signed_at_ms DESC, s.rowid DESC",
+        )?;
+        let rows = statement.query_map([workpaper_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        values
+    };
+
+    let mut result = Vec::new();
+    for (
+        signoff_id,
+        row_workpaper_id,
+        workpaper_revision_id,
+        revision_number,
+        signoff_type,
+        actor_id,
+        actor_role,
+        signed_at_ms,
+        comment,
+        superseded_at_ms,
+        superseded_reason,
+        superseded_by_revision_id,
+    ) in base_rows
+    {
+        let mut statement = connection.prepare(
+            "SELECT evidence_link_id
+             FROM workpaper_signoff_evidence
+             WHERE signoff_id = ?1
+             ORDER BY created_at_ms, rowid",
+        )?;
+        let rows = statement.query_map([&signoff_id], |row| row.get::<_, String>(0))?;
+        let mut evidence_link_ids = Vec::new();
+        for row in rows {
+            evidence_link_ids.push(row?);
+        }
+
+        result.push(WorkpaperSignoffRecord {
+            signoff_id,
+            workpaper_id: row_workpaper_id,
+            workpaper_revision_id,
+            revision_number: revision_number.max(0) as u64,
+            signoff_type,
+            actor_id,
+            actor_role,
+            signed_at_ms,
+            comment,
+            evidence_link_ids,
+            superseded_at_ms,
+            superseded_reason,
+            superseded_by_revision_id,
+        });
+    }
+
     Ok(result)
 }
 
@@ -7133,7 +7556,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 8);
+        assert_eq!(migration_count, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7169,14 +7592,17 @@ mod tests {
                        'review_note_events',
                        'pbc_requests',
                        'pbc_request_events',
-                       'pbc_request_evidence_links'
+                       'pbc_request_evidence_links',
+                       'workpaper_signoffs',
+                       'workpaper_signoff_evidence',
+                       'workpaper_signoff_supersessions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 30);
+        assert_eq!(table_count, 33);
     }
 
     #[test]
@@ -7212,7 +7638,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7253,14 +7679,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 8");
+        initialize_database(&database.path).expect("database should upgrade through version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_exists: i64 = connection
             .query_row(
@@ -7302,14 +7728,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 8");
+        initialize_database(&database.path).expect("database should upgrade through version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7354,14 +7780,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_exists: bool = connection
             .query_row(
@@ -7403,14 +7829,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7460,14 +7886,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7512,14 +7938,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7534,6 +7960,58 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("PBC request tables should exist");
+        assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn ninth_migration_upgrades_existing_v8_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..8] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 8);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 9");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 9);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'workpaper_signoffs',
+                       'workpaper_signoff_evidence',
+                       'workpaper_signoff_supersessions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sign-off tables should exist");
         assert_eq!(table_count, 3);
     }
 
@@ -8061,6 +8539,255 @@ mod tests {
             .to_string()
             .contains("review note events are immutable"));
 
+        let reviewer_signoff_error = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                signoff_type: "REVIEWED",
+                actor_id: "manager@example.test",
+                actor_role: "Engagement Manager",
+                comment: Some("Attempted reviewer sign-off."),
+            },
+        )
+        .expect_err("reviewer sign-off must reject raw observed evidence");
+        assert!(reviewer_signoff_error
+            .to_string()
+            .contains("immutable hash-verified controlled evidence"));
+
+        let prepared_signoff = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                signoff_type: "PREPARED",
+                actor_id: "preparer@example.test",
+                actor_role: "Senior Associate",
+                comment: Some("Prepared revision 2 for review."),
+            },
+        )
+        .expect("preparer sign-off should succeed before formal reviewer reliance");
+        assert_eq!(prepared_signoff.revision_number, 2);
+        assert_eq!(
+            prepared_signoff.evidence_link_ids,
+            vec![evidence_link.evidence_link_id.clone()]
+        );
+        assert_eq!(prepared_signoff.superseded_at_ms, None);
+
+        let post_signoff_link_error = create_workpaper_evidence_link(
+            &database.path,
+            &revision_two.workpaper_revision_id,
+            &support_a.document_id,
+            Some(&version_a),
+            None,
+            "SUPPORTS",
+            Some("Attempted evidence mutation after sign-off"),
+        )
+        .expect_err("signed revision must reject additional evidence");
+        assert!(post_signoff_link_error
+            .to_string()
+            .contains("signed workpaper revision cannot receive additional evidence"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let signoff_mutation_error = connection
+            .execute(
+                "UPDATE workpaper_signoffs
+                 SET actor_role = 'tampered'
+                 WHERE signoff_id = ?1",
+                [&prepared_signoff.signoff_id],
+            )
+            .expect_err("sign-off row must be immutable");
+        assert!(signoff_mutation_error
+            .to_string()
+            .contains("workpaper sign-offs are immutable"));
+
+        let revision_three = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Rework after review and controlled evidence capture"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Reperformed the expanded onboarding review.",
+                population: "All vendors added during the period.",
+                sample: "Eight judgmentally selected vendors.",
+                exceptions: "One delayed approval noted and evaluated.",
+                management_explanation: "Approval was completed the following business day.",
+                conclusion: "Control operated with one documented timing exception.",
+            },
+        )
+        .expect("new material revision should be created");
+
+        let signoffs_after_revision_three =
+            list_workpaper_signoffs(&database.path, &workpaper.workpaper_id)
+                .expect("sign-off history should load");
+        assert_eq!(signoffs_after_revision_three.len(), 1);
+        assert_eq!(
+            signoffs_after_revision_three[0].signoff_id,
+            prepared_signoff.signoff_id
+        );
+        assert_eq!(
+            signoffs_after_revision_three[0]
+                .superseded_by_revision_id
+                .as_deref(),
+            Some(revision_three.workpaper_revision_id.as_str())
+        );
+        assert!(signoffs_after_revision_three[0].superseded_at_ms.is_some());
+
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_version_id = Uuid::new_v4().to_string();
+        let controlled_locator = format!("test-controlled://{controlled_version_id}");
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        connection
+            .execute(
+                "INSERT INTO evidence_capture_jobs (
+                    evidence_capture_job_id,
+                    file_instance_id,
+                    document_id,
+                    status,
+                    requested_at_ms,
+                    started_at_ms,
+                    completed_at_ms,
+                    capture_reason,
+                    capture_policy,
+                    failure_code,
+                    failure_message
+                 ) VALUES (?1, ?2, ?3, 'COMPLETE', 3000, 3001, 3002, ?4, ?5, NULL, NULL)",
+                params![
+                    &capture_job_id,
+                    &support_a.file_instance_id,
+                    &support_a.document_id,
+                    "Formal review support",
+                    "TEST_CONTROLLED"
+                ],
+            )
+            .expect("controlled evidence capture job should insert");
+        connection
+            .execute(
+                "INSERT INTO controlled_evidence_versions (
+                    controlled_evidence_version_id,
+                    document_id,
+                    source_file_instance_id,
+                    source_content_version_id,
+                    evidence_capture_job_id,
+                    version_number,
+                    controlled_storage_locator,
+                    sha256,
+                    size_bytes,
+                    captured_at_ms,
+                    captured_by,
+                    capture_reason,
+                    capture_policy,
+                    retention_state,
+                    verification_state,
+                    source_stable_during_read
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 64, 3002, ?8, ?9, ?10, 'RETAINED', 'HASH_VERIFIED', 1)",
+                params![
+                    &controlled_version_id,
+                    &support_a.document_id,
+                    &support_a.file_instance_id,
+                    &version_a,
+                    &capture_job_id,
+                    &controlled_locator,
+                    vec![0xA5_u8; 32],
+                    "preparer@example.test",
+                    "Formal review support",
+                    "TEST_CONTROLLED"
+                ],
+            )
+            .expect("hash-verified controlled evidence should insert");
+
+        let controlled_link = create_workpaper_evidence_link(
+            &database.path,
+            &revision_three.workpaper_revision_id,
+            &support_a.document_id,
+            None,
+            Some(&controlled_version_id),
+            "SUPPORTS",
+            Some("Controlled onboarding evidence"),
+        )
+        .expect("new revision should accept controlled evidence");
+        assert_eq!(
+            controlled_link.controlled_evidence_version_id.as_deref(),
+            Some(controlled_version_id.as_str())
+        );
+
+        let reviewer_signoff = create_workpaper_signoff(
+            &database.path,
+            NewWorkpaperSignoff {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_three.workpaper_revision_id,
+                signoff_type: "REVIEWED",
+                actor_id: "manager@example.test",
+                actor_role: "Engagement Manager",
+                comment: Some("Reviewed controlled evidence and revision 3."),
+            },
+        )
+        .expect("reviewer sign-off should succeed on controlled evidence");
+        assert_eq!(reviewer_signoff.revision_number, 3);
+        assert_eq!(
+            reviewer_signoff.evidence_link_ids,
+            vec![controlled_link.evidence_link_id.clone()]
+        );
+
+        let revision_four = create_workpaper_revision(
+            &database.path,
+            &workpaper.workpaper_id,
+            NewWorkpaperRevision {
+                revision_reason: Some("Post-review conclusion refinement"),
+                objective: "Confirm onboarding approvals operate as designed.",
+                procedure_performed: "Reperformed the expanded onboarding review.",
+                population: "All vendors added during the period.",
+                sample: "Eight judgmentally selected vendors.",
+                exceptions: "One delayed approval noted and evaluated.",
+                management_explanation: "Approval was completed the following business day.",
+                conclusion:
+                    "Control operated effectively subject to one documented timing exception.",
+            },
+        )
+        .expect("post-review material change should create a new revision");
+
+        let signoff_history = list_workpaper_signoffs(&database.path, &workpaper.workpaper_id)
+            .expect("sign-off history should load");
+        assert_eq!(signoff_history.len(), 2);
+        let reviewed_history = signoff_history
+            .iter()
+            .find(|entry| entry.signoff_id == reviewer_signoff.signoff_id)
+            .expect("reviewer sign-off should remain historical");
+        assert_eq!(
+            reviewed_history.superseded_by_revision_id.as_deref(),
+            Some(revision_four.workpaper_revision_id.as_str())
+        );
+        assert!(reviewed_history.superseded_at_ms.is_some());
+        let prepared_history = signoff_history
+            .iter()
+            .find(|entry| entry.signoff_id == prepared_signoff.signoff_id)
+            .expect("preparer sign-off should remain historical");
+        assert_eq!(
+            prepared_history.superseded_by_revision_id.as_deref(),
+            Some(revision_three.workpaper_revision_id.as_str())
+        );
+
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_SIGNOFF_CREATED",
+                &prepared_signoff.signoff_id,
+            )
+            .expect("preparer sign-off audit count should load"),
+            1
+        );
+        assert_eq!(
+            count_audit_events_for_test(
+                &database.path,
+                "WORKPAPER_SIGNOFF_SUPERSEDED",
+                &reviewer_signoff.signoff_id,
+            )
+            .expect("reviewer sign-off supersession audit count should load"),
+            1
+        );
+
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
         let delete_error = connection
@@ -8105,7 +8832,7 @@ mod tests {
         let workpapers = list_workpapers(&database.path, &engagement.engagement_id)
             .expect("workpapers should list");
         assert_eq!(workpapers.len(), 1);
-        assert_eq!(workpapers[0].latest_revision_number, Some(2));
+        assert_eq!(workpapers[0].latest_revision_number, Some(4));
 
         let areas = list_engagement_areas(&database.path, &engagement.engagement_id)
             .expect("engagement areas should list");
