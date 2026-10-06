@@ -2264,6 +2264,26 @@ export default function App() {
   const pinnedDocumentIds = new Set(
     pinnedDocuments.map((document) => document.documentId),
   );
+  const selectedClient =
+    clients.find((client) => client.clientId === selectedClientId) ?? null;
+  const selectedEngagement =
+    engagements.find((engagement) => engagement.engagementId === selectedEngagementId) ??
+    null;
+  const selectedWorkpaper =
+    workpapers.find((workpaper) => workpaper.workpaperId === selectedWorkpaperId) ??
+    null;
+  const visibleEngagements = selectedClientId
+    ? engagements.filter((engagement) => engagement.clientId === selectedClientId)
+    : engagements;
+  const clientNameById = Object.fromEntries(
+    clients.map((client) => [client.clientId, client.name]),
+  );
+  const serviceTypeNameById = Object.fromEntries(
+    serviceTypes.map((serviceType) => [serviceType.serviceTypeId, serviceType.name]),
+  );
+  const areaNameById = Object.fromEntries(
+    engagementAreas.map((area) => [area.engagementAreaId, area.name]),
+  );
 
   return (
     <div className="app-shell">
@@ -2284,11 +2304,19 @@ export default function App() {
           >
             Home
           </button>
-          <button className="nav-item" type="button" disabled>
-            Clients
+          <button
+            className={`nav-item${viewMode === "clients" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("clients")}
+          >
+            Clients <span className="nav-count">{clients.length}</span>
           </button>
-          <button className="nav-item" type="button" disabled>
-            Engagements
+          <button
+            className={`nav-item${viewMode === "engagements" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("engagements")}
+          >
+            Engagements <span className="nav-count">{engagements.length}</span>
           </button>
           <button
             className={`nav-item${viewMode === "recent" ? " nav-item-active" : ""}`}
@@ -2709,7 +2737,7 @@ export default function App() {
           </section>
         ) : null}
 
-        {roots.length ? (
+        {viewMode === "home" && roots.length ? (
           <section className="roots-panel" aria-label="Approved storage roots">
             <div className="results-heading">
               <div>
