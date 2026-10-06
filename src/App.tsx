@@ -1327,6 +1327,214 @@ export default function App() {
     }
   }
 
+  async function loadPbcRequestDetail(pbcRequestId: string) {
+    setWorkspaceBusy(true);
+    setSelectedPbcRequestId(pbcRequestId);
+    setPbcEvidenceSearchResults([]);
+    setSelectedPbcEvidenceDocument(null);
+    setPbcEvidenceVersionHistory([]);
+    setSelectedPbcEvidenceVersionKey("");
+    try {
+      const [events, links] = await Promise.all([
+        invoke<PbcRequestEvent[]>("list_pbc_request_events", { pbcRequestId }),
+        invoke<PbcRequestEvidenceLink[]>("list_pbc_request_evidence_links", {
+          pbcRequestId,
+        }),
+      ]);
+      setPbcRequestEvents(events);
+      setPbcEvidenceLinks(links);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setPbcRequestEvents([]);
+      setPbcEvidenceLinks([]);
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function refreshPbcRequests(engagementId: string) {
+    const requests = await invoke<PbcRequest[]>("list_pbc_requests", { engagementId });
+    setPbcRequests(requests);
+    return requests;
+  }
+
+  async function submitPbcRequest(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    if (
+      !newPbcRequestNumber.trim() ||
+      !newPbcDescription.trim() ||
+      !newPbcRequestedFrom.trim()
+    ) {
+      return;
+    }
+
+    const dueAtMs = newPbcDueLocal ? new Date(newPbcDueLocal).getTime() : null;
+    if (dueAtMs !== null && Number.isNaN(dueAtMs)) {
+      setError("PBC due date is invalid.");
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<PbcRequest>("create_pbc_request", {
+        engagementId: selectedEngagementId,
+        request: {
+          engagementAreaId: newPbcAreaId || null,
+          requestNumber: newPbcRequestNumber.trim(),
+          description: newPbcDescription.trim(),
+          requestedFromParty: newPbcRequestedFrom.trim(),
+          dueAtMs,
+          status: "REQUESTED",
+          clientVisibleContent: newPbcClientVisibleContent.trim() || null,
+          internalNotes: newPbcInternalNotes.trim() || null,
+        },
+      });
+      setNewPbcRequestNumber("");
+      setNewPbcAreaId("");
+      setNewPbcDescription("");
+      setNewPbcRequestedFrom("");
+      setNewPbcDueLocal("");
+      setNewPbcClientVisibleContent("");
+      setNewPbcInternalNotes("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(created.pbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitPbcStatus(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPbcRequestId || !selectedEngagementId || !pbcNextStatus.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvent>("transition_pbc_request_status", {
+        pbcRequestId: selectedPbcRequestId,
+        toStatus: pbcNextStatus.trim(),
+        actorId: pbcActorId.trim() || null,
+        comment: pbcStatusComment.trim() || null,
+      });
+      setPbcStatusComment("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(selectedPbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitPbcAssessment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPbcRequestId || !selectedEngagementId || !pbcAssessmentText.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvent>("add_pbc_request_assessment", {
+        pbcRequestId: selectedPbcRequestId,
+        assessmentText: pbcAssessmentText.trim(),
+        actorId: pbcActorId.trim() || null,
+      });
+      setPbcAssessmentText("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(selectedPbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchPbcEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const searchText = pbcEvidenceSearchQuery.trim();
+    if (!selectedPbcRequestId || !searchText) return;
+
+    setPbcEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setPbcEvidenceSearchResults(results);
+      setSelectedPbcEvidenceDocument(null);
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setPbcEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectPbcEvidenceDocument(document: SearchResult) {
+    setPbcEvidenceSearchBusy(true);
+    setSelectedPbcEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setPbcEvidenceVersionHistory(history);
+      const controlled = history.find((entry) => entry.controlledEvidenceVersionId);
+      if (controlled?.controlledEvidenceVersionId) {
+        setSelectedPbcEvidenceVersionKey(
+          `controlled:${controlled.controlledEvidenceVersionId}`,
+        );
+      } else if (history[0]) {
+        setSelectedPbcEvidenceVersionKey(`content:${history[0].contentVersionId}`);
+      } else {
+        setSelectedPbcEvidenceVersionKey("");
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+    } finally {
+      setPbcEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitPbcEvidenceLink(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !selectedPbcRequestId ||
+      !selectedPbcEvidenceDocument ||
+      !selectedPbcEvidenceVersionKey
+    ) {
+      return;
+    }
+
+    const [versionKind, versionId] = selectedPbcEvidenceVersionKey.split(":", 2);
+    if (!versionId || (versionKind !== "content" && versionKind !== "controlled")) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvidenceLink>("create_pbc_request_evidence_link", {
+        pbcRequestId: selectedPbcRequestId,
+        documentId: selectedPbcEvidenceDocument.documentId,
+        contentVersionId: versionKind === "content" ? versionId : null,
+        controlledEvidenceVersionId: versionKind === "controlled" ? versionId : null,
+        description: pbcEvidenceDescription.trim() || null,
+      });
+      setPbcEvidenceDescription("");
+      setPbcEvidenceSearchResults([]);
+      setSelectedPbcEvidenceDocument(null);
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+      const links = await invoke<PbcRequestEvidenceLink[]>(
+        "list_pbc_request_evidence_links",
+        { pbcRequestId: selectedPbcRequestId },
+      );
+      setPbcEvidenceLinks(links);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function submitClient(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = newClientName.trim();
