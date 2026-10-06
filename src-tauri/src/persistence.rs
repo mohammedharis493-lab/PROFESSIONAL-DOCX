@@ -8690,7 +8690,7 @@ mod tests {
                     &version_a,
                     &capture_job_id,
                     &controlled_locator,
-                    vec![0xA5; 32],
+                    vec![0xA5_u8; 32],
                     "preparer@example.test",
                     "Formal review support",
                     "TEST_CONTROLLED"
