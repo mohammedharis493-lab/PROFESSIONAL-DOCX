@@ -83,6 +83,17 @@ type Engagement = {
   createdAtMs: number;
 };
 
+type EngagementTemplate = {
+  engagementTemplateId: string;
+  name: string;
+  description: string | null;
+  latestVersionId: string;
+  latestVersionNumber: number;
+  serviceTypeId: string;
+  sourceEngagementId: string | null;
+  createdAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -754,6 +765,7 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [serviceTypes, setServiceTypes] = useState<ServiceType[]>([]);
   const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [engagementTemplates, setEngagementTemplates] = useState<EngagementTemplate[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedEngagementId, setSelectedEngagementId] = useState<string | null>(null);
   const [engagementAreas, setEngagementAreas] = useState<EngagementArea[]>([]);
@@ -826,8 +838,11 @@ export default function App() {
   const [newServiceTypeName, setNewServiceTypeName] = useState("");
   const [newEngagementName, setNewEngagementName] = useState("");
   const [newEngagementServiceTypeId, setNewEngagementServiceTypeId] = useState("");
+  const [newEngagementTemplateVersionId, setNewEngagementTemplateVersionId] = useState("");
   const [newEngagementPeriodStart, setNewEngagementPeriodStart] = useState("");
   const [newEngagementPeriodEnd, setNewEngagementPeriodEnd] = useState("");
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplateDescription, setNewTemplateDescription] = useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1054,14 +1069,17 @@ export default function App() {
 
   async function refreshProfessionalWorkspace() {
     try {
-      const [clientRecords, serviceTypeRecords, engagementRecords] = await Promise.all([
-        invoke<Client[]>("list_clients"),
-        invoke<ServiceType[]>("list_service_types"),
-        invoke<Engagement[]>("list_engagements", { clientId: null }),
-      ]);
+      const [clientRecords, serviceTypeRecords, engagementRecords, templateRecords] =
+        await Promise.all([
+          invoke<Client[]>("list_clients"),
+          invoke<ServiceType[]>("list_service_types"),
+          invoke<Engagement[]>("list_engagements", { clientId: null }),
+          invoke<EngagementTemplate[]>("list_engagement_templates"),
+        ]);
       setClients(clientRecords);
       setServiceTypes(serviceTypeRecords);
       setEngagements(engagementRecords);
+      setEngagementTemplates(templateRecords);
       if (!newEngagementServiceTypeId && serviceTypeRecords.length) {
         setNewEngagementServiceTypeId(serviceTypeRecords[0].serviceTypeId);
       }
@@ -1670,27 +1688,67 @@ export default function App() {
 
   async function submitEngagement(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedClientId || !newEngagementServiceTypeId) return;
+    if (!selectedClientId) return;
+    if (!newEngagementTemplateVersionId && !newEngagementServiceTypeId) return;
     const name = newEngagementName.trim();
     if (!name) return;
 
     setWorkspaceBusy(true);
     try {
-      const created = await invoke<Engagement>("create_engagement", {
+      const engagementInput = {
         clientId: selectedClientId,
-        serviceTypeId: newEngagementServiceTypeId,
         name,
         periodStart: newEngagementPeriodStart.trim() || null,
         periodEnd: newEngagementPeriodEnd.trim() || null,
         status: "ACTIVE",
-      });
+      };
+      const created = newEngagementTemplateVersionId
+        ? await invoke<Engagement>("create_engagement_from_template", {
+            engagementTemplateVersionId: newEngagementTemplateVersionId,
+            ...engagementInput,
+          })
+        : await invoke<Engagement>("create_engagement", {
+            serviceTypeId: newEngagementServiceTypeId,
+            ...engagementInput,
+          });
       setEngagements((current) => [created, ...current]);
       setNewEngagementName("");
+      setNewEngagementTemplateVersionId("");
       setNewEngagementPeriodStart("");
       setNewEngagementPeriodEnd("");
       await loadEngagementWorkspace(created.engagementId);
     } catch (workspaceError) {
       setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitEngagementTemplate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    const name = newTemplateName.trim();
+    if (!name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<EngagementTemplate>(
+        "create_engagement_template_from_engagement",
+        {
+          sourceEngagementId: selectedEngagementId,
+          name,
+          description: newTemplateDescription.trim() || null,
+        },
+      );
+      setEngagementTemplates((current) =>
+        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setNewTemplateName("");
+      setNewTemplateDescription("");
+      setNewEngagementTemplateVersionId(created.latestVersionId);
+      setNewEngagementServiceTypeId(created.serviceTypeId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
       setWorkspaceBusy(false);
     }
   }
@@ -3548,10 +3606,37 @@ export default function App() {
                   </select>
                 </label>
                 <label>
+                  <span>Firm template</span>
+                  <select
+                    value={newEngagementTemplateVersionId}
+                    onChange={(event) => {
+                      const versionId = event.target.value;
+                      setNewEngagementTemplateVersionId(versionId);
+                      const template = engagementTemplates.find(
+                        (entry) => entry.latestVersionId === versionId,
+                      );
+                      if (template) {
+                        setNewEngagementServiceTypeId(template.serviceTypeId);
+                      }
+                    }}
+                  >
+                    <option value="">Blank engagement</option>
+                    {engagementTemplates.map((template) => (
+                      <option
+                        key={template.engagementTemplateId}
+                        value={template.latestVersionId}
+                      >
+                        {template.name} · v{template.latestVersionNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
                   <span>Service type</span>
                   <select
                     value={newEngagementServiceTypeId}
                     onChange={(event) => setNewEngagementServiceTypeId(event.target.value)}
+                    disabled={Boolean(newEngagementTemplateVersionId)}
                   >
                     <option value="">Select service type</option>
                     {serviceTypes.map((serviceType) => (
@@ -3561,6 +3646,12 @@ export default function App() {
                     ))}
                   </select>
                 </label>
+                {newEngagementTemplateVersionId ? (
+                  <p className="evidence-integrity-note">
+                    The selected exact template version is copied into the new engagement. Later
+                    firm-methodology changes will not rewrite this engagement.
+                  </p>
+                ) : null}
                 <label>
                   <span>Engagement name</span>
                   <input
@@ -3594,11 +3685,13 @@ export default function App() {
                   disabled={
                     workspaceBusy ||
                     !selectedClientId ||
-                    !newEngagementServiceTypeId ||
+                    (!newEngagementTemplateVersionId && !newEngagementServiceTypeId) ||
                     !newEngagementName.trim()
                   }
                 >
-                  Create engagement
+                  {newEngagementTemplateVersionId
+                    ? "Create from exact template"
+                    : "Create engagement"}
                 </button>
               </form>
 
@@ -3656,6 +3749,70 @@ export default function App() {
                     <h3>{selectedEngagement.name}</h3>
                   </div>
                   <span>{workspaceBusy ? "Updating…" : "Ready"}</span>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <form className="workspace-card workspace-form" onSubmit={submitEngagementTemplate}>
+                    <div>
+                      <span className="workspace-label">FIRM METHODOLOGY</span>
+                      <h3>Capture as reusable template</h3>
+                    </div>
+                    <label>
+                      <span>Template name</span>
+                      <input
+                        value={newTemplateName}
+                        onChange={(event) => setNewTemplateName(event.target.value)}
+                        placeholder="Core revenue methodology"
+                        maxLength={200}
+                      />
+                    </label>
+                    <label>
+                      <span>Description</span>
+                      <textarea
+                        value={newTemplateDescription}
+                        onChange={(event) => setNewTemplateDescription(event.target.value)}
+                        rows={2}
+                        placeholder="What this methodology template is intended to cover."
+                      />
+                    </label>
+                    <p className="evidence-integrity-note">
+                      Captures the current active areas, sub-areas, and procedures as immutable
+                      version 1. Workpapers and client evidence are not copied into firm methodology.
+                    </p>
+                    <button
+                      className="secondary-button"
+                      type="submit"
+                      disabled={workspaceBusy || !newTemplateName.trim()}
+                    >
+                      Save exact methodology version
+                    </button>
+                  </form>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">FIRM TEMPLATES</span>
+                        <h3>{engagementTemplates.length} available</h3>
+                      </div>
+                    </div>
+                    <div className="workspace-mini-list">
+                      {engagementTemplates.length ? (
+                        engagementTemplates.map((template) => (
+                          <span key={template.engagementTemplateId}>
+                            <strong>{template.name}</strong>
+                            <small>
+                              v{template.latestVersionNumber} ·{" "}
+                              {serviceTypeNameById[template.serviceTypeId] ?? "Service"}
+                            </small>
+                          </span>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          Capture a configured engagement to create the first firm template.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="workspace-grid workspace-grid-three">
