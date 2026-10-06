@@ -7084,6 +7084,119 @@ mod tests {
         );
         assert!(links[0].content_observed_at_ms.is_some());
 
+        let prepared_event = transition_workpaper_state(
+            &database.path,
+            &workpaper.workpaper_id,
+            "PREPARED",
+            Some("preparer@example.test"),
+            Some("Preparation complete"),
+        )
+        .expect("prepared transition should succeed");
+        assert_eq!(prepared_event.from_state, "IN_PROGRESS");
+        assert_eq!(prepared_event.to_state, "PREPARED");
+        assert_eq!(
+            prepared_event.workpaper_revision_id.as_deref(),
+            Some(revision_two.workpaper_revision_id.as_str())
+        );
+
+        let formal_review_error = transition_workpaper_state(
+            &database.path,
+            &workpaper.workpaper_id,
+            "SUBMITTED_FOR_REVIEW",
+            Some("preparer@example.test"),
+            None,
+        )
+        .expect_err("raw observed evidence must block formal review");
+        assert!(formal_review_error
+            .to_string()
+            .contains("immutable hash-verified controlled evidence"));
+
+        let workflow_events =
+            list_workpaper_workflow_events(&database.path, &workpaper.workpaper_id)
+                .expect("workflow history should load");
+        assert_eq!(workflow_events.len(), 1);
+        assert_eq!(workflow_events[0].to_state, "PREPARED");
+
+        let review_note = create_review_note(
+            &database.path,
+            NewReviewNote {
+                workpaper_id: &workpaper.workpaper_id,
+                workpaper_revision_id: &revision_two.workpaper_revision_id,
+                evidence_link_id: Some(&evidence_link.evidence_link_id),
+                title: "Explain timing exception",
+                body: "Please document why the delayed approval does not change the conclusion.",
+                owner_id: Some("preparer@example.test"),
+                due_at_ms: Some(9_999_999),
+                location_kind: Some("PAGE"),
+                location_value: Some("2"),
+                raised_by: Some("reviewer@example.test"),
+            },
+        )
+        .expect("review note should be raised");
+        assert_eq!(review_note.current_state, "OPEN");
+        assert_eq!(
+            review_note.evidence_link_id.as_deref(),
+            Some(evidence_link.evidence_link_id.as_str())
+        );
+
+        respond_to_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("preparer@example.test"),
+                response_text: Some("The approval was completed the next business day."),
+                comment: None,
+            },
+        )
+        .expect("review note response should be recorded");
+        clear_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("reviewer@example.test"),
+                response_text: None,
+                comment: Some("Response accepted."),
+            },
+        )
+        .expect("review note should clear");
+        reopen_review_note(
+            &database.path,
+            ReviewNoteAction {
+                review_note_id: &review_note.review_note_id,
+                actor_id: Some("reviewer@example.test"),
+                response_text: None,
+                comment: Some("Reopened after additional evidence arrived."),
+            },
+        )
+        .expect("cleared review note should reopen");
+
+        let notes = list_review_notes(&database.path, &workpaper.workpaper_id)
+            .expect("review notes should load");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].current_state, "OPEN");
+
+        let note_events = list_review_note_events(&database.path, &review_note.review_note_id)
+            .expect("review note history should load");
+        assert_eq!(note_events.len(), 4);
+        assert_eq!(note_events[0].event_type, "RAISED");
+        assert_eq!(note_events[1].event_type, "RESPONSE_SUBMITTED");
+        assert_eq!(note_events[2].event_type, "CLEARED");
+        assert_eq!(note_events[3].event_type, "REOPENED");
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let event_mutation_error = connection
+            .execute(
+                "UPDATE review_note_events
+                 SET comment = 'tampered'
+                 WHERE review_note_event_id = ?1",
+                [&note_events[1].review_note_event_id],
+            )
+            .expect_err("review note event history must be immutable");
+        assert!(event_mutation_error
+            .to_string()
+            .contains("review note events are immutable"));
+
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
         let delete_error = connection
