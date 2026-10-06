@@ -134,6 +134,21 @@ type WorkpaperRevision = {
   contentHashHex: string | null;
 };
 
+type WorkpaperEvidenceLink = {
+  evidenceLinkId: string;
+  workpaperRevisionId: string;
+  documentId: string;
+  documentName: string;
+  contentVersionId: string | null;
+  contentObservedAtMs: number | null;
+  controlledEvidenceVersionId: string | null;
+  controlledVersionNumber: number | null;
+  controlledCapturedAtMs: number | null;
+  relationshipType: string;
+  description: string | null;
+  createdAtMs: number;
+};
+
 type ControlledEvidenceVersion = {
   controlledEvidenceVersionId: string;
   evidenceCaptureJobId: string;
@@ -578,6 +593,18 @@ export default function App() {
   const [workpapers, setWorkpapers] = useState<Workpaper[]>([]);
   const [selectedWorkpaperId, setSelectedWorkpaperId] = useState<string | null>(null);
   const [workpaperRevisions, setWorkpaperRevisions] = useState<WorkpaperRevision[]>([]);
+  const [workpaperEvidenceLinks, setWorkpaperEvidenceLinks] =
+    useState<WorkpaperEvidenceLink[]>([]);
+  const [evidenceSearchQuery, setEvidenceSearchQuery] = useState("");
+  const [evidenceSearchResults, setEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedEvidenceDocument, setSelectedEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [evidenceVersionHistory, setEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedEvidenceVersionKey, setSelectedEvidenceVersionKey] = useState("");
+  const [evidenceRelationshipType, setEvidenceRelationshipType] = useState("SUPPORTS");
+  const [evidenceDescription, setEvidenceDescription] = useState("");
+  const [evidenceSearchBusy, setEvidenceSearchBusy] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [newServiceTypeName, setNewServiceTypeName] = useState("");
