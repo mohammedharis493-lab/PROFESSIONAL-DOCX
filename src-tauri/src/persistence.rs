@@ -8225,7 +8225,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 9);
+        assert_eq!(migration_count, 10);
 
         let table_count: i64 = connection
             .query_row(
