@@ -977,6 +977,79 @@ textarea:focus-visible {
   background: #ffffff;
 }
 
+.workpaper-signoff-section {
+  border-top: 1px solid #dfe5ed;
+  background: #f8fafc;
+}
+
+.workpaper-signoff-list {
+  max-height: 560px;
+  overflow: auto;
+}
+
+.workpaper-signoff-list article {
+  padding: 16px 18px;
+  border-bottom: 1px solid #edf0f4;
+  background: #ffffff;
+}
+
+.workpaper-signoff-list article:last-child {
+  border-bottom: 0;
+}
+
+.workpaper-signoff-list article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workpaper-signoff-list article p {
+  margin: 8px 0 0;
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.signoff-state {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.signoff-state-active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.signoff-state-superseded {
+  background: #eef2f7;
+  color: #687386;
+}
+
+.signoff-superseded {
+  opacity: 0.82;
+}
+
+.signoff-supersession-note {
+  color: #7b8798 !important;
+  font-style: italic;
+}
+
+.signoff-authority-note {
+  margin: 0;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.signoff-evidence-lock {
+  margin: 16px 18px 0;
+}
+
 .review-notes-section,
 .review-note-history-panel {
   border-top: 1px solid #dfe5ed;
