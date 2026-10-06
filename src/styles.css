@@ -972,6 +972,135 @@ textarea:focus-visible {
   font-size: 10px;
 }
 
+.workspace-review-panel {
+  border-top: 1px solid #dfe5ed;
+  background: #ffffff;
+}
+
+.review-notes-section,
+.review-note-history-panel {
+  border-top: 1px solid #dfe5ed;
+}
+
+.workflow-event-list,
+.review-note-event-list {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.workflow-event-list article,
+.review-note-event-list article {
+  padding: 15px 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.workflow-event-list article:last-child,
+.review-note-event-list article:last-child {
+  border-bottom: 0;
+}
+
+.workflow-event-list article > div,
+.review-note-event-list article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workflow-event-list article span,
+.review-note-event-list article span {
+  color: #7b8798;
+  font-size: 10px;
+}
+
+.workflow-event-list p,
+.review-note-event-list p {
+  margin: 7px 0 0;
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.review-note-list {
+  display: grid;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.review-note-row {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  padding: 15px 18px;
+  background: #ffffff;
+  color: #253044;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-note-row:last-child {
+  border-bottom: 0;
+}
+
+.review-note-row:hover,
+.review-note-row-active {
+  background: #f7f9fc;
+}
+
+.review-note-row strong {
+  color: #243046;
+}
+
+.review-note-row small {
+  color: #7b8798;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.review-note-row p {
+  margin: 2px 0 0;
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.review-note-state {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.review-note-state-open {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.review-note-state-response_submitted {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.review-note-state-cleared {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.review-note-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.review-note-actions .primary-button,
+.review-note-actions .secondary-button {
+  flex: 1 1 auto;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 1fr;
