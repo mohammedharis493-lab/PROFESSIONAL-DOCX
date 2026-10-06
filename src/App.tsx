@@ -1439,6 +1439,10 @@ export default function App() {
     setSelectedWorkpaperId(null);
     setWorkpaperRevisions([]);
     setWorkpaperEvidenceLinks([]);
+    setWorkpaperWorkflowEvents([]);
+    setReviewNotes([]);
+    setSelectedReviewNoteId(null);
+    setReviewNoteEvents([]);
     setEvidenceSearchResults([]);
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
@@ -3065,6 +3069,11 @@ export default function App() {
                     setWorkpapers([]);
                     setSelectedWorkpaperId(null);
                     setWorkpaperRevisions([]);
+                    setWorkpaperEvidenceLinks([]);
+                    setWorkpaperWorkflowEvents([]);
+                    setReviewNotes([]);
+                    setSelectedReviewNoteId(null);
+                    setReviewNoteEvents([]);
                   }}
                 >
                   <option value="">All clients</option>
