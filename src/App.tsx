@@ -956,6 +956,10 @@ export default function App() {
     setSelectedWorkpaperId(null);
     setWorkpaperRevisions([]);
     setWorkpaperEvidenceLinks([]);
+    setWorkpaperWorkflowEvents([]);
+    setReviewNotes([]);
+    setSelectedReviewNoteId(null);
+    setReviewNoteEvents([]);
     setEvidenceSearchResults([]);
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
@@ -983,6 +987,31 @@ export default function App() {
     setWorkpaperEvidenceLinks(links);
   }
 
+  async function loadReviewNoteEvents(reviewNoteId: string) {
+    setSelectedReviewNoteId(reviewNoteId);
+    try {
+      const events = await invoke<ReviewNoteEvent[]>("list_review_note_events", {
+        reviewNoteId,
+      });
+      setReviewNoteEvents(events);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setReviewNoteEvents([]);
+    }
+  }
+
+  async function refreshWorkpaperReviewState(workpaperId: string) {
+    const [workflowEvents, notes] = await Promise.all([
+      invoke<WorkpaperWorkflowEvent[]>("list_workpaper_workflow_events", {
+        workpaperId,
+      }),
+      invoke<ReviewNote[]>("list_review_notes", { workpaperId }),
+    ]);
+    setWorkpaperWorkflowEvents(workflowEvents);
+    setReviewNotes(notes);
+    return notes;
+  }
+
   async function loadWorkpaperRevisions(workpaperId: string) {
     setWorkspaceBusy(true);
     setSelectedWorkpaperId(workpaperId);
@@ -990,10 +1019,13 @@ export default function App() {
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
     setSelectedEvidenceVersionKey("");
+    setSelectedReviewNoteId(null);
+    setReviewNoteEvents([]);
     try {
-      const revisions = await invoke<WorkpaperRevision[]>("list_workpaper_revisions", {
-        workpaperId,
-      });
+      const [revisions] = await Promise.all([
+        invoke<WorkpaperRevision[]>("list_workpaper_revisions", { workpaperId }),
+        refreshWorkpaperReviewState(workpaperId),
+      ]);
       setWorkpaperRevisions(revisions);
       if (revisions.length) {
         await loadWorkpaperEvidenceLinks(revisions[0].workpaperRevisionId);
@@ -1081,6 +1113,127 @@ export default function App() {
       setSelectedEvidenceDocument(null);
       setEvidenceVersionHistory([]);
       setSelectedEvidenceVersionKey("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitWorkflowTransition(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkpaperId || !nextWorkflowState.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<WorkpaperWorkflowEvent>("transition_workpaper_state", {
+        workpaperId: selectedWorkpaperId,
+        toState: nextWorkflowState.trim(),
+        actorId: workflowActorId.trim() || null,
+        comment: workflowComment.trim() || null,
+      });
+      setWorkflowComment("");
+      await refreshWorkpaperReviewState(selectedWorkpaperId);
+      if (selectedEngagementId) {
+        const refreshed = await invoke<Workpaper[]>("list_workpapers", {
+          engagementId: selectedEngagementId,
+        });
+        setWorkpapers(refreshed);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitReviewNote(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const latestRevision = workpaperRevisions[0];
+    if (!selectedWorkpaperId || !latestRevision) return;
+    if (!newReviewTitle.trim() || !newReviewBody.trim()) return;
+
+    const dueAtMs = newReviewDueLocal ? new Date(newReviewDueLocal).getTime() : null;
+    if (dueAtMs !== null && Number.isNaN(dueAtMs)) {
+      setError("Review note due date is invalid.");
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const note = await invoke<ReviewNote>("create_review_note", {
+        workpaperId: selectedWorkpaperId,
+        note: {
+          workpaperRevisionId: latestRevision.workpaperRevisionId,
+          evidenceLinkId: newReviewEvidenceLinkId || null,
+          title: newReviewTitle,
+          body: newReviewBody,
+          ownerId: newReviewOwnerId.trim() || null,
+          dueAtMs,
+          locationKind: newReviewLocationKind.trim() || null,
+          locationValue: newReviewLocationValue.trim() || null,
+          raisedBy: newReviewRaisedBy.trim() || null,
+        },
+      });
+      setNewReviewTitle("");
+      setNewReviewBody("");
+      setNewReviewOwnerId("");
+      setNewReviewDueLocal("");
+      setNewReviewEvidenceLinkId("");
+      setNewReviewLocationKind("");
+      setNewReviewLocationValue("");
+      const notes = await refreshWorkpaperReviewState(selectedWorkpaperId);
+      if (notes.some((item) => item.reviewNoteId === note.reviewNoteId)) {
+        await loadReviewNoteEvents(note.reviewNoteId);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitReviewNoteResponse(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkpaperId || !selectedReviewNoteId || !reviewResponseText.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<ReviewNoteEvent>("respond_to_review_note", {
+        reviewNoteId: selectedReviewNoteId,
+        action: {
+          actorId: reviewActionActorId.trim() || null,
+          responseText: reviewResponseText,
+          comment: reviewActionComment.trim() || null,
+        },
+      });
+      setReviewResponseText("");
+      setReviewActionComment("");
+      await refreshWorkpaperReviewState(selectedWorkpaperId);
+      await loadReviewNoteEvents(selectedReviewNoteId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function changeReviewNoteState(actionName: "clear_review_note" | "reopen_review_note") {
+    if (!selectedWorkpaperId || !selectedReviewNoteId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<ReviewNoteEvent>(actionName, {
+        reviewNoteId: selectedReviewNoteId,
+        action: {
+          actorId: reviewActionActorId.trim() || null,
+          responseText: null,
+          comment: reviewActionComment.trim() || null,
+        },
+      });
+      setReviewActionComment("");
+      await refreshWorkpaperReviewState(selectedWorkpaperId);
+      await loadReviewNoteEvents(selectedReviewNoteId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
