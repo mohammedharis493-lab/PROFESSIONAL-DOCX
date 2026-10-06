@@ -149,6 +149,48 @@ type WorkpaperEvidenceLink = {
   createdAtMs: number;
 };
 
+type PbcRequest = {
+  pbcRequestId: string;
+  engagementId: string;
+  engagementAreaId: string | null;
+  requestNumber: string;
+  description: string;
+  requestedFromParty: string;
+  dueAtMs: number | null;
+  status: string;
+  clientVisibleContent: string | null;
+  internalNotes: string | null;
+  latestAssessment: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+type PbcRequestEvent = {
+  pbcRequestEventId: string;
+  pbcRequestId: string;
+  eventType: string;
+  actorId: string | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  assessmentText: string | null;
+  comment: string | null;
+  occurredAtMs: number;
+};
+
+type PbcRequestEvidenceLink = {
+  pbcRequestEvidenceLinkId: string;
+  pbcRequestId: string;
+  documentId: string;
+  documentName: string;
+  contentVersionId: string | null;
+  contentObservedAtMs: number | null;
+  controlledEvidenceVersionId: string | null;
+  controlledVersionNumber: number | null;
+  controlledCapturedAtMs: number | null;
+  description: string | null;
+  createdAtMs: number;
+};
+
 type WorkpaperWorkflowEvent = {
   workpaperWorkflowEventId: string;
   workpaperId: string;
@@ -715,6 +757,30 @@ export default function App() {
   const [reviewActionActorId, setReviewActionActorId] = useState("");
   const [reviewResponseText, setReviewResponseText] = useState("");
   const [reviewActionComment, setReviewActionComment] = useState("");
+  const [pbcRequests, setPbcRequests] = useState<PbcRequest[]>([]);
+  const [selectedPbcRequestId, setSelectedPbcRequestId] = useState<string | null>(null);
+  const [pbcRequestEvents, setPbcRequestEvents] = useState<PbcRequestEvent[]>([]);
+  const [pbcEvidenceLinks, setPbcEvidenceLinks] = useState<PbcRequestEvidenceLink[]>([]);
+  const [newPbcRequestNumber, setNewPbcRequestNumber] = useState("");
+  const [newPbcAreaId, setNewPbcAreaId] = useState("");
+  const [newPbcDescription, setNewPbcDescription] = useState("");
+  const [newPbcRequestedFrom, setNewPbcRequestedFrom] = useState("");
+  const [newPbcDueLocal, setNewPbcDueLocal] = useState("");
+  const [newPbcClientVisibleContent, setNewPbcClientVisibleContent] = useState("");
+  const [newPbcInternalNotes, setNewPbcInternalNotes] = useState("");
+  const [pbcNextStatus, setPbcNextStatus] = useState("REQUESTED");
+  const [pbcActorId, setPbcActorId] = useState("");
+  const [pbcStatusComment, setPbcStatusComment] = useState("");
+  const [pbcAssessmentText, setPbcAssessmentText] = useState("");
+  const [pbcEvidenceSearchQuery, setPbcEvidenceSearchQuery] = useState("");
+  const [pbcEvidenceSearchResults, setPbcEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedPbcEvidenceDocument, setSelectedPbcEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [pbcEvidenceVersionHistory, setPbcEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedPbcEvidenceVersionKey, setSelectedPbcEvidenceVersionKey] = useState("");
+  const [pbcEvidenceDescription, setPbcEvidenceDescription] = useState("");
+  const [pbcEvidenceSearchBusy, setPbcEvidenceSearchBusy] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [newServiceTypeName, setNewServiceTypeName] = useState("");
@@ -979,14 +1045,20 @@ export default function App() {
     setEvidenceVersionHistory([]);
     setSelectedEvidenceVersionKey("");
     try {
-      const [areas, procedureRecords, workpaperRecords] = await Promise.all([
-        invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
-        invoke<Procedure[]>("list_procedures", { engagementId }),
-        invoke<Workpaper[]>("list_workpapers", { engagementId }),
-      ]);
+      const [areas, procedureRecords, workpaperRecords, requestRecords] =
+        await Promise.all([
+          invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
+          invoke<Procedure[]>("list_procedures", { engagementId }),
+          invoke<Workpaper[]>("list_workpapers", { engagementId }),
+          invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
+        ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
       setWorkpapers(workpaperRecords);
+      setPbcRequests(requestRecords);
+      setSelectedPbcRequestId(null);
+      setPbcRequestEvents([]);
+      setPbcEvidenceLinks([]);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
