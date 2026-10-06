@@ -17,7 +17,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 10;
+const LATEST_SCHEMA_VERSION: i64 = 11;
+const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
     version: i64,
@@ -75,6 +76,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "engagement_templates",
         sql: include_str!("../migrations/0010_engagement_templates.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "firm_library",
+        sql: include_str!("../migrations/0011_firm_library.sql"),
     },
 ];
 
@@ -271,6 +277,29 @@ pub struct EngagementTemplateRecord {
     pub latest_version_number: u64,
     pub service_type_id: String,
     pub source_engagement_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmLibraryItemRecord {
+    pub firm_library_item_id: String,
+    pub category: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub service_type_id: Option<String>,
+    pub latest_version_id: String,
+    pub latest_version_number: u64,
+    pub latest_definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirmLibraryVersionRecord {
+    pub firm_library_version_id: String,
+    pub firm_library_item_id: String,
+    pub version_number: u64,
+    pub definition_json: String,
+    pub definition_hash: Vec<u8>,
     pub created_at_ms: i64,
 }
 
@@ -3862,6 +3891,70 @@ fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Opti
             Some(normalized.chars().take(max_chars).collect())
         }
     })
+}
+
+fn normalize_firm_library_category(value: &str) -> Result<String, PersistenceError> {
+    let category = workflow_state_key(value);
+    if matches!(
+        category.as_str(),
+        "CHECKLIST"
+            | "AUDIT_QUERY"
+            | "RISK_TEMPLATE"
+            | "CONTROL_TEMPLATE"
+            | "LEDGER_SCRUTINY_TEST"
+            | "REPORT_TEMPLATE"
+            | "MANAGEMENT_LETTER_POINT"
+            | "STATUTORY_COMPLIANCE_REQUIREMENT"
+    ) {
+        Ok(category)
+    } else {
+        Err(PersistenceError::Configuration(
+            "firm library category is not supported".to_string(),
+        ))
+    }
+}
+
+fn normalize_firm_library_description(
+    value: Option<&str>,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.chars().count() > 2_000 {
+        return Err(PersistenceError::Configuration(
+            "firm library description must contain at most 2000 characters".to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_firm_library_definition(
+    definition_json: &str,
+) -> Result<(String, Vec<u8>), PersistenceError> {
+    if definition_json.as_bytes().len() > FIRM_LIBRARY_DEFINITION_MAX_BYTES {
+        return Err(PersistenceError::Configuration(format!(
+            "firm library definition must be at most {FIRM_LIBRARY_DEFINITION_MAX_BYTES} bytes"
+        )));
+    }
+
+    let definition: serde_json::Value = serde_json::from_str(definition_json).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "firm library definition must be valid JSON: {error}"
+        ))
+    })?;
+    if !definition.is_object() {
+        return Err(PersistenceError::Configuration(
+            "firm library definition must be a JSON object".to_string(),
+        ));
+    }
+
+    let canonical = serde_json::to_string(&definition).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "firm library definition could not be serialized: {error}"
+        ))
+    })?;
+    let hash = Sha256::digest(canonical.as_bytes()).to_vec();
+    Ok((canonical, hash))
 }
 
 fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
@@ -8412,7 +8505,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8453,14 +8546,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 10");
+        initialize_database(&database.path).expect("database should upgrade through version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_exists: i64 = connection
             .query_row(
@@ -8502,14 +8595,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 10");
+        initialize_database(&database.path).expect("database should upgrade through version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8554,14 +8647,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_exists: bool = connection
             .query_row(
@@ -8603,14 +8696,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8660,14 +8753,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8712,14 +8805,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8764,14 +8857,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
@@ -8816,14 +8909,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 10");
+        initialize_database(&database.path).expect("database should upgrade to version 11");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 10);
+        assert_eq!(user_version, 11);
 
         let table_count: i64 = connection
             .query_row(
