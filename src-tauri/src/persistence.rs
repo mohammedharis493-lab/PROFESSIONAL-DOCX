@@ -5114,7 +5114,8 @@ pub fn create_workpaper_signoff(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((revision_workpaper_id, revision_number, latest_revision_number)) = revision_context else {
+    let Some((revision_workpaper_id, revision_number, latest_revision_number)) = revision_context
+    else {
         return Err(PersistenceError::Configuration(format!(
             "workpaper revision {} does not exist",
             signoff.workpaper_revision_id
@@ -8741,7 +8742,8 @@ mod tests {
                 sample: "Eight judgmentally selected vendors.",
                 exceptions: "One delayed approval noted and evaluated.",
                 management_explanation: "Approval was completed the following business day.",
-                conclusion: "Control operated effectively subject to one documented timing exception.",
+                conclusion:
+                    "Control operated effectively subject to one documented timing exception.",
             },
         )
         .expect("post-review material change should create a new revision");
