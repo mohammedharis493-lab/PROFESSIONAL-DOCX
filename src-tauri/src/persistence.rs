@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 8;
+const LATEST_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -65,6 +65,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "pbc_requests",
         sql: include_str!("../migrations/0008_pbc_requests.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "workpaper_signoffs",
+        sql: include_str!("../migrations/0009_workpaper_signoffs.sql"),
     },
 ];
 
@@ -321,6 +326,32 @@ pub struct WorkpaperEvidenceLinkRecord {
     pub relationship_type: String,
     pub description: Option<String>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkpaperSignoffRecord {
+    pub signoff_id: String,
+    pub workpaper_id: String,
+    pub workpaper_revision_id: String,
+    pub revision_number: u64,
+    pub signoff_type: String,
+    pub actor_id: String,
+    pub actor_role: String,
+    pub signed_at_ms: i64,
+    pub comment: Option<String>,
+    pub evidence_link_ids: Vec<String>,
+    pub superseded_at_ms: Option<i64>,
+    pub superseded_reason: Option<String>,
+    pub superseded_by_revision_id: Option<String>,
+}
+
+pub struct NewWorkpaperSignoff<'a> {
+    pub workpaper_id: &'a str,
+    pub workpaper_revision_id: &'a str,
+    pub signoff_type: &'a str,
+    pub actor_id: &'a str,
+    pub actor_role: &'a str,
+    pub comment: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -4623,6 +4654,21 @@ pub fn create_workpaper_revision(
         ],
     )?;
 
+    if let Some(previous_revision_id) = supersedes_revision_id.as_deref() {
+        let supersede_reason = revision_reason
+            .as_deref()
+            .map(|reason| format!("New workpaper revision created: {reason}"))
+            .unwrap_or_else(|| "New workpaper revision created.".to_string());
+        supersede_revision_signoffs(
+            &transaction,
+            previous_revision_id,
+            &revision_id,
+            now,
+            &supersede_reason,
+            None,
+        )?;
+    }
+
     insert_domain_audit_event(
         &transaction,
         DomainAuditEvent {
@@ -4761,6 +4807,22 @@ pub fn create_workpaper_evidence_link(
     if revision_number != latest_revision_number {
         return Err(PersistenceError::Configuration(
             "evidence can only be linked to the latest workpaper revision; create a new revision instead of changing historical evidence"
+                .to_string(),
+        ));
+    }
+
+    let active_signoff_count: i64 = transaction.query_row(
+        "SELECT COUNT(*)
+         FROM workpaper_signoffs s
+         LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+         WHERE s.workpaper_revision_id = ?1
+           AND ss.signoff_id IS NULL",
+        [workpaper_revision_id],
+        |row| row.get(0),
+    )?;
+    if active_signoff_count > 0 {
+        return Err(PersistenceError::Configuration(
+            "signed workpaper revision cannot receive additional evidence; create a new revision"
                 .to_string(),
         ));
     }
@@ -4939,6 +5001,366 @@ pub fn list_workpaper_evidence_links(
     for row in rows {
         result.push(row?);
     }
+    Ok(result)
+}
+
+fn signoff_type_key(value: &str) -> String {
+    workflow_state_key(value)
+}
+
+fn signoff_requires_controlled_evidence(value: &str) -> bool {
+    matches!(
+        signoff_type_key(value).as_str(),
+        "REVIEWED" | "FINAL_APPROVAL" | "FINAL"
+    )
+}
+
+fn supersede_revision_signoffs(
+    transaction: &rusqlite::Transaction<'_>,
+    workpaper_revision_id: &str,
+    superseded_by_revision_id: &str,
+    superseded_at_ms: i64,
+    reason: &str,
+    actor_id: Option<&str>,
+) -> Result<Vec<String>, PersistenceError> {
+    let signoff_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT s.signoff_id
+             FROM workpaper_signoffs s
+             LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id = s.signoff_id
+             WHERE s.workpaper_revision_id = ?1
+               AND ss.signoff_id IS NULL
+             ORDER BY s.signed_at_ms, s.rowid",
+        )?;
+        let rows = statement.query_map([workpaper_revision_id], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+
+    for signoff_id in &signoff_ids {
+        transaction.execute(
+            "INSERT INTO workpaper_signoff_supersessions (
+                signoff_supersession_id,
+                signoff_id,
+                superseded_by_revision_id,
+                superseded_at_ms,
+                superseded_reason,
+                actor_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                Uuid::new_v4().to_string(),
+                signoff_id,
+                superseded_by_revision_id,
+                superseded_at_ms,
+                reason,
+                actor_id
+            ],
+        )?;
+
+        insert_domain_audit_event(
+            transaction,
+            DomainAuditEvent {
+                event_type: "WORKPAPER_SIGNOFF_SUPERSEDED",
+                entity_type: "WORKPAPER_SIGNOFF",
+                entity_id: signoff_id,
+                related_entity_type: Some("WORKPAPER_REVISION"),
+                related_entity_id: Some(superseded_by_revision_id),
+                occurred_at_ms: superseded_at_ms,
+                details: json!({
+                    "supersededRevisionId": workpaper_revision_id,
+                    "supersededByRevisionId": superseded_by_revision_id,
+                    "reason": reason,
+                    "actorId": actor_id
+                }),
+            },
+        )?;
+    }
+
+    Ok(signoff_ids)
+}
+
+pub fn create_workpaper_signoff(
+    database_path: &Path,
+    signoff: NewWorkpaperSignoff<'_>,
+) -> Result<WorkpaperSignoffRecord, PersistenceError> {
+    let signoff_type = normalize_domain_label(signoff.signoff_type, "sign-off type", 80)?;
+    let actor_id = normalize_domain_label(signoff.actor_id, "sign-off actor", 160)?;
+    let actor_role = normalize_domain_label(signoff.actor_role, "sign-off actor role", 160)?;
+    let comment = signoff
+        .comment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let revision_context: Option<(String, i64, i64)> = transaction
+        .query_row(
+            "SELECT
+                wr.workpaper_id,
+                wr.revision_number,
+                (
+                    SELECT MAX(latest.revision_number)
+                    FROM workpaper_revisions latest
+                    WHERE latest.workpaper_id = wr.workpaper_id
+                )
+             FROM workpaper_revisions wr
+             WHERE wr.workpaper_revision_id = ?1",
+            [signoff.workpaper_revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((revision_workpaper_id, revision_number, latest_revision_number)) = revision_context else {
+        return Err(PersistenceError::Configuration(format!(
+            "workpaper revision {} does not exist",
+            signoff.workpaper_revision_id
+        )));
+    };
+    if revision_workpaper_id != signoff.workpaper_id {
+        return Err(PersistenceError::Configuration(
+            "sign-off revision must belong to the selected workpaper".to_string(),
+        ));
+    }
+    if revision_number != latest_revision_number {
+        return Err(PersistenceError::Configuration(
+            "sign-off can only be recorded against the latest workpaper revision".to_string(),
+        ));
+    }
+
+    if signoff_requires_controlled_evidence(&signoff_type) {
+        let unsafe_evidence_count: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM workpaper_evidence_links wel
+             LEFT JOIN controlled_evidence_versions cev
+               ON cev.controlled_evidence_version_id = wel.controlled_evidence_version_id
+             WHERE wel.workpaper_revision_id = ?1
+               AND (
+                   wel.controlled_evidence_version_id IS NULL
+                   OR cev.verification_state <> 'HASH_VERIFIED'
+               )",
+            [signoff.workpaper_revision_id],
+            |row| row.get(0),
+        )?;
+        if unsafe_evidence_count > 0 {
+            return Err(PersistenceError::Configuration(
+                "reviewer/final sign-off requires all linked evidence to be immutable hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+
+        let unresolved_review_notes: i64 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM review_notes
+             WHERE workpaper_revision_id = ?1
+               AND current_state <> 'CLEARED'",
+            [signoff.workpaper_revision_id],
+            |row| row.get(0),
+        )?;
+        if unresolved_review_notes > 0 {
+            return Err(PersistenceError::Configuration(
+                "reviewer/final sign-off requires all review notes on the revision to be cleared"
+                    .to_string(),
+            ));
+        }
+    }
+
+    let evidence_link_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT evidence_link_id
+             FROM workpaper_evidence_links
+             WHERE workpaper_revision_id = ?1
+             ORDER BY created_at_ms, rowid",
+        )?;
+        let rows = statement.query_map([signoff.workpaper_revision_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+
+    let signoff_id = Uuid::new_v4().to_string();
+    let signed_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO workpaper_signoffs (
+            signoff_id,
+            workpaper_id,
+            workpaper_revision_id,
+            signoff_type,
+            actor_id,
+            actor_role,
+            signed_at_ms,
+            comment
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &signoff_id,
+            signoff.workpaper_id,
+            signoff.workpaper_revision_id,
+            &signoff_type,
+            &actor_id,
+            &actor_role,
+            signed_at_ms,
+            comment.as_deref()
+        ],
+    )?;
+
+    for evidence_link_id in &evidence_link_ids {
+        transaction.execute(
+            "INSERT INTO workpaper_signoff_evidence (
+                signoff_evidence_id,
+                signoff_id,
+                evidence_link_id,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                &signoff_id,
+                evidence_link_id,
+                signed_at_ms
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "WORKPAPER_SIGNOFF_CREATED",
+            entity_type: "WORKPAPER_SIGNOFF",
+            entity_id: &signoff_id,
+            related_entity_type: Some("WORKPAPER_REVISION"),
+            related_entity_id: Some(signoff.workpaper_revision_id),
+            occurred_at_ms: signed_at_ms,
+            details: json!({
+                "workpaperId": signoff.workpaper_id,
+                "revisionNumber": revision_number,
+                "signoffType": signoff_type,
+                "actorId": actor_id,
+                "actorRole": actor_role,
+                "evidenceLinkIds": evidence_link_ids
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(WorkpaperSignoffRecord {
+        signoff_id,
+        workpaper_id: signoff.workpaper_id.to_string(),
+        workpaper_revision_id: signoff.workpaper_revision_id.to_string(),
+        revision_number: revision_number.max(0) as u64,
+        signoff_type,
+        actor_id,
+        actor_role,
+        signed_at_ms,
+        comment,
+        evidence_link_ids,
+        superseded_at_ms: None,
+        superseded_reason: None,
+        superseded_by_revision_id: None,
+    })
+}
+
+pub fn list_workpaper_signoffs(
+    database_path: &Path,
+    workpaper_id: &str,
+) -> Result<Vec<WorkpaperSignoffRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let base_rows = {
+        let mut statement = connection.prepare(
+            "SELECT
+                s.signoff_id,
+                s.workpaper_id,
+                s.workpaper_revision_id,
+                wr.revision_number,
+                s.signoff_type,
+                s.actor_id,
+                s.actor_role,
+                s.signed_at_ms,
+                s.comment,
+                ss.superseded_at_ms,
+                ss.superseded_reason,
+                ss.superseded_by_revision_id
+             FROM workpaper_signoffs s
+             JOIN workpaper_revisions wr
+               ON wr.workpaper_revision_id = s.workpaper_revision_id
+             LEFT JOIN workpaper_signoff_supersessions ss
+               ON ss.signoff_id = s.signoff_id
+             WHERE s.workpaper_id = ?1
+             ORDER BY wr.revision_number DESC, s.signed_at_ms DESC, s.rowid DESC",
+        )?;
+        let rows = statement.query_map([workpaper_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        values
+    };
+
+    let mut result = Vec::new();
+    for (
+        signoff_id,
+        row_workpaper_id,
+        workpaper_revision_id,
+        revision_number,
+        signoff_type,
+        actor_id,
+        actor_role,
+        signed_at_ms,
+        comment,
+        superseded_at_ms,
+        superseded_reason,
+        superseded_by_revision_id,
+    ) in base_rows
+    {
+        let mut statement = connection.prepare(
+            "SELECT evidence_link_id
+             FROM workpaper_signoff_evidence
+             WHERE signoff_id = ?1
+             ORDER BY created_at_ms, rowid",
+        )?;
+        let rows = statement.query_map([&signoff_id], |row| row.get::<_, String>(0))?;
+        let mut evidence_link_ids = Vec::new();
+        for row in rows {
+            evidence_link_ids.push(row?);
+        }
+
+        result.push(WorkpaperSignoffRecord {
+            signoff_id,
+            workpaper_id: row_workpaper_id,
+            workpaper_revision_id,
+            revision_number: revision_number.max(0) as u64,
+            signoff_type,
+            actor_id,
+            actor_role,
+            signed_at_ms,
+            comment,
+            evidence_link_ids,
+            superseded_at_ms,
+            superseded_reason,
+            superseded_by_revision_id,
+        });
+    }
+
     Ok(result)
 }
 
