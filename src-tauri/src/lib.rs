@@ -984,6 +984,23 @@ fn list_engagement_templates(
 }
 
 #[tauri::command]
+fn create_engagement_template_version_from_engagement(
+    engagement_template_id: String,
+    source_engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementTemplateDto, String> {
+    validate_uuid(&engagement_template_id, "engagement-template")?;
+    validate_uuid(&source_engagement_id, "source-engagement")?;
+    persistence::create_engagement_template_version_from_engagement(
+        database.path(),
+        &engagement_template_id,
+        &source_engagement_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn create_engagement_from_template(
     engagement_template_version_id: String,
     client_id: String,
@@ -2086,6 +2103,7 @@ pub fn run() {
             list_engagements,
             create_engagement_template_from_engagement,
             list_engagement_templates,
+            create_engagement_template_version_from_engagement,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
