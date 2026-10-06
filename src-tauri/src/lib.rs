@@ -533,6 +533,86 @@ impl From<persistence::WorkpaperEvidenceLinkRecord> for WorkpaperEvidenceLinkDto
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignoffInputDto {
+    workpaper_revision_id: String,
+    signoff_type: String,
+    actor_id: String,
+    actor_role: String,
+    comment: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignoffDto {
+    signoff_id: String,
+    workpaper_id: String,
+    workpaper_revision_id: String,
+    signoff_type: String,
+    actor_id: String,
+    actor_role: String,
+    signed_at_ms: i64,
+    comment: Option<String>,
+    superseded_at_ms: Option<i64>,
+    superseded_reason: Option<String>,
+    evidence_link_count: u64,
+}
+
+impl From<persistence::SignoffRecord> for SignoffDto {
+    fn from(value: persistence::SignoffRecord) -> Self {
+        Self {
+            signoff_id: value.signoff_id,
+            workpaper_id: value.workpaper_id,
+            workpaper_revision_id: value.workpaper_revision_id,
+            signoff_type: value.signoff_type,
+            actor_id: value.actor_id,
+            actor_role: value.actor_role,
+            signed_at_ms: value.signed_at_ms,
+            comment: value.comment,
+            superseded_at_ms: value.superseded_at_ms,
+            superseded_reason: value.superseded_reason,
+            evidence_link_count: value.evidence_link_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignoffEvidenceDto {
+    signoff_evidence_link_id: String,
+    signoff_id: String,
+    evidence_link_id: String,
+    document_id: String,
+    document_name: String,
+    content_version_id: Option<String>,
+    content_observed_at_ms: Option<i64>,
+    controlled_evidence_version_id: Option<String>,
+    controlled_version_number: Option<u64>,
+    controlled_captured_at_ms: Option<i64>,
+    relationship_type: String,
+    description: Option<String>,
+}
+
+impl From<persistence::SignoffEvidenceRecord> for SignoffEvidenceDto {
+    fn from(value: persistence::SignoffEvidenceRecord) -> Self {
+        Self {
+            signoff_evidence_link_id: value.signoff_evidence_link_id,
+            signoff_id: value.signoff_id,
+            evidence_link_id: value.evidence_link_id,
+            document_id: value.document_id,
+            document_name: value.document_name,
+            content_version_id: value.content_version_id,
+            content_observed_at_ms: value.content_observed_at_ms,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            controlled_version_number: value.controlled_version_number,
+            controlled_captured_at_ms: value.controlled_captured_at_ms,
+            relationship_type: value.relationship_type,
+            description: value.description,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PbcRequestDto {
@@ -1063,6 +1143,50 @@ fn list_workpaper_evidence_links(
 ) -> Result<Vec<WorkpaperEvidenceLinkDto>, String> {
     validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
     persistence::list_workpaper_evidence_links(database.path(), &workpaper_revision_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_signoff(
+    workpaper_id: String,
+    signoff: SignoffInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<SignoffDto, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    validate_uuid(&signoff.workpaper_revision_id, "workpaper-revision")?;
+
+    persistence::create_signoff(
+        database.path(),
+        &workpaper_id,
+        &signoff.workpaper_revision_id,
+        &signoff.signoff_type,
+        &signoff.actor_id,
+        &signoff.actor_role,
+        signoff.comment.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_signoffs(
+    workpaper_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<SignoffDto>, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::list_signoffs(database.path(), &workpaper_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_signoff_evidence(
+    signoff_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<SignoffEvidenceDto>, String> {
+    validate_uuid(&signoff_id, "sign-off")?;
+    persistence::list_signoff_evidence(database.path(), &signoff_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -1928,6 +2052,9 @@ pub fn run() {
             list_workpaper_revisions,
             create_workpaper_evidence_link,
             list_workpaper_evidence_links,
+            create_signoff,
+            list_signoffs,
+            list_signoff_evidence,
             create_pbc_request,
             list_pbc_requests,
             transition_pbc_request_status,
