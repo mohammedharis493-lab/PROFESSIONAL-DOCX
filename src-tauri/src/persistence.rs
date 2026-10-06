@@ -4304,6 +4304,439 @@ fn engagement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRe
     })
 }
 
+pub fn create_engagement_template_from_engagement(
+    database_path: &Path,
+    source_engagement_id: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<EngagementTemplateRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement template name", 200)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "engagement template name must contain searchable characters".to_string(),
+        ));
+    }
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let service_type_id: Option<String> = transaction
+        .query_row(
+            "SELECT service_type_id
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [source_engagement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let service_type_id = service_type_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "source engagement {source_engagement_id} does not exist"
+        ))
+    })?;
+
+    let areas = {
+        let mut statement = transaction.prepare(
+            "SELECT
+                engagement_area_id,
+                parent_area_id,
+                name,
+                code,
+                display_order,
+                status
+             FROM engagement_areas
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL
+             ORDER BY display_order, name COLLATE NOCASE, engagement_area_id",
+        )?;
+        let rows = statement.query_map([source_engagement_id], |row| {
+            Ok(EngagementTemplateAreaDefinition {
+                source_area_id: row.get(0)?,
+                parent_source_area_id: row.get(1)?,
+                name: row.get(2)?,
+                code: row.get(3)?,
+                display_order: row.get(4)?,
+                status: row.get(5)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    let procedures = {
+        let mut statement = transaction.prepare(
+            "SELECT
+                engagement_area_id,
+                reference,
+                title,
+                description,
+                status
+             FROM procedures
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL
+             ORDER BY created_at_ms, procedure_id",
+        )?;
+        let rows = statement.query_map([source_engagement_id], |row| {
+            Ok(EngagementTemplateProcedureDefinition {
+                source_area_id: row.get(0)?,
+                reference: row.get(1)?,
+                title: row.get(2)?,
+                description: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    for procedure in &procedures {
+        if let Some(source_area_id) = procedure.source_area_id.as_deref() {
+            if !areas.iter().any(|area| area.source_area_id == source_area_id) {
+                return Err(PersistenceError::Configuration(
+                    "active template procedure references an unavailable engagement area".to_string(),
+                ));
+            }
+        }
+    }
+
+    let definition = EngagementTemplateDefinition { areas, procedures };
+    let definition_json = serde_json::to_string(&definition).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "engagement template definition could not be serialized: {error}"
+        ))
+    })?;
+
+    let engagement_template_id = Uuid::new_v4().to_string();
+    let engagement_template_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagement_templates (
+            engagement_template_id,
+            name,
+            normalized_name,
+            description,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+        params![
+            &engagement_template_id,
+            &name,
+            &normalized_name,
+            description.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO engagement_template_versions (
+            engagement_template_version_id,
+            engagement_template_id,
+            version_number,
+            source_engagement_id,
+            service_type_id,
+            definition_json,
+            created_at_ms
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)",
+        params![
+            &engagement_template_version_id,
+            &engagement_template_id,
+            source_engagement_id,
+            &service_type_id,
+            &definition_json,
+            now
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementTemplateRecord {
+        engagement_template_id,
+        name,
+        description,
+        latest_version_id: engagement_template_version_id,
+        latest_version_number: 1,
+        service_type_id,
+        source_engagement_id: Some(source_engagement_id.to_string()),
+        created_at_ms: now,
+    })
+}
+
+pub fn list_engagement_templates(
+    database_path: &Path,
+) -> Result<Vec<EngagementTemplateRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            t.engagement_template_id,
+            t.name,
+            t.description,
+            v.engagement_template_version_id,
+            v.version_number,
+            v.service_type_id,
+            v.source_engagement_id,
+            t.created_at_ms
+         FROM engagement_templates t
+         JOIN engagement_template_versions v
+           ON v.engagement_template_id = t.engagement_template_id
+          AND v.version_number = (
+              SELECT MAX(v2.version_number)
+              FROM engagement_template_versions v2
+              WHERE v2.engagement_template_id = t.engagement_template_id
+          )
+         WHERE t.archived_at_ms IS NULL
+         ORDER BY t.name COLLATE NOCASE, t.created_at_ms",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let version_number: i64 = row.get(4)?;
+        Ok(EngagementTemplateRecord {
+            engagement_template_id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            latest_version_id: row.get(3)?,
+            latest_version_number: version_number.max(0) as u64,
+            service_type_id: row.get(5)?,
+            source_engagement_id: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_engagement_from_template(
+    database_path: &Path,
+    engagement_template_version_id: &str,
+    client_id: &str,
+    name: &str,
+    period_start: Option<&str>,
+    period_end: Option<&str>,
+    status: &str,
+) -> Result<EngagementRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement name", 240)?;
+    let status = normalize_domain_label(status, "engagement status", 80)?;
+    let period_start = normalize_optional_domain_text(period_start, 40);
+    let period_end = normalize_optional_domain_text(period_end, 40);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let client_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM clients
+            WHERE client_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if !client_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "client {client_id} does not exist"
+        )));
+    }
+
+    let template_version: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT
+                v.service_type_id,
+                v.definition_json
+             FROM engagement_template_versions v
+             JOIN engagement_templates t
+               ON t.engagement_template_id = v.engagement_template_id
+             WHERE v.engagement_template_version_id = ?1
+               AND t.archived_at_ms IS NULL",
+            [engagement_template_version_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (service_type_id, definition_json) = template_version.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "engagement template version {engagement_template_version_id} does not exist"
+        ))
+    })?;
+
+    let service_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM service_types
+            WHERE service_type_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [&service_type_id],
+        |row| row.get(0),
+    )?;
+    if !service_exists {
+        return Err(PersistenceError::Configuration(
+            "engagement template service type is unavailable".to_string(),
+        ));
+    }
+
+    let definition: EngagementTemplateDefinition =
+        serde_json::from_str(&definition_json).map_err(|error| {
+            PersistenceError::Configuration(format!(
+                "engagement template definition is invalid: {error}"
+            ))
+        })?;
+
+    let engagement_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagements (
+            engagement_id,
+            client_id,
+            service_type_id,
+            name,
+            period_start,
+            period_end,
+            status,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &engagement_id,
+            client_id,
+            &service_type_id,
+            &name,
+            period_start.as_deref(),
+            period_end.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+
+    let mut area_id_map: Vec<(String, String)> = Vec::new();
+    let mut pending_areas = definition.areas;
+    while !pending_areas.is_empty() {
+        let pending_count = pending_areas.len();
+        let mut next_pending = Vec::new();
+
+        for area in pending_areas {
+            let parent_area_id = match area.parent_source_area_id.as_deref() {
+                None => None,
+                Some(parent_source_area_id) => {
+                    let mapped = area_id_map
+                        .iter()
+                        .find(|(source_id, _)| source_id == parent_source_area_id)
+                        .map(|(_, new_id)| new_id.clone());
+                    let Some(mapped) = mapped else {
+                        next_pending.push(area);
+                        continue;
+                    };
+                    Some(mapped)
+                }
+            };
+
+            let area_name = normalize_domain_label(&area.name, "template area name", 160)?;
+            let area_code = normalize_optional_domain_text(area.code.as_deref(), 40);
+            let area_status = normalize_domain_label(&area.status, "template area status", 80)?;
+            let engagement_area_id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO engagement_areas (
+                    engagement_area_id,
+                    engagement_id,
+                    parent_area_id,
+                    name,
+                    code,
+                    display_order,
+                    status,
+                    created_at_ms,
+                    archived_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+                params![
+                    &engagement_area_id,
+                    &engagement_id,
+                    parent_area_id.as_deref(),
+                    &area_name,
+                    area_code.as_deref(),
+                    area.display_order,
+                    &area_status,
+                    now
+                ],
+            )?;
+            area_id_map.push((area.source_area_id, engagement_area_id));
+        }
+
+        if next_pending.len() == pending_count {
+            return Err(PersistenceError::Configuration(
+                "engagement template area hierarchy is invalid".to_string(),
+            ));
+        }
+        pending_areas = next_pending;
+    }
+
+    for procedure in definition.procedures {
+        let engagement_area_id = match procedure.source_area_id.as_deref() {
+            None => None,
+            Some(source_area_id) => Some(
+                area_id_map
+                    .iter()
+                    .find(|(source_id, _)| source_id == source_area_id)
+                    .map(|(_, new_id)| new_id.clone())
+                    .ok_or_else(|| {
+                        PersistenceError::Configuration(
+                            "engagement template procedure area is unavailable".to_string(),
+                        )
+                    })?,
+            ),
+        };
+        let title = normalize_domain_label(&procedure.title, "template procedure title", 240)?;
+        let reference = normalize_optional_domain_text(procedure.reference.as_deref(), 80);
+        let description = procedure
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let procedure_status =
+            normalize_domain_label(&procedure.status, "template procedure status", 80)?;
+        transaction.execute(
+            "INSERT INTO procedures (
+                procedure_id,
+                engagement_id,
+                engagement_area_id,
+                reference,
+                title,
+                description,
+                status,
+                created_at_ms,
+                archived_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+            params![
+                Uuid::new_v4().to_string(),
+                &engagement_id,
+                engagement_area_id.as_deref(),
+                reference.as_deref(),
+                &title,
+                description.as_deref(),
+                &procedure_status,
+                now
+            ],
+        )?;
+    }
+
+    transaction.commit()?;
+    Ok(EngagementRecord {
+        engagement_id,
+        client_id: client_id.to_string(),
+        service_type_id,
+        name,
+        period_start,
+        period_end,
+        status,
+        created_at_ms: now,
+    })
+}
+
 pub fn create_engagement_area(
     database_path: &Path,
     engagement_id: &str,
