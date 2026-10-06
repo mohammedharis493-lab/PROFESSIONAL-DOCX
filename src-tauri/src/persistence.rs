@@ -5015,9 +5015,7 @@ pub fn transition_workpaper_state(
             event_type: "WORKPAPER_STATE_TRANSITIONED",
             entity_type: "WORKPAPER",
             entity_id: workpaper_id,
-            related_entity_type: latest_revision_id
-                .as_ref()
-                .map(|_| "WORKPAPER_REVISION"),
+            related_entity_type: latest_revision_id.as_ref().map(|_| "WORKPAPER_REVISION"),
             related_entity_id: latest_revision_id.as_deref(),
             occurred_at_ms: now,
             details: json!({
@@ -5187,13 +5185,7 @@ pub fn create_review_note(
             comment,
             occurred_at_ms
          ) VALUES (?1, ?2, 'RAISED', ?3, NULL, ?4, ?5)",
-        params![
-            &event_id,
-            &review_note_id,
-            raised_by.as_deref(),
-            &body,
-            now
-        ],
+        params![&event_id, &review_note_id, raised_by.as_deref(), &body, now],
     )?;
 
     insert_domain_audit_event(
