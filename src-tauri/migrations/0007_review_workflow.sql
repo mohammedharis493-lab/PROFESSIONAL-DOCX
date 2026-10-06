@@ -10,7 +10,7 @@ CREATE TABLE workpaper_workflow_events (
 );
 
 CREATE INDEX idx_workpaper_workflow_events_workpaper
-    ON workpaper_workflow_events(workpaper_id, occurred_at_ms, rowid);
+    ON workpaper_workflow_events(workpaper_id, occurred_at_ms);
 
 CREATE TRIGGER trg_workpaper_workflow_events_no_update
 BEFORE UPDATE ON workpaper_workflow_events
@@ -62,7 +62,7 @@ CREATE TABLE review_note_events (
 );
 
 CREATE INDEX idx_review_note_events_note
-    ON review_note_events(review_note_id, occurred_at_ms, rowid);
+    ON review_note_events(review_note_id, occurred_at_ms);
 
 CREATE TRIGGER trg_review_note_events_no_update
 BEFORE UPDATE ON review_note_events
