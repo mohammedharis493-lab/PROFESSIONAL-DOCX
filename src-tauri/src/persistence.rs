@@ -4733,8 +4733,7 @@ pub fn create_firm_library_item(
         ));
     }
     let description = normalize_firm_library_description(description)?;
-    let (definition_json, definition_hash) =
-        normalize_firm_library_definition(definition_json)?;
+    let (definition_json, definition_hash) = normalize_firm_library_definition(definition_json)?;
 
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -4865,11 +4864,12 @@ pub fn publish_firm_library_version(
             },
         )
         .optional()?;
-    let (category, name, description, service_type_id, item_created_at_ms) = item.ok_or_else(|| {
-        PersistenceError::Configuration(format!(
-            "firm library item {firm_library_item_id} does not exist"
-        ))
-    })?;
+    let (category, name, description, service_type_id, item_created_at_ms) =
+        item.ok_or_else(|| {
+            PersistenceError::Configuration(format!(
+                "firm library item {firm_library_item_id} does not exist"
+            ))
+        })?;
 
     let next_version_number: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(version_number), 0) + 1
@@ -4941,9 +4941,7 @@ pub fn list_firm_library_items(
     category: Option<&str>,
     service_type_id: Option<&str>,
 ) -> Result<Vec<FirmLibraryItemRecord>, PersistenceError> {
-    let category = category
-        .map(normalize_firm_library_category)
-        .transpose()?;
+    let category = category.map(normalize_firm_library_category).transpose()?;
     let connection = open_configured_connection(database_path)?;
     let mut statement = connection.prepare(
         "SELECT
@@ -4969,23 +4967,20 @@ pub fn list_firm_library_items(
            AND (?2 IS NULL OR i.service_type_id = ?2)
          ORDER BY i.category, i.name COLLATE NOCASE, i.created_at_ms",
     )?;
-    let rows = statement.query_map(
-        params![category.as_deref(), service_type_id],
-        |row| {
-            let version_number: i64 = row.get(6)?;
-            Ok(FirmLibraryItemRecord {
-                firm_library_item_id: row.get(0)?,
-                category: row.get(1)?,
-                name: row.get(2)?,
-                description: row.get(3)?,
-                service_type_id: row.get(4)?,
-                latest_version_id: row.get(5)?,
-                latest_version_number: version_number.max(0) as u64,
-                latest_definition_hash: row.get(7)?,
-                created_at_ms: row.get(8)?,
-            })
-        },
-    )?;
+    let rows = statement.query_map(params![category.as_deref(), service_type_id], |row| {
+        let version_number: i64 = row.get(6)?;
+        Ok(FirmLibraryItemRecord {
+            firm_library_item_id: row.get(0)?,
+            category: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            service_type_id: row.get(4)?,
+            latest_version_id: row.get(5)?,
+            latest_version_number: version_number.max(0) as u64,
+            latest_definition_hash: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
 
     let mut result = Vec::new();
     for row in rows {
@@ -9426,9 +9421,8 @@ mod tests {
             checklist.latest_definition_hash
         );
 
-        let versions =
-            list_firm_library_versions(&database.path, &checklist.firm_library_item_id)
-                .expect("version history should load");
+        let versions = list_firm_library_versions(&database.path, &checklist.firm_library_item_id)
+            .expect("version history should load");
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].version_number, 2);
         assert_eq!(versions[1].version_number, 1);
