@@ -535,6 +535,121 @@ impl From<persistence::WorkpaperEvidenceLinkRecord> for WorkpaperEvidenceLinkDto
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct PbcRequestDto {
+    pbc_request_id: String,
+    engagement_id: String,
+    engagement_area_id: Option<String>,
+    request_number: String,
+    description: String,
+    requested_from_party: String,
+    due_at_ms: Option<i64>,
+    status: String,
+    client_visible_content: Option<String>,
+    internal_notes: Option<String>,
+    latest_assessment: Option<String>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+impl From<persistence::PbcRequestRecord> for PbcRequestDto {
+    fn from(value: persistence::PbcRequestRecord) -> Self {
+        Self {
+            pbc_request_id: value.pbc_request_id,
+            engagement_id: value.engagement_id,
+            engagement_area_id: value.engagement_area_id,
+            request_number: value.request_number,
+            description: value.description,
+            requested_from_party: value.requested_from_party,
+            due_at_ms: value.due_at_ms,
+            status: value.status,
+            client_visible_content: value.client_visible_content,
+            internal_notes: value.internal_notes,
+            latest_assessment: value.latest_assessment,
+            created_at_ms: value.created_at_ms,
+            updated_at_ms: value.updated_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PbcRequestEventDto {
+    pbc_request_event_id: String,
+    pbc_request_id: String,
+    event_type: String,
+    actor_id: Option<String>,
+    from_status: Option<String>,
+    to_status: Option<String>,
+    assessment_text: Option<String>,
+    comment: Option<String>,
+    occurred_at_ms: i64,
+}
+
+impl From<persistence::PbcRequestEventRecord> for PbcRequestEventDto {
+    fn from(value: persistence::PbcRequestEventRecord) -> Self {
+        Self {
+            pbc_request_event_id: value.pbc_request_event_id,
+            pbc_request_id: value.pbc_request_id,
+            event_type: value.event_type,
+            actor_id: value.actor_id,
+            from_status: value.from_status,
+            to_status: value.to_status,
+            assessment_text: value.assessment_text,
+            comment: value.comment,
+            occurred_at_ms: value.occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PbcRequestEvidenceLinkDto {
+    pbc_request_evidence_link_id: String,
+    pbc_request_id: String,
+    document_id: String,
+    document_name: String,
+    content_version_id: Option<String>,
+    content_observed_at_ms: Option<i64>,
+    controlled_evidence_version_id: Option<String>,
+    controlled_version_number: Option<u64>,
+    controlled_captured_at_ms: Option<i64>,
+    description: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::PbcRequestEvidenceLinkRecord> for PbcRequestEvidenceLinkDto {
+    fn from(value: persistence::PbcRequestEvidenceLinkRecord) -> Self {
+        Self {
+            pbc_request_evidence_link_id: value.pbc_request_evidence_link_id,
+            pbc_request_id: value.pbc_request_id,
+            document_id: value.document_id,
+            document_name: value.document_name,
+            content_version_id: value.content_version_id,
+            content_observed_at_ms: value.content_observed_at_ms,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            controlled_version_number: value.controlled_version_number,
+            controlled_captured_at_ms: value.controlled_captured_at_ms,
+            description: value.description,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PbcRequestInputDto {
+    engagement_area_id: Option<String>,
+    request_number: String,
+    description: String,
+    requested_from_party: String,
+    due_at_ms: Option<i64>,
+    status: Option<String>,
+    client_visible_content: Option<String>,
+    internal_notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WorkpaperWorkflowEventDto {
     workpaper_workflow_event_id: String,
     workpaper_id: String,
@@ -948,6 +1063,133 @@ fn list_workpaper_evidence_links(
 ) -> Result<Vec<WorkpaperEvidenceLinkDto>, String> {
     validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
     persistence::list_workpaper_evidence_links(database.path(), &workpaper_revision_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_pbc_request(
+    engagement_id: String,
+    request: PbcRequestInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<PbcRequestDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_optional_uuid(request.engagement_area_id.as_deref(), "engagement-area")?;
+
+    persistence::create_pbc_request(
+        database.path(),
+        persistence::NewPbcRequest {
+            engagement_id: &engagement_id,
+            engagement_area_id: request.engagement_area_id.as_deref(),
+            request_number: &request.request_number,
+            description: &request.description,
+            requested_from_party: &request.requested_from_party,
+            due_at_ms: request.due_at_ms,
+            status: request.status.as_deref().unwrap_or("REQUESTED"),
+            client_visible_content: request.client_visible_content.as_deref(),
+            internal_notes: request.internal_notes.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_pbc_requests(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<PbcRequestDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_pbc_requests(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn transition_pbc_request_status(
+    pbc_request_id: String,
+    to_status: String,
+    actor_id: Option<String>,
+    comment: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<PbcRequestEventDto, String> {
+    validate_uuid(&pbc_request_id, "PBC request")?;
+    persistence::transition_pbc_request_status(
+        database.path(),
+        &pbc_request_id,
+        &to_status,
+        actor_id.as_deref(),
+        comment.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn add_pbc_request_assessment(
+    pbc_request_id: String,
+    assessment_text: String,
+    actor_id: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<PbcRequestEventDto, String> {
+    validate_uuid(&pbc_request_id, "PBC request")?;
+    persistence::add_pbc_request_assessment(
+        database.path(),
+        &pbc_request_id,
+        &assessment_text,
+        actor_id.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_pbc_request_events(
+    pbc_request_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<PbcRequestEventDto>, String> {
+    validate_uuid(&pbc_request_id, "PBC request")?;
+    persistence::list_pbc_request_events(database.path(), &pbc_request_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_pbc_request_evidence_link(
+    pbc_request_id: String,
+    document_id: String,
+    content_version_id: Option<String>,
+    controlled_evidence_version_id: Option<String>,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<PbcRequestEvidenceLinkDto, String> {
+    validate_uuid(&pbc_request_id, "PBC request")?;
+    validate_uuid(&document_id, "document")?;
+    validate_optional_uuid(content_version_id.as_deref(), "content-version")?;
+    validate_optional_uuid(
+        controlled_evidence_version_id.as_deref(),
+        "controlled-evidence-version",
+    )?;
+
+    persistence::create_pbc_request_evidence_link(
+        database.path(),
+        &pbc_request_id,
+        &document_id,
+        content_version_id.as_deref(),
+        controlled_evidence_version_id.as_deref(),
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_pbc_request_evidence_links(
+    pbc_request_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<PbcRequestEvidenceLinkDto>, String> {
+    validate_uuid(&pbc_request_id, "PBC request")?;
+    persistence::list_pbc_request_evidence_links(database.path(), &pbc_request_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -1686,6 +1928,13 @@ pub fn run() {
             list_workpaper_revisions,
             create_workpaper_evidence_link,
             list_workpaper_evidence_links,
+            create_pbc_request,
+            list_pbc_requests,
+            transition_pbc_request_status,
+            add_pbc_request_assessment,
+            list_pbc_request_events,
+            create_pbc_request_evidence_link,
+            list_pbc_request_evidence_links,
             transition_workpaper_state,
             list_workpaper_workflow_events,
             create_review_note,
