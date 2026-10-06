@@ -4716,6 +4716,336 @@ pub fn list_engagement_templates(
     Ok(result)
 }
 
+pub fn create_firm_library_item(
+    database_path: &Path,
+    category: &str,
+    name: &str,
+    description: Option<&str>,
+    service_type_id: Option<&str>,
+    definition_json: &str,
+) -> Result<FirmLibraryItemRecord, PersistenceError> {
+    let category = normalize_firm_library_category(category)?;
+    let name = normalize_domain_label(name, "firm library item name", 200)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "firm library item name must contain searchable characters".to_string(),
+        ));
+    }
+    let description = normalize_firm_library_description(description)?;
+    let (definition_json, definition_hash) =
+        normalize_firm_library_definition(definition_json)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    if let Some(service_type_id) = service_type_id {
+        let service_exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM service_types
+                WHERE service_type_id = ?1
+                  AND archived_at_ms IS NULL
+            )",
+            [service_type_id],
+            |row| row.get(0),
+        )?;
+        if !service_exists {
+            return Err(PersistenceError::Configuration(format!(
+                "service type {service_type_id} does not exist"
+            )));
+        }
+    }
+
+    let firm_library_item_id = Uuid::new_v4().to_string();
+    let firm_library_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO firm_library_items (
+            firm_library_item_id,
+            category,
+            name,
+            normalized_name,
+            description,
+            service_type_id,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+        params![
+            &firm_library_item_id,
+            &category,
+            &name,
+            &normalized_name,
+            description.as_deref(),
+            service_type_id,
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO firm_library_versions (
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
+        params![
+            &firm_library_version_id,
+            &firm_library_item_id,
+            &definition_json,
+            &definition_hash,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FIRM_LIBRARY_ITEM_CREATED",
+            entity_type: "FIRM_LIBRARY_ITEM",
+            entity_id: &firm_library_item_id,
+            related_entity_type: Some("FIRM_LIBRARY_VERSION"),
+            related_entity_id: Some(&firm_library_version_id),
+            occurred_at_ms: now,
+            details: json!({
+                "category": category,
+                "serviceTypeId": service_type_id,
+                "versionNumber": 1,
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FirmLibraryItemRecord {
+        firm_library_item_id,
+        category,
+        name,
+        description,
+        service_type_id: service_type_id.map(str::to_string),
+        latest_version_id: firm_library_version_id,
+        latest_version_number: 1,
+        latest_definition_hash: definition_hash,
+        created_at_ms: now,
+    })
+}
+
+pub fn publish_firm_library_version(
+    database_path: &Path,
+    firm_library_item_id: &str,
+    definition_json: &str,
+) -> Result<FirmLibraryItemRecord, PersistenceError> {
+    let (definition_json, definition_hash) =
+        normalize_firm_library_definition(definition_json)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let item: Option<(String, String, Option<String>, Option<String>, i64)> = transaction
+        .query_row(
+            "SELECT
+                category,
+                name,
+                description,
+                service_type_id,
+                created_at_ms
+             FROM firm_library_items
+             WHERE firm_library_item_id = ?1
+               AND archived_at_ms IS NULL",
+            [firm_library_item_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (category, name, description, service_type_id, item_created_at_ms) = item.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "firm library item {firm_library_item_id} does not exist"
+        ))
+    })?;
+
+    let next_version_number: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM firm_library_versions
+         WHERE firm_library_item_id = ?1",
+        [firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if next_version_number < 1 {
+        return Err(PersistenceError::Configuration(
+            "firm library version sequence is invalid".to_string(),
+        ));
+    }
+
+    let firm_library_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO firm_library_versions (
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            &firm_library_version_id,
+            firm_library_item_id,
+            next_version_number,
+            &definition_json,
+            &definition_hash,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FIRM_LIBRARY_VERSION_PUBLISHED",
+            entity_type: "FIRM_LIBRARY_VERSION",
+            entity_id: &firm_library_version_id,
+            related_entity_type: Some("FIRM_LIBRARY_ITEM"),
+            related_entity_id: Some(firm_library_item_id),
+            occurred_at_ms: now,
+            details: json!({
+                "category": category,
+                "versionNumber": next_version_number,
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FirmLibraryItemRecord {
+        firm_library_item_id: firm_library_item_id.to_string(),
+        category,
+        name,
+        description,
+        service_type_id,
+        latest_version_id: firm_library_version_id,
+        latest_version_number: next_version_number as u64,
+        latest_definition_hash: definition_hash,
+        created_at_ms: item_created_at_ms,
+    })
+}
+
+pub fn list_firm_library_items(
+    database_path: &Path,
+    category: Option<&str>,
+    service_type_id: Option<&str>,
+) -> Result<Vec<FirmLibraryItemRecord>, PersistenceError> {
+    let category = category
+        .map(normalize_firm_library_category)
+        .transpose()?;
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            i.firm_library_item_id,
+            i.category,
+            i.name,
+            i.description,
+            i.service_type_id,
+            v.firm_library_version_id,
+            v.version_number,
+            v.definition_hash,
+            i.created_at_ms
+         FROM firm_library_items i
+         JOIN firm_library_versions v
+           ON v.firm_library_item_id = i.firm_library_item_id
+          AND v.version_number = (
+              SELECT MAX(v2.version_number)
+              FROM firm_library_versions v2
+              WHERE v2.firm_library_item_id = i.firm_library_item_id
+          )
+         WHERE i.archived_at_ms IS NULL
+           AND (?1 IS NULL OR i.category = ?1)
+           AND (?2 IS NULL OR i.service_type_id = ?2)
+         ORDER BY i.category, i.name COLLATE NOCASE, i.created_at_ms",
+    )?;
+    let rows = statement.query_map(
+        params![category.as_deref(), service_type_id],
+        |row| {
+            let version_number: i64 = row.get(6)?;
+            Ok(FirmLibraryItemRecord {
+                firm_library_item_id: row.get(0)?,
+                category: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                service_type_id: row.get(4)?,
+                latest_version_id: row.get(5)?,
+                latest_version_number: version_number.max(0) as u64,
+                latest_definition_hash: row.get(7)?,
+                created_at_ms: row.get(8)?,
+            })
+        },
+    )?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_firm_library_versions(
+    database_path: &Path,
+    firm_library_item_id: &str,
+) -> Result<Vec<FirmLibraryVersionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    let item_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM firm_library_items
+            WHERE firm_library_item_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if !item_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "firm library item {firm_library_item_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            firm_library_version_id,
+            firm_library_item_id,
+            version_number,
+            definition_json,
+            definition_hash,
+            created_at_ms
+         FROM firm_library_versions
+         WHERE firm_library_item_id = ?1
+         ORDER BY version_number DESC",
+    )?;
+    let rows = statement.query_map([firm_library_item_id], |row| {
+        let version_number: i64 = row.get(2)?;
+        Ok(FirmLibraryVersionRecord {
+            firm_library_version_id: row.get(0)?,
+            firm_library_item_id: row.get(1)?,
+            version_number: version_number.max(0) as u64,
+            definition_json: row.get(3)?,
+            definition_hash: row.get(4)?,
+            created_at_ms: row.get(5)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_engagement_from_template(
     database_path: &Path,
     engagement_template_version_id: &str,
