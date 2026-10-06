@@ -3872,8 +3872,13 @@ fn normalize_review_note_workbook_anchor(
     expects_range: bool,
 ) -> Result<String, PersistenceError> {
     let (worksheet, address) = value.rsplit_once('!').ok_or_else(|| {
+        let expected_format = if expects_range {
+            "Worksheet!B12:D20"
+        } else {
+            "Worksheet!B12"
+        };
         PersistenceError::Configuration(format!(
-            "review note {location_kind} location must include worksheet and A1 reference"
+            "review note {location_kind} location must use {expected_format} format"
         ))
     })?;
     let worksheet = normalize_review_note_worksheet(worksheet)?;
