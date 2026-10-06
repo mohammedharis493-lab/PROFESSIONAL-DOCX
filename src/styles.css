@@ -774,6 +774,108 @@ textarea:focus-visible {
 
 .evidence-search-results {
   display: grid;
+  max-height: 260px;
+  overflow: auto;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.evidence-selected-document {
+  padding: 12px 14px;
+  border: 1px solid #dfe5ed;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.evidence-selected-document strong,
+.evidence-selected-document small {
+  display: block;
+}
+
+.evidence-selected-document small {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #7b8798;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-integrity-note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.evidence-integrity-strong {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.workpaper-evidence-list {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.workpaper-evidence-list article {
+  padding: 16px 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.workpaper-evidence-list article:last-child {
+  border-bottom: 0;
+}
+
+.workpaper-evidence-list article > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workpaper-evidence-list article > div > span {
+  color: #526174;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.workpaper-evidence-list p {
+  margin: 8px 0 0;
+  color: #4b586c;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.workpaper-evidence-list code {
+  display: inline-block;
+  margin-top: 10px;
+  color: #526174;
+  font-size: 11px;
+}
+
+.workspace-evidence-panel {
+  border-top: 1px solid #dfe5ed;
+  background: #f8fafc;
+}
+
+.evidence-link-builder {
+  align-self: start;
+}
+
+.evidence-search-form {
+  padding: 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.evidence-search-results {
+  display: grid;
   max-height: 240px;
   overflow: auto;
   border-bottom: 1px solid #edf0f4;
