@@ -533,6 +533,122 @@ impl From<persistence::WorkpaperEvidenceLinkRecord> for WorkpaperEvidenceLinkDto
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkpaperWorkflowEventDto {
+    workpaper_workflow_event_id: String,
+    workpaper_id: String,
+    workpaper_revision_id: Option<String>,
+    from_state: String,
+    to_state: String,
+    actor_id: Option<String>,
+    comment: Option<String>,
+    occurred_at_ms: i64,
+}
+
+impl From<persistence::WorkpaperWorkflowEventRecord> for WorkpaperWorkflowEventDto {
+    fn from(value: persistence::WorkpaperWorkflowEventRecord) -> Self {
+        Self {
+            workpaper_workflow_event_id: value.workpaper_workflow_event_id,
+            workpaper_id: value.workpaper_id,
+            workpaper_revision_id: value.workpaper_revision_id,
+            from_state: value.from_state,
+            to_state: value.to_state,
+            actor_id: value.actor_id,
+            comment: value.comment,
+            occurred_at_ms: value.occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNoteDto {
+    review_note_id: String,
+    workpaper_id: String,
+    workpaper_revision_id: String,
+    evidence_link_id: Option<String>,
+    title: String,
+    body: String,
+    owner_id: Option<String>,
+    due_at_ms: Option<i64>,
+    location_kind: Option<String>,
+    location_value: Option<String>,
+    current_state: String,
+    raised_by: Option<String>,
+    created_at_ms: i64,
+    latest_event_at_ms: i64,
+}
+
+impl From<persistence::ReviewNoteRecord> for ReviewNoteDto {
+    fn from(value: persistence::ReviewNoteRecord) -> Self {
+        Self {
+            review_note_id: value.review_note_id,
+            workpaper_id: value.workpaper_id,
+            workpaper_revision_id: value.workpaper_revision_id,
+            evidence_link_id: value.evidence_link_id,
+            title: value.title,
+            body: value.body,
+            owner_id: value.owner_id,
+            due_at_ms: value.due_at_ms,
+            location_kind: value.location_kind,
+            location_value: value.location_value,
+            current_state: value.current_state,
+            raised_by: value.raised_by,
+            created_at_ms: value.created_at_ms,
+            latest_event_at_ms: value.latest_event_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNoteEventDto {
+    review_note_event_id: String,
+    review_note_id: String,
+    event_type: String,
+    actor_id: Option<String>,
+    response_text: Option<String>,
+    comment: Option<String>,
+    occurred_at_ms: i64,
+}
+
+impl From<persistence::ReviewNoteEventRecord> for ReviewNoteEventDto {
+    fn from(value: persistence::ReviewNoteEventRecord) -> Self {
+        Self {
+            review_note_event_id: value.review_note_event_id,
+            review_note_id: value.review_note_id,
+            event_type: value.event_type,
+            actor_id: value.actor_id,
+            response_text: value.response_text,
+            comment: value.comment,
+            occurred_at_ms: value.occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNoteInputDto {
+    workpaper_revision_id: String,
+    evidence_link_id: Option<String>,
+    title: String,
+    body: String,
+    owner_id: Option<String>,
+    due_at_ms: Option<i64>,
+    location_kind: Option<String>,
+    location_value: Option<String>,
+    raised_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNoteActionInputDto {
+    actor_id: Option<String>,
+    response_text: Option<String>,
+    comment: Option<String>,
+}
+
 fn validate_uuid(value: &str, label: &str) -> Result<(), String> {
     Uuid::parse_str(value).map_err(|_| format!("Invalid {label} identifier."))?;
     Ok(())
@@ -832,6 +948,146 @@ fn list_workpaper_evidence_links(
 ) -> Result<Vec<WorkpaperEvidenceLinkDto>, String> {
     validate_uuid(&workpaper_revision_id, "workpaper-revision")?;
     persistence::list_workpaper_evidence_links(database.path(), &workpaper_revision_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn transition_workpaper_state(
+    workpaper_id: String,
+    to_state: String,
+    actor_id: Option<String>,
+    comment: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<WorkpaperWorkflowEventDto, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::transition_workpaper_state(
+        database.path(),
+        &workpaper_id,
+        &to_state,
+        actor_id.as_deref(),
+        comment.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workpaper_workflow_events(
+    workpaper_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<WorkpaperWorkflowEventDto>, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::list_workpaper_workflow_events(database.path(), &workpaper_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_review_note(
+    workpaper_id: String,
+    note: ReviewNoteInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ReviewNoteDto, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    validate_uuid(&note.workpaper_revision_id, "workpaper-revision")?;
+    validate_optional_uuid(note.evidence_link_id.as_deref(), "evidence-link")?;
+
+    persistence::create_review_note(
+        database.path(),
+        persistence::NewReviewNote {
+            workpaper_id: &workpaper_id,
+            workpaper_revision_id: &note.workpaper_revision_id,
+            evidence_link_id: note.evidence_link_id.as_deref(),
+            title: &note.title,
+            body: &note.body,
+            owner_id: note.owner_id.as_deref(),
+            due_at_ms: note.due_at_ms,
+            location_kind: note.location_kind.as_deref(),
+            location_value: note.location_value.as_deref(),
+            raised_by: note.raised_by.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_review_notes(
+    workpaper_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ReviewNoteDto>, String> {
+    validate_uuid(&workpaper_id, "workpaper")?;
+    persistence::list_review_notes(database.path(), &workpaper_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+fn review_note_action(
+    database: &persistence::DatabaseState,
+    review_note_id: &str,
+    action: &ReviewNoteActionInputDto,
+) -> persistence::ReviewNoteAction<'_> {
+    persistence::ReviewNoteAction {
+        review_note_id,
+        actor_id: action.actor_id.as_deref(),
+        response_text: action.response_text.as_deref(),
+        comment: action.comment.as_deref(),
+    }
+}
+
+#[tauri::command]
+fn respond_to_review_note(
+    review_note_id: String,
+    action: ReviewNoteActionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ReviewNoteEventDto, String> {
+    validate_uuid(&review_note_id, "review-note")?;
+    persistence::respond_to_review_note(
+        database.path(),
+        review_note_action(&database, &review_note_id, &action),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_review_note(
+    review_note_id: String,
+    action: ReviewNoteActionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ReviewNoteEventDto, String> {
+    validate_uuid(&review_note_id, "review-note")?;
+    persistence::clear_review_note(
+        database.path(),
+        review_note_action(&database, &review_note_id, &action),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reopen_review_note(
+    review_note_id: String,
+    action: ReviewNoteActionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ReviewNoteEventDto, String> {
+    validate_uuid(&review_note_id, "review-note")?;
+    persistence::reopen_review_note(
+        database.path(),
+        review_note_action(&database, &review_note_id, &action),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_review_note_events(
+    review_note_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ReviewNoteEventDto>, String> {
+    validate_uuid(&review_note_id, "review-note")?;
+    persistence::list_review_note_events(database.path(), &review_note_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -1431,6 +1687,14 @@ pub fn run() {
             list_workpaper_revisions,
             create_workpaper_evidence_link,
             list_workpaper_evidence_links,
+            transition_workpaper_state,
+            list_workpaper_workflow_events,
+            create_review_note,
+            list_review_notes,
+            respond_to_review_note,
+            clear_review_note,
+            reopen_review_note,
+            list_review_note_events,
             choose_and_register_storage_root,
             list_storage_roots,
             start_index_job,
