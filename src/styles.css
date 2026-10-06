@@ -1101,6 +1101,153 @@ textarea:focus-visible {
   flex: 1 1 auto;
 }
 
+.workspace-pbc-panel {
+  border-top: 1px solid #dfe5ed;
+  background: #f8fafc;
+}
+
+.pbc-request-list,
+.pbc-event-list {
+  max-height: 620px;
+  overflow: auto;
+}
+
+.pbc-request-row {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  padding: 15px 18px;
+  background: #ffffff;
+  color: #253044;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pbc-request-row:last-child {
+  border-bottom: 0;
+}
+
+.pbc-request-row:hover,
+.pbc-request-row-active {
+  background: #f7f9fc;
+}
+
+.pbc-request-row strong,
+.pbc-request-row small {
+  display: block;
+}
+
+.pbc-request-row small {
+  color: #7b8798;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pbc-status-chip {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.pbc-request-detail {
+  border-top: 1px solid #dfe5ed;
+  background: #ffffff;
+}
+
+.pbc-visibility-grid {
+  padding-bottom: 0;
+}
+
+.pbc-client-visible-card,
+.pbc-internal-card {
+  padding: 16px 18px;
+}
+
+.pbc-client-visible-card {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.pbc-internal-card {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.pbc-client-visible-card p,
+.pbc-internal-card p {
+  margin: 8px 0 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pbc-client-visible-card small,
+.pbc-internal-card small {
+  display: block;
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.pbc-client-visible-input {
+  border-color: #93c5fd !important;
+  background: #f8fbff !important;
+}
+
+.pbc-internal-input {
+  border-color: #fdba74 !important;
+  background: #fffaf5 !important;
+}
+
+.pbc-action-stack {
+  display: grid;
+  align-self: start;
+}
+
+.pbc-action-stack .workspace-form + .workspace-form {
+  border-top: 1px solid #edf0f4;
+}
+
+.pbc-event-list article {
+  padding: 15px 18px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.pbc-event-list article:last-child {
+  border-bottom: 0;
+}
+
+.pbc-event-list article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pbc-event-list article span {
+  color: #7b8798;
+  font-size: 10px;
+}
+
+.pbc-event-list p {
+  margin: 7px 0 0;
+  color: #526174;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pbc-evidence-section {
+  border-top: 1px solid #dfe5ed;
+  background: #f8fafc;
+}
+
 @media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 1fr;

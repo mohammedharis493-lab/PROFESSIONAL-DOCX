@@ -149,6 +149,48 @@ type WorkpaperEvidenceLink = {
   createdAtMs: number;
 };
 
+type PbcRequest = {
+  pbcRequestId: string;
+  engagementId: string;
+  engagementAreaId: string | null;
+  requestNumber: string;
+  description: string;
+  requestedFromParty: string;
+  dueAtMs: number | null;
+  status: string;
+  clientVisibleContent: string | null;
+  internalNotes: string | null;
+  latestAssessment: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+type PbcRequestEvent = {
+  pbcRequestEventId: string;
+  pbcRequestId: string;
+  eventType: string;
+  actorId: string | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  assessmentText: string | null;
+  comment: string | null;
+  occurredAtMs: number;
+};
+
+type PbcRequestEvidenceLink = {
+  pbcRequestEvidenceLinkId: string;
+  pbcRequestId: string;
+  documentId: string;
+  documentName: string;
+  contentVersionId: string | null;
+  contentObservedAtMs: number | null;
+  controlledEvidenceVersionId: string | null;
+  controlledVersionNumber: number | null;
+  controlledCapturedAtMs: number | null;
+  description: string | null;
+  createdAtMs: number;
+};
+
 type WorkpaperWorkflowEvent = {
   workpaperWorkflowEventId: string;
   workpaperId: string;
@@ -715,6 +757,30 @@ export default function App() {
   const [reviewActionActorId, setReviewActionActorId] = useState("");
   const [reviewResponseText, setReviewResponseText] = useState("");
   const [reviewActionComment, setReviewActionComment] = useState("");
+  const [pbcRequests, setPbcRequests] = useState<PbcRequest[]>([]);
+  const [selectedPbcRequestId, setSelectedPbcRequestId] = useState<string | null>(null);
+  const [pbcRequestEvents, setPbcRequestEvents] = useState<PbcRequestEvent[]>([]);
+  const [pbcEvidenceLinks, setPbcEvidenceLinks] = useState<PbcRequestEvidenceLink[]>([]);
+  const [newPbcRequestNumber, setNewPbcRequestNumber] = useState("");
+  const [newPbcAreaId, setNewPbcAreaId] = useState("");
+  const [newPbcDescription, setNewPbcDescription] = useState("");
+  const [newPbcRequestedFrom, setNewPbcRequestedFrom] = useState("");
+  const [newPbcDueLocal, setNewPbcDueLocal] = useState("");
+  const [newPbcClientVisibleContent, setNewPbcClientVisibleContent] = useState("");
+  const [newPbcInternalNotes, setNewPbcInternalNotes] = useState("");
+  const [pbcNextStatus, setPbcNextStatus] = useState("REQUESTED");
+  const [pbcActorId, setPbcActorId] = useState("");
+  const [pbcStatusComment, setPbcStatusComment] = useState("");
+  const [pbcAssessmentText, setPbcAssessmentText] = useState("");
+  const [pbcEvidenceSearchQuery, setPbcEvidenceSearchQuery] = useState("");
+  const [pbcEvidenceSearchResults, setPbcEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedPbcEvidenceDocument, setSelectedPbcEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [pbcEvidenceVersionHistory, setPbcEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedPbcEvidenceVersionKey, setSelectedPbcEvidenceVersionKey] = useState("");
+  const [pbcEvidenceDescription, setPbcEvidenceDescription] = useState("");
+  const [pbcEvidenceSearchBusy, setPbcEvidenceSearchBusy] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [newServiceTypeName, setNewServiceTypeName] = useState("");
@@ -974,19 +1040,33 @@ export default function App() {
     setReviewNotes([]);
     setSelectedReviewNoteId(null);
     setReviewNoteEvents([]);
+    setPbcRequests([]);
+    setSelectedPbcRequestId(null);
+    setPbcRequestEvents([]);
+    setPbcEvidenceLinks([]);
+    setPbcEvidenceSearchResults([]);
+    setSelectedPbcEvidenceDocument(null);
+    setPbcEvidenceVersionHistory([]);
+    setSelectedPbcEvidenceVersionKey("");
     setEvidenceSearchResults([]);
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
     setSelectedEvidenceVersionKey("");
     try {
-      const [areas, procedureRecords, workpaperRecords] = await Promise.all([
-        invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
-        invoke<Procedure[]>("list_procedures", { engagementId }),
-        invoke<Workpaper[]>("list_workpapers", { engagementId }),
-      ]);
+      const [areas, procedureRecords, workpaperRecords, requestRecords] =
+        await Promise.all([
+          invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
+          invoke<Procedure[]>("list_procedures", { engagementId }),
+          invoke<Workpaper[]>("list_workpapers", { engagementId }),
+          invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
+        ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
       setWorkpapers(workpaperRecords);
+      setPbcRequests(requestRecords);
+      setSelectedPbcRequestId(null);
+      setPbcRequestEvents([]);
+      setPbcEvidenceLinks([]);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -1248,6 +1328,214 @@ export default function App() {
       setReviewActionComment("");
       await refreshWorkpaperReviewState(selectedWorkpaperId);
       await loadReviewNoteEvents(selectedReviewNoteId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadPbcRequestDetail(pbcRequestId: string) {
+    setWorkspaceBusy(true);
+    setSelectedPbcRequestId(pbcRequestId);
+    setPbcEvidenceSearchResults([]);
+    setSelectedPbcEvidenceDocument(null);
+    setPbcEvidenceVersionHistory([]);
+    setSelectedPbcEvidenceVersionKey("");
+    try {
+      const [events, links] = await Promise.all([
+        invoke<PbcRequestEvent[]>("list_pbc_request_events", { pbcRequestId }),
+        invoke<PbcRequestEvidenceLink[]>("list_pbc_request_evidence_links", {
+          pbcRequestId,
+        }),
+      ]);
+      setPbcRequestEvents(events);
+      setPbcEvidenceLinks(links);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setPbcRequestEvents([]);
+      setPbcEvidenceLinks([]);
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function refreshPbcRequests(engagementId: string) {
+    const requests = await invoke<PbcRequest[]>("list_pbc_requests", { engagementId });
+    setPbcRequests(requests);
+    return requests;
+  }
+
+  async function submitPbcRequest(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    if (
+      !newPbcRequestNumber.trim() ||
+      !newPbcDescription.trim() ||
+      !newPbcRequestedFrom.trim()
+    ) {
+      return;
+    }
+
+    const dueAtMs = newPbcDueLocal ? new Date(newPbcDueLocal).getTime() : null;
+    if (dueAtMs !== null && Number.isNaN(dueAtMs)) {
+      setError("PBC due date is invalid.");
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<PbcRequest>("create_pbc_request", {
+        engagementId: selectedEngagementId,
+        request: {
+          engagementAreaId: newPbcAreaId || null,
+          requestNumber: newPbcRequestNumber.trim(),
+          description: newPbcDescription.trim(),
+          requestedFromParty: newPbcRequestedFrom.trim(),
+          dueAtMs,
+          status: "REQUESTED",
+          clientVisibleContent: newPbcClientVisibleContent.trim() || null,
+          internalNotes: newPbcInternalNotes.trim() || null,
+        },
+      });
+      setNewPbcRequestNumber("");
+      setNewPbcAreaId("");
+      setNewPbcDescription("");
+      setNewPbcRequestedFrom("");
+      setNewPbcDueLocal("");
+      setNewPbcClientVisibleContent("");
+      setNewPbcInternalNotes("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(created.pbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitPbcStatus(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPbcRequestId || !selectedEngagementId || !pbcNextStatus.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvent>("transition_pbc_request_status", {
+        pbcRequestId: selectedPbcRequestId,
+        toStatus: pbcNextStatus.trim(),
+        actorId: pbcActorId.trim() || null,
+        comment: pbcStatusComment.trim() || null,
+      });
+      setPbcStatusComment("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(selectedPbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitPbcAssessment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPbcRequestId || !selectedEngagementId || !pbcAssessmentText.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvent>("add_pbc_request_assessment", {
+        pbcRequestId: selectedPbcRequestId,
+        assessmentText: pbcAssessmentText.trim(),
+        actorId: pbcActorId.trim() || null,
+      });
+      setPbcAssessmentText("");
+      await refreshPbcRequests(selectedEngagementId);
+      await loadPbcRequestDetail(selectedPbcRequestId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchPbcEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const searchText = pbcEvidenceSearchQuery.trim();
+    if (!selectedPbcRequestId || !searchText) return;
+
+    setPbcEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setPbcEvidenceSearchResults(results);
+      setSelectedPbcEvidenceDocument(null);
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setPbcEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectPbcEvidenceDocument(document: SearchResult) {
+    setPbcEvidenceSearchBusy(true);
+    setSelectedPbcEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setPbcEvidenceVersionHistory(history);
+      const controlled = history.find((entry) => entry.controlledEvidenceVersionId);
+      if (controlled?.controlledEvidenceVersionId) {
+        setSelectedPbcEvidenceVersionKey(
+          `controlled:${controlled.controlledEvidenceVersionId}`,
+        );
+      } else if (history[0]) {
+        setSelectedPbcEvidenceVersionKey(`content:${history[0].contentVersionId}`);
+      } else {
+        setSelectedPbcEvidenceVersionKey("");
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+    } finally {
+      setPbcEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitPbcEvidenceLink(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !selectedPbcRequestId ||
+      !selectedPbcEvidenceDocument ||
+      !selectedPbcEvidenceVersionKey
+    ) {
+      return;
+    }
+
+    const [versionKind, versionId] = selectedPbcEvidenceVersionKey.split(":", 2);
+    if (!versionId || (versionKind !== "content" && versionKind !== "controlled")) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<PbcRequestEvidenceLink>("create_pbc_request_evidence_link", {
+        pbcRequestId: selectedPbcRequestId,
+        documentId: selectedPbcEvidenceDocument.documentId,
+        contentVersionId: versionKind === "content" ? versionId : null,
+        controlledEvidenceVersionId: versionKind === "controlled" ? versionId : null,
+        description: pbcEvidenceDescription.trim() || null,
+      });
+      setPbcEvidenceDescription("");
+      setPbcEvidenceSearchResults([]);
+      setSelectedPbcEvidenceDocument(null);
+      setPbcEvidenceVersionHistory([]);
+      setSelectedPbcEvidenceVersionKey("");
+      const links = await invoke<PbcRequestEvidenceLink[]>(
+        "list_pbc_request_evidence_links",
+        { pbcRequestId: selectedPbcRequestId },
+      );
+      setPbcEvidenceLinks(links);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -2686,6 +2974,10 @@ export default function App() {
     engagementAreas.map((area) => [area.engagementAreaId, area.name]),
   );
   const evidenceVersionOptions = workpaperEvidenceVersionOptions(evidenceVersionHistory);
+  const pbcEvidenceVersionOptions =
+    workpaperEvidenceVersionOptions(pbcEvidenceVersionHistory);
+  const selectedPbcRequest =
+    pbcRequests.find((request) => request.pbcRequestId === selectedPbcRequestId) ?? null;
   const selectedReviewNote =
     reviewNotes.find((note) => note.reviewNoteId === selectedReviewNoteId) ?? null;
   const revisionNumberById = Object.fromEntries(
@@ -3104,6 +3396,14 @@ export default function App() {
                     setReviewNotes([]);
                     setSelectedReviewNoteId(null);
                     setReviewNoteEvents([]);
+                    setPbcRequests([]);
+                    setSelectedPbcRequestId(null);
+                    setPbcRequestEvents([]);
+                    setPbcEvidenceLinks([]);
+                    setPbcEvidenceSearchResults([]);
+                    setSelectedPbcEvidenceDocument(null);
+                    setPbcEvidenceVersionHistory([]);
+                    setSelectedPbcEvidenceVersionKey("");
                   }}
                 >
                   <option value="">All clients</option>
@@ -3450,6 +3750,473 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+                </div>
+
+                <div className="workspace-pbc-panel">
+                  <div className="workspace-detail-heading">
+                    <div>
+                      <span className="workspace-label">PBC / CLIENT REQUESTS</span>
+                      <h3>
+                        {pbcRequests.length} request{pbcRequests.length === 1 ? "" : "s"}
+                      </h3>
+                    </div>
+                    <span>Client-visible request content stays separate from internal notes.</span>
+                  </div>
+
+                  <div className="workspace-grid workspace-grid-two">
+                    <form className="workspace-card workspace-form" onSubmit={submitPbcRequest}>
+                      <div>
+                        <span className="workspace-label">NEW REQUEST</span>
+                        <h3>Create PBC item</h3>
+                      </div>
+                      <div className="workspace-form-pair">
+                        <label>
+                          <span>Request number</span>
+                          <input
+                            value={newPbcRequestNumber}
+                            onChange={(event) => setNewPbcRequestNumber(event.target.value)}
+                            placeholder="PBC-001"
+                            maxLength={80}
+                          />
+                        </label>
+                        <label>
+                          <span>Area</span>
+                          <select
+                            value={newPbcAreaId}
+                            onChange={(event) => setNewPbcAreaId(event.target.value)}
+                          >
+                            <option value="">No area</option>
+                            {engagementAreas.map((area) => (
+                              <option key={area.engagementAreaId} value={area.engagementAreaId}>
+                                {area.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <label>
+                        <span>Description</span>
+                        <textarea
+                          value={newPbcDescription}
+                          onChange={(event) => setNewPbcDescription(event.target.value)}
+                          rows={3}
+                          placeholder="Describe what is requested."
+                        />
+                      </label>
+                      <div className="workspace-form-pair">
+                        <label>
+                          <span>Requested from</span>
+                          <input
+                            value={newPbcRequestedFrom}
+                            onChange={(event) => setNewPbcRequestedFrom(event.target.value)}
+                            placeholder="Finance manager / client contact"
+                            maxLength={200}
+                          />
+                        </label>
+                        <label>
+                          <span>Due</span>
+                          <input
+                            type="datetime-local"
+                            value={newPbcDueLocal}
+                            onChange={(event) => setNewPbcDueLocal(event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        <span>Client-visible message</span>
+                        <textarea
+                          className="pbc-client-visible-input"
+                          value={newPbcClientVisibleContent}
+                          onChange={(event) =>
+                            setNewPbcClientVisibleContent(event.target.value)
+                          }
+                          rows={3}
+                          placeholder="Content intended to be shared with the client."
+                        />
+                      </label>
+                      <label>
+                        <span>Internal-only notes</span>
+                        <textarea
+                          className="pbc-internal-input"
+                          value={newPbcInternalNotes}
+                          onChange={(event) => setNewPbcInternalNotes(event.target.value)}
+                          rows={3}
+                          placeholder="Team-only context. Never client-visible."
+                        />
+                      </label>
+                      <button
+                        className="primary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !newPbcRequestNumber.trim() ||
+                          !newPbcDescription.trim() ||
+                          !newPbcRequestedFrom.trim()
+                        }
+                      >
+                        Create request
+                      </button>
+                    </form>
+
+                    <div className="workspace-card pbc-request-list">
+                      <div className="workspace-card-heading">
+                        <div>
+                          <span className="workspace-label">REQUEST REGISTER</span>
+                          <h3>Engagement PBC tracker</h3>
+                        </div>
+                      </div>
+                      {pbcRequests.length ? (
+                        pbcRequests.map((request) => (
+                          <button
+                            className={`pbc-request-row${
+                              selectedPbcRequestId === request.pbcRequestId
+                                ? " pbc-request-row-active"
+                                : ""
+                            }`}
+                            type="button"
+                            key={request.pbcRequestId}
+                            onClick={() => void loadPbcRequestDetail(request.pbcRequestId)}
+                          >
+                            <span className="pbc-status-chip">
+                              {request.status.replaceAll("_", " ")}
+                            </span>
+                            <strong>
+                              {request.requestNumber} · {request.description}
+                            </strong>
+                            <small>
+                              {request.engagementAreaId
+                                ? areaNameById[request.engagementAreaId] ?? "Area"
+                                : "No area"}{" "}
+                              · Requested from {request.requestedFromParty}
+                            </small>
+                            <small>
+                              {request.dueAtMs
+                                ? `Due ${formatTimestamp(request.dueAtMs)}`
+                                : "No due date"}
+                              {request.latestAssessment ? " · Assessment recorded" : ""}
+                            </small>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          No PBC requests exist for this engagement yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedPbcRequest ? (
+                    <div className="pbc-request-detail">
+                      <div className="workspace-detail-heading">
+                        <div>
+                          <span className="workspace-label">SELECTED PBC REQUEST</span>
+                          <h3>
+                            {selectedPbcRequest.requestNumber} ·{" "}
+                            {selectedPbcRequest.description}
+                          </h3>
+                        </div>
+                        <span>{selectedPbcRequest.status.replaceAll("_", " ")}</span>
+                      </div>
+
+                      <div className="workspace-grid workspace-grid-two pbc-visibility-grid">
+                        <div className="workspace-card pbc-client-visible-card">
+                          <span className="workspace-label">CLIENT-VISIBLE CONTENT</span>
+                          <p>
+                            {selectedPbcRequest.clientVisibleContent ||
+                              "No additional client-visible message was recorded."}
+                          </p>
+                          <small>
+                            Requested from {selectedPbcRequest.requestedFromParty}
+                            {selectedPbcRequest.dueAtMs
+                              ? ` · Due ${formatTimestamp(selectedPbcRequest.dueAtMs)}`
+                              : ""}
+                          </small>
+                        </div>
+                        <div className="workspace-card pbc-internal-card">
+                          <span className="workspace-label">INTERNAL ONLY</span>
+                          <p>
+                            {selectedPbcRequest.internalNotes ||
+                              "No internal-only note was recorded."}
+                          </p>
+                          {selectedPbcRequest.latestAssessment ? (
+                            <p>
+                              <b>Latest assessment:</b>{" "}
+                              {selectedPbcRequest.latestAssessment}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="workspace-grid workspace-grid-two">
+                        <div className="workspace-card pbc-action-stack">
+                          <form className="workspace-form" onSubmit={submitPbcStatus}>
+                            <div>
+                              <span className="workspace-label">STATUS</span>
+                              <h3>Record status change</h3>
+                            </div>
+                            <label>
+                              <span>Next status</span>
+                              <input
+                                list="pbc-status-options"
+                                value={pbcNextStatus}
+                                onChange={(event) => setPbcNextStatus(event.target.value)}
+                                placeholder="REQUESTED"
+                                maxLength={80}
+                              />
+                              <datalist id="pbc-status-options">
+                                <option value="DRAFT" />
+                                <option value="REQUESTED" />
+                                <option value="PARTIALLY_RECEIVED" />
+                                <option value="RECEIVED" />
+                                <option value="UNDER_REVIEW" />
+                                <option value="FOLLOW_UP" />
+                                <option value="ACCEPTED" />
+                                <option value="CLOSED" />
+                              </datalist>
+                            </label>
+                            <label>
+                              <span>Actor identifier</span>
+                              <input
+                                value={pbcActorId}
+                                onChange={(event) => setPbcActorId(event.target.value)}
+                                placeholder="team.member@example.com"
+                                maxLength={160}
+                              />
+                            </label>
+                            <label>
+                              <span>Status comment</span>
+                              <textarea
+                                value={pbcStatusComment}
+                                onChange={(event) => setPbcStatusComment(event.target.value)}
+                                rows={2}
+                                placeholder="Optional reason or follow-up detail."
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="submit"
+                              disabled={workspaceBusy || !pbcNextStatus.trim()}
+                            >
+                              Record status
+                            </button>
+                          </form>
+
+                          <form className="workspace-form pbc-assessment-form" onSubmit={submitPbcAssessment}>
+                            <div>
+                              <span className="workspace-label">AUDITOR ASSESSMENT</span>
+                              <h3>Add assessment</h3>
+                            </div>
+                            <label>
+                              <span>Internal assessment</span>
+                              <textarea
+                                value={pbcAssessmentText}
+                                onChange={(event) => setPbcAssessmentText(event.target.value)}
+                                rows={3}
+                                placeholder="Assess completeness, reliability, follow-up needed, or exceptions."
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="submit"
+                              disabled={workspaceBusy || !pbcAssessmentText.trim()}
+                            >
+                              Record assessment
+                            </button>
+                          </form>
+                        </div>
+
+                        <div className="workspace-card pbc-event-list">
+                          {pbcRequestEvents.length ? (
+                            [...pbcRequestEvents].reverse().map((event) => (
+                              <article key={event.pbcRequestEventId}>
+                                <div>
+                                  <strong>{event.eventType.replaceAll("_", " ")}</strong>
+                                  <span>{formatTimestamp(event.occurredAtMs)}</span>
+                                </div>
+                                {event.fromStatus || event.toStatus ? (
+                                  <p>
+                                    {(event.fromStatus ?? "—").replaceAll("_", " ")} →{" "}
+                                    {(event.toStatus ?? "—").replaceAll("_", " ")}
+                                  </p>
+                                ) : null}
+                                {event.assessmentText ? (
+                                  <p><b>Assessment:</b> {event.assessmentText}</p>
+                                ) : null}
+                                {event.actorId ? <p>Actor: {event.actorId}</p> : null}
+                                {event.comment ? <p>{event.comment}</p> : null}
+                              </article>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              Request history will appear here.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pbc-evidence-section">
+                        <div className="workspace-detail-heading">
+                          <div>
+                            <span className="workspace-label">RECEIVED EVIDENCE</span>
+                            <h3>
+                              {pbcEvidenceLinks.length} exact version
+                              {pbcEvidenceLinks.length === 1 ? "" : "s"} linked
+                            </h3>
+                          </div>
+                          <span>
+                            Prefer controlled evidence when the received item will support formal
+                            review or sign-off.
+                          </span>
+                        </div>
+                        <div className="workspace-grid workspace-grid-two">
+                          <div className="workspace-card evidence-link-builder">
+                            <form
+                              className="workspace-inline-form evidence-search-form"
+                              onSubmit={searchPbcEvidence}
+                            >
+                              <label>
+                                <span>Find received document</span>
+                                <input
+                                  value={pbcEvidenceSearchQuery}
+                                  onChange={(event) =>
+                                    setPbcEvidenceSearchQuery(event.target.value)
+                                  }
+                                  placeholder="Search filename or path"
+                                />
+                              </label>
+                              <button
+                                className="secondary-button"
+                                type="submit"
+                                disabled={
+                                  pbcEvidenceSearchBusy ||
+                                  !pbcEvidenceSearchQuery.trim()
+                                }
+                              >
+                                {pbcEvidenceSearchBusy ? "Searching…" : "Search"}
+                              </button>
+                            </form>
+
+                            {pbcEvidenceSearchResults.length ? (
+                              <div className="evidence-search-results">
+                                {pbcEvidenceSearchResults.map((result) => (
+                                  <button
+                                    className={`workspace-list-row${
+                                      selectedPbcEvidenceDocument?.documentId === result.documentId
+                                        ? " workspace-list-row-active"
+                                        : ""
+                                    }`}
+                                    type="button"
+                                    key={result.fileInstanceId}
+                                    onClick={() => void selectPbcEvidenceDocument(result)}
+                                  >
+                                    <span>
+                                      <strong>{result.name}</strong>
+                                      <small>{result.path}</small>
+                                    </span>
+                                    <span className="workspace-row-action">Versions →</span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            {selectedPbcEvidenceDocument ? (
+                              <form
+                                className="workspace-form evidence-version-form"
+                                onSubmit={submitPbcEvidenceLink}
+                              >
+                                <div className="evidence-selected-document">
+                                  <span className="workspace-label">SELECTED DOCUMENT</span>
+                                  <strong>{selectedPbcEvidenceDocument.name}</strong>
+                                  <small>{selectedPbcEvidenceDocument.path}</small>
+                                </div>
+                                <label>
+                                  <span>Exact received version</span>
+                                  <select
+                                    value={selectedPbcEvidenceVersionKey}
+                                    onChange={(event) =>
+                                      setSelectedPbcEvidenceVersionKey(event.target.value)
+                                    }
+                                  >
+                                    <option value="">Select exact version</option>
+                                    {pbcEvidenceVersionOptions.map((option) => (
+                                      <option key={option.key} value={option.key}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                {selectedPbcEvidenceVersionKey.startsWith("content:") ? (
+                                  <p className="evidence-integrity-note">
+                                    This is an observed working-source version. Capture controlled
+                                    evidence before relying on it for preserved sign-off evidence.
+                                  </p>
+                                ) : selectedPbcEvidenceVersionKey.startsWith("controlled:") ? (
+                                  <p className="evidence-integrity-note evidence-integrity-strong">
+                                    This received-evidence link will reference an immutable
+                                    controlled-evidence version.
+                                  </p>
+                                ) : null}
+                                <label>
+                                  <span>Evidence description</span>
+                                  <textarea
+                                    value={pbcEvidenceDescription}
+                                    onChange={(event) =>
+                                      setPbcEvidenceDescription(event.target.value)
+                                    }
+                                    rows={2}
+                                    placeholder="What was received and how does it answer the request?"
+                                  />
+                                </label>
+                                <button
+                                  className="primary-button"
+                                  type="submit"
+                                  disabled={
+                                    workspaceBusy || !selectedPbcEvidenceVersionKey
+                                  }
+                                >
+                                  Link received version
+                                </button>
+                              </form>
+                            ) : null}
+                          </div>
+
+                          <div className="workspace-card workpaper-evidence-list">
+                            {pbcEvidenceLinks.length ? (
+                              pbcEvidenceLinks.map((link) => (
+                                <article key={link.pbcRequestEvidenceLinkId}>
+                                  <div>
+                                    <strong>{link.documentName}</strong>
+                                    <span>RECEIVED</span>
+                                  </div>
+                                  <p>
+                                    {link.controlledEvidenceVersionId
+                                      ? `Controlled evidence v${link.controlledVersionNumber ?? "?"} · captured ${formatTimestamp(link.controlledCapturedAtMs)}`
+                                      : `Observed content · ${formatTimestamp(link.contentObservedAtMs)}`}
+                                  </p>
+                                  {link.description ? <p>{link.description}</p> : null}
+                                  <code
+                                    title={
+                                      link.controlledEvidenceVersionId ??
+                                      link.contentVersionId ??
+                                      ""
+                                    }
+                                  >
+                                    {link.controlledEvidenceVersionId
+                                      ? `Controlled ID ${link.controlledEvidenceVersionId.slice(0, 18)}…`
+                                      : `Content ID ${link.contentVersionId?.slice(0, 18) ?? "—"}…`}
+                                  </code>
+                                </article>
+                              ))
+                            ) : (
+                              <div className="empty-result">
+                                No received evidence version is linked yet.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 {selectedWorkpaper ? (
