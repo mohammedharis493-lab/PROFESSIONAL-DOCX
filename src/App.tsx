@@ -809,6 +809,260 @@ export default function App() {
     }
   }
 
+  async function refreshProfessionalWorkspace() {
+    try {
+      const [clientRecords, serviceTypeRecords, engagementRecords] = await Promise.all([
+        invoke<Client[]>("list_clients"),
+        invoke<ServiceType[]>("list_service_types"),
+        invoke<Engagement[]>("list_engagements", { clientId: null }),
+      ]);
+      setClients(clientRecords);
+      setServiceTypes(serviceTypeRecords);
+      setEngagements(engagementRecords);
+      if (!newEngagementServiceTypeId && serviceTypeRecords.length) {
+        setNewEngagementServiceTypeId(serviceTypeRecords[0].serviceTypeId);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    }
+  }
+
+  async function loadEngagementWorkspace(engagementId: string) {
+    setWorkspaceBusy(true);
+    setSelectedEngagementId(engagementId);
+    setSelectedWorkpaperId(null);
+    setWorkpaperRevisions([]);
+    try {
+      const [areas, procedureRecords, workpaperRecords] = await Promise.all([
+        invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
+        invoke<Procedure[]>("list_procedures", { engagementId }),
+        invoke<Workpaper[]>("list_workpapers", { engagementId }),
+      ]);
+      setEngagementAreas(areas);
+      setProcedures(procedureRecords);
+      setWorkpapers(workpaperRecords);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadWorkpaperRevisions(workpaperId: string) {
+    setWorkspaceBusy(true);
+    setSelectedWorkpaperId(workpaperId);
+    try {
+      const revisions = await invoke<WorkpaperRevision[]>("list_workpaper_revisions", {
+        workpaperId,
+      });
+      setWorkpaperRevisions(revisions);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitClient(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newClientName.trim();
+    if (!name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<Client>("create_client", { name });
+      setClients((current) =>
+        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setNewClientName("");
+      setSelectedClientId(created.clientId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitServiceType(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newServiceTypeName.trim();
+    if (!name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<ServiceType>("create_service_type", { name });
+      setServiceTypes((current) =>
+        [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
+      );
+      setNewServiceTypeName("");
+      setNewEngagementServiceTypeId(created.serviceTypeId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitEngagement(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedClientId || !newEngagementServiceTypeId) return;
+    const name = newEngagementName.trim();
+    if (!name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<Engagement>("create_engagement", {
+        clientId: selectedClientId,
+        serviceTypeId: newEngagementServiceTypeId,
+        name,
+        periodStart: newEngagementPeriodStart.trim() || null,
+        periodEnd: newEngagementPeriodEnd.trim() || null,
+        status: "ACTIVE",
+      });
+      setEngagements((current) => [created, ...current]);
+      setNewEngagementName("");
+      setNewEngagementPeriodStart("");
+      setNewEngagementPeriodEnd("");
+      await loadEngagementWorkspace(created.engagementId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitEngagementArea(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    const name = newAreaName.trim();
+    if (!name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<EngagementArea>("create_engagement_area", {
+        engagementId: selectedEngagementId,
+        parentAreaId: newAreaParentId || null,
+        name,
+        code: null,
+        displayOrder: engagementAreas.length * 10,
+        status: "ACTIVE",
+      });
+      setNewAreaName("");
+      setNewAreaParentId("");
+      await loadEngagementWorkspace(selectedEngagementId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitProcedure(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    const title = newProcedureTitle.trim();
+    if (!title) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<Procedure>("create_procedure", {
+        engagementId: selectedEngagementId,
+        engagementAreaId: newProcedureAreaId || null,
+        reference: null,
+        title,
+        description: null,
+        status: "ACTIVE",
+      });
+      setNewProcedureTitle("");
+      setNewProcedureAreaId("");
+      await loadEngagementWorkspace(selectedEngagementId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitWorkpaper(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    const reference = newWorkpaperReference.trim();
+    const title = newWorkpaperTitle.trim();
+    if (!reference || !title) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<Workpaper>("create_workpaper", {
+        engagementId: selectedEngagementId,
+        engagementAreaId: newWorkpaperAreaId || null,
+        procedureId: null,
+        reference,
+        title,
+        workflowState: "IN_PROGRESS",
+      });
+      setNewWorkpaperReference("");
+      setNewWorkpaperTitle("");
+      setNewWorkpaperAreaId("");
+      await loadEngagementWorkspace(selectedEngagementId);
+      await loadWorkpaperRevisions(created.workpaperId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitWorkpaperRevision(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkpaperId) return;
+    if (
+      !newRevisionObjective.trim() &&
+      !newRevisionProcedure.trim() &&
+      !newRevisionConclusion.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<WorkpaperRevision>("create_workpaper_revision", {
+        workpaperId: selectedWorkpaperId,
+        revision: {
+          revisionReason: workpaperRevisions.length
+            ? "Updated from workpaper workspace"
+            : "Initial workpaper documentation",
+          objective: newRevisionObjective,
+          procedurePerformed: newRevisionProcedure,
+          population: "",
+          sample: "",
+          exceptions: "",
+          managementExplanation: "",
+          conclusion: newRevisionConclusion,
+        },
+      });
+      setNewRevisionObjective("");
+      setNewRevisionProcedure("");
+      setNewRevisionConclusion("");
+      await loadWorkpaperRevisions(selectedWorkpaperId);
+      if (selectedEngagementId) {
+        const refreshed = await invoke<Workpaper[]>("list_workpapers", {
+          engagementId: selectedEngagementId,
+        });
+        setWorkpapers(refreshed);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  function openClientEngagements(clientId: string) {
+    setSelectedClientId(clientId);
+    setSelectedEngagementId(null);
+    setEngagementAreas([]);
+    setProcedures([]);
+    setWorkpapers([]);
+    setSelectedWorkpaperId(null);
+    setWorkpaperRevisions([]);
+    showView("engagements");
+  }
+
   async function loadPreview(root: ApprovedStorageRoot) {
     const files = await invoke<IndexedFile[]>("list_indexed_file_preview", {
       storageRootId: root.storageRootId,
