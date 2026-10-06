@@ -1040,6 +1040,14 @@ export default function App() {
     setReviewNotes([]);
     setSelectedReviewNoteId(null);
     setReviewNoteEvents([]);
+    setPbcRequests([]);
+    setSelectedPbcRequestId(null);
+    setPbcRequestEvents([]);
+    setPbcEvidenceLinks([]);
+    setPbcEvidenceSearchResults([]);
+    setSelectedPbcEvidenceDocument(null);
+    setPbcEvidenceVersionHistory([]);
+    setSelectedPbcEvidenceVersionKey("");
     setEvidenceSearchResults([]);
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
@@ -2966,6 +2974,10 @@ export default function App() {
     engagementAreas.map((area) => [area.engagementAreaId, area.name]),
   );
   const evidenceVersionOptions = workpaperEvidenceVersionOptions(evidenceVersionHistory);
+  const pbcEvidenceVersionOptions =
+    workpaperEvidenceVersionOptions(pbcEvidenceVersionHistory);
+  const selectedPbcRequest =
+    pbcRequests.find((request) => request.pbcRequestId === selectedPbcRequestId) ?? null;
   const selectedReviewNote =
     reviewNotes.find((note) => note.reviewNoteId === selectedReviewNoteId) ?? null;
   const revisionNumberById = Object.fromEntries(
@@ -3384,6 +3396,14 @@ export default function App() {
                     setReviewNotes([]);
                     setSelectedReviewNoteId(null);
                     setReviewNoteEvents([]);
+                    setPbcRequests([]);
+                    setSelectedPbcRequestId(null);
+                    setPbcRequestEvents([]);
+                    setPbcEvidenceLinks([]);
+                    setPbcEvidenceSearchResults([]);
+                    setSelectedPbcEvidenceDocument(null);
+                    setPbcEvidenceVersionHistory([]);
+                    setSelectedPbcEvidenceVersionKey("");
                   }}
                 >
                   <option value="">All clients</option>
