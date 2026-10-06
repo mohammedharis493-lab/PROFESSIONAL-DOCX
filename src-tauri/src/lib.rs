@@ -388,6 +388,60 @@ impl From<persistence::EngagementTemplateRecord> for EngagementTemplateDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FirmLibraryItemDto {
+    firm_library_item_id: String,
+    category: String,
+    name: String,
+    description: Option<String>,
+    service_type_id: Option<String>,
+    latest_version_id: String,
+    latest_version_number: u64,
+    latest_definition_hash_hex: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::FirmLibraryItemRecord> for FirmLibraryItemDto {
+    fn from(value: persistence::FirmLibraryItemRecord) -> Self {
+        Self {
+            firm_library_item_id: value.firm_library_item_id,
+            category: value.category,
+            name: value.name,
+            description: value.description,
+            service_type_id: value.service_type_id,
+            latest_version_id: value.latest_version_id,
+            latest_version_number: value.latest_version_number,
+            latest_definition_hash_hex: hex_bytes(&value.latest_definition_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FirmLibraryVersionDto {
+    firm_library_version_id: String,
+    firm_library_item_id: String,
+    version_number: u64,
+    definition_json: String,
+    definition_hash_hex: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::FirmLibraryVersionRecord> for FirmLibraryVersionDto {
+    fn from(value: persistence::FirmLibraryVersionRecord) -> Self {
+        Self {
+            firm_library_version_id: value.firm_library_version_id,
+            firm_library_item_id: value.firm_library_item_id,
+            version_number: value.version_number,
+            definition_json: value.definition_json,
+            definition_hash_hex: hex_bytes(&value.definition_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EngagementAreaDto {
     engagement_area_id: String,
     engagement_id: String,
@@ -998,6 +1052,71 @@ fn create_engagement_template_version_from_engagement(
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_firm_library_item(
+    category: String,
+    name: String,
+    description: Option<String>,
+    service_type_id: Option<String>,
+    definition_json: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<FirmLibraryItemDto, String> {
+    validate_optional_uuid(service_type_id.as_deref(), "service-type")?;
+    persistence::create_firm_library_item(
+        database.path(),
+        &category,
+        &name,
+        description.as_deref(),
+        service_type_id.as_deref(),
+        &definition_json,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn publish_firm_library_version(
+    firm_library_item_id: String,
+    definition_json: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<FirmLibraryItemDto, String> {
+    validate_uuid(&firm_library_item_id, "firm-library-item")?;
+    persistence::publish_firm_library_version(
+        database.path(),
+        &firm_library_item_id,
+        &definition_json,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_firm_library_items(
+    category: Option<String>,
+    service_type_id: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<FirmLibraryItemDto>, String> {
+    validate_optional_uuid(service_type_id.as_deref(), "service-type")?;
+    persistence::list_firm_library_items(
+        database.path(),
+        category.as_deref(),
+        service_type_id.as_deref(),
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_firm_library_versions(
+    firm_library_item_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<FirmLibraryVersionDto>, String> {
+    validate_uuid(&firm_library_item_id, "firm-library-item")?;
+    persistence::list_firm_library_versions(database.path(), &firm_library_item_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2104,6 +2223,10 @@ pub fn run() {
             create_engagement_template_from_engagement,
             list_engagement_templates,
             create_engagement_template_version_from_engagement,
+            create_firm_library_item,
+            publish_firm_library_version,
+            list_firm_library_items,
+            list_firm_library_versions,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
