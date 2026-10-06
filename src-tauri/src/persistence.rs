@@ -6163,8 +6163,7 @@ pub fn list_pbc_request_evidence_links(
             content_version_id: row.get(4)?,
             content_observed_at_ms: row.get(5)?,
             controlled_evidence_version_id: row.get(6)?,
-            controlled_version_number: controlled_version_number
-                .map(|value| value.max(0) as u64),
+            controlled_version_number: controlled_version_number.map(|value| value.max(0) as u64),
             controlled_captured_at_ms: row.get(8)?,
             description: row.get(9)?,
             created_at_ms: row.get(10)?,
@@ -7919,9 +7918,8 @@ mod tests {
             Some("Received evidence is complete for the selected sample.")
         );
 
-        let pbc_events =
-            list_pbc_request_events(&database.path, &pbc_request.pbc_request_id)
-                .expect("PBC request event history should load");
+        let pbc_events = list_pbc_request_events(&database.path, &pbc_request.pbc_request_id)
+            .expect("PBC request event history should load");
         assert_eq!(pbc_events.len(), 3);
         assert_eq!(pbc_events[0].event_type, "CREATED");
         assert_eq!(pbc_events[1].event_type, "STATUS_CHANGED");
