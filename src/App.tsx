@@ -149,6 +149,44 @@ type WorkpaperEvidenceLink = {
   createdAtMs: number;
 };
 
+type WorkpaperWorkflowEvent = {
+  workpaperWorkflowEventId: string;
+  workpaperId: string;
+  workpaperRevisionId: string | null;
+  fromState: string;
+  toState: string;
+  actorId: string | null;
+  comment: string | null;
+  occurredAtMs: number;
+};
+
+type ReviewNote = {
+  reviewNoteId: string;
+  workpaperId: string;
+  workpaperRevisionId: string;
+  evidenceLinkId: string | null;
+  title: string;
+  body: string;
+  ownerId: string | null;
+  dueAtMs: number | null;
+  locationKind: string | null;
+  locationValue: string | null;
+  currentState: string;
+  raisedBy: string | null;
+  createdAtMs: number;
+  latestEventAtMs: number;
+};
+
+type ReviewNoteEvent = {
+  reviewNoteEventId: string;
+  reviewNoteId: string;
+  eventType: string;
+  actorId: string | null;
+  responseText: string | null;
+  comment: string | null;
+  occurredAtMs: number;
+};
+
 type ControlledEvidenceVersion = {
   controlledEvidenceVersionId: string;
   evidenceCaptureJobId: string;
@@ -644,6 +682,25 @@ export default function App() {
   const [evidenceRelationshipType, setEvidenceRelationshipType] = useState("SUPPORTS");
   const [evidenceDescription, setEvidenceDescription] = useState("");
   const [evidenceSearchBusy, setEvidenceSearchBusy] = useState(false);
+  const [workpaperWorkflowEvents, setWorkpaperWorkflowEvents] =
+    useState<WorkpaperWorkflowEvent[]>([]);
+  const [reviewNotes, setReviewNotes] = useState<ReviewNote[]>([]);
+  const [selectedReviewNoteId, setSelectedReviewNoteId] = useState<string | null>(null);
+  const [reviewNoteEvents, setReviewNoteEvents] = useState<ReviewNoteEvent[]>([]);
+  const [nextWorkflowState, setNextWorkflowState] = useState("PREPARED");
+  const [workflowActorId, setWorkflowActorId] = useState("");
+  const [workflowComment, setWorkflowComment] = useState("");
+  const [newReviewTitle, setNewReviewTitle] = useState("");
+  const [newReviewBody, setNewReviewBody] = useState("");
+  const [newReviewOwnerId, setNewReviewOwnerId] = useState("");
+  const [newReviewDueLocal, setNewReviewDueLocal] = useState("");
+  const [newReviewEvidenceLinkId, setNewReviewEvidenceLinkId] = useState("");
+  const [newReviewLocationKind, setNewReviewLocationKind] = useState("");
+  const [newReviewLocationValue, setNewReviewLocationValue] = useState("");
+  const [newReviewRaisedBy, setNewReviewRaisedBy] = useState("");
+  const [reviewActionActorId, setReviewActionActorId] = useState("");
+  const [reviewResponseText, setReviewResponseText] = useState("");
+  const [reviewActionComment, setReviewActionComment] = useState("");
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [newServiceTypeName, setNewServiceTypeName] = useState("");
