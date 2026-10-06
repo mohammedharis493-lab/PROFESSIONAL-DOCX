@@ -7614,7 +7614,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 8);
+        assert_eq!(migration_count, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7650,14 +7650,17 @@ mod tests {
                        'review_note_events',
                        'pbc_requests',
                        'pbc_request_events',
-                       'pbc_request_evidence_links'
+                       'pbc_request_evidence_links',
+                       'signoffs',
+                       'signoff_evidence_links',
+                       'signoff_supersessions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 30);
+        assert_eq!(table_count, 33);
     }
 
     #[test]
@@ -7693,7 +7696,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7734,14 +7737,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 8");
+        initialize_database(&database.path).expect("database should upgrade through version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_exists: i64 = connection
             .query_row(
@@ -7783,14 +7786,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 8");
+        initialize_database(&database.path).expect("database should upgrade through version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7835,14 +7838,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_exists: bool = connection
             .query_row(
@@ -7884,14 +7887,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7941,14 +7944,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -7993,14 +7996,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 8");
+        initialize_database(&database.path).expect("database should upgrade to version 9");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
 
         let table_count: i64 = connection
             .query_row(
@@ -8015,6 +8018,58 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("PBC request tables should exist");
+        assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn ninth_migration_upgrades_existing_v8_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..8] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 8);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 9");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 9);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'signoffs',
+                       'signoff_evidence_links',
+                       'signoff_supersessions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sign-off tables should exist");
         assert_eq!(table_count, 3);
     }
 
