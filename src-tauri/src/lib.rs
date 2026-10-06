@@ -360,6 +360,34 @@ impl From<persistence::EngagementRecord> for EngagementDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct EngagementTemplateDto {
+    engagement_template_id: String,
+    name: String,
+    description: Option<String>,
+    latest_version_id: String,
+    latest_version_number: u64,
+    service_type_id: String,
+    source_engagement_id: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::EngagementTemplateRecord> for EngagementTemplateDto {
+    fn from(value: persistence::EngagementTemplateRecord) -> Self {
+        Self {
+            engagement_template_id: value.engagement_template_id,
+            name: value.name,
+            description: value.description,
+            latest_version_id: value.latest_version_id,
+            latest_version_number: value.latest_version_number,
+            service_type_id: value.service_type_id,
+            source_engagement_id: value.source_engagement_id,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EngagementAreaDto {
     engagement_area_id: String,
     engagement_id: String,
@@ -926,6 +954,61 @@ fn list_engagements(
     persistence::list_engagements(database.path(), client_id.as_deref())
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement_template_from_engagement(
+    source_engagement_id: String,
+    name: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementTemplateDto, String> {
+    validate_uuid(&source_engagement_id, "source-engagement")?;
+    persistence::create_engagement_template_from_engagement(
+        database.path(),
+        &source_engagement_id,
+        &name,
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_engagement_templates(
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<EngagementTemplateDto>, String> {
+    persistence::list_engagement_templates(database.path())
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_engagement_from_template(
+    engagement_template_version_id: String,
+    client_id: String,
+    name: String,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    status: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<EngagementDto, String> {
+    validate_uuid(
+        &engagement_template_version_id,
+        "engagement-template-version",
+    )?;
+    validate_uuid(&client_id, "client")?;
+    persistence::create_engagement_from_template(
+        database.path(),
+        &engagement_template_version_id,
+        &client_id,
+        &name,
+        period_start.as_deref(),
+        period_end.as_deref(),
+        status.as_deref().unwrap_or("ACTIVE"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2001,6 +2084,9 @@ pub fn run() {
             list_service_types,
             create_engagement,
             list_engagements,
+            create_engagement_template_from_engagement,
+            list_engagement_templates,
+            create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
             create_procedure,
