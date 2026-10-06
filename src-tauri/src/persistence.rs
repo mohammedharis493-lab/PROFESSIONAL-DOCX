@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 9;
+const LATEST_SCHEMA_VERSION: i64 = 10;
 
 struct Migration {
     version: i64,
@@ -70,6 +70,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "workpaper_signoffs",
         sql: include_str!("../migrations/0009_workpaper_signoffs.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "engagement_templates",
+        sql: include_str!("../migrations/0010_engagement_templates.sql"),
     },
 ];
 
@@ -255,6 +260,43 @@ pub struct EngagementRecord {
     pub period_end: Option<String>,
     pub status: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngagementTemplateRecord {
+    pub engagement_template_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub latest_version_id: String,
+    pub latest_version_number: u64,
+    pub service_type_id: String,
+    pub source_engagement_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EngagementTemplateDefinition {
+    areas: Vec<EngagementTemplateAreaDefinition>,
+    procedures: Vec<EngagementTemplateProcedureDefinition>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EngagementTemplateAreaDefinition {
+    source_area_id: String,
+    parent_source_area_id: Option<String>,
+    name: String,
+    code: Option<String>,
+    display_order: i64,
+    status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EngagementTemplateProcedureDefinition {
+    source_area_id: Option<String>,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -4262,6 +4304,443 @@ fn engagement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRe
     })
 }
 
+pub fn create_engagement_template_from_engagement(
+    database_path: &Path,
+    source_engagement_id: &str,
+    name: &str,
+    description: Option<&str>,
+) -> Result<EngagementTemplateRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement template name", 200)?;
+    let normalized_name = normalize_search_text(&name);
+    if normalized_name.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "engagement template name must contain searchable characters".to_string(),
+        ));
+    }
+    let description = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let service_type_id: Option<String> = transaction
+        .query_row(
+            "SELECT service_type_id
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [source_engagement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let service_type_id = service_type_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "source engagement {source_engagement_id} does not exist"
+        ))
+    })?;
+
+    let areas = {
+        let mut statement = transaction.prepare(
+            "SELECT
+                engagement_area_id,
+                parent_area_id,
+                name,
+                code,
+                display_order,
+                status
+             FROM engagement_areas
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL
+             ORDER BY display_order, name COLLATE NOCASE, engagement_area_id",
+        )?;
+        let rows = statement.query_map([source_engagement_id], |row| {
+            Ok(EngagementTemplateAreaDefinition {
+                source_area_id: row.get(0)?,
+                parent_source_area_id: row.get(1)?,
+                name: row.get(2)?,
+                code: row.get(3)?,
+                display_order: row.get(4)?,
+                status: row.get(5)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    let procedures = {
+        let mut statement = transaction.prepare(
+            "SELECT
+                engagement_area_id,
+                reference,
+                title,
+                description,
+                status
+             FROM procedures
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL
+             ORDER BY created_at_ms, procedure_id",
+        )?;
+        let rows = statement.query_map([source_engagement_id], |row| {
+            Ok(EngagementTemplateProcedureDefinition {
+                source_area_id: row.get(0)?,
+                reference: row.get(1)?,
+                title: row.get(2)?,
+                description: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    for procedure in &procedures {
+        if let Some(source_area_id) = procedure.source_area_id.as_deref() {
+            if !areas
+                .iter()
+                .any(|area| area.source_area_id == source_area_id)
+            {
+                return Err(PersistenceError::Configuration(
+                    "active template procedure references an unavailable engagement area"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    let definition = EngagementTemplateDefinition { areas, procedures };
+    let definition_json = serde_json::to_string(&definition).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "engagement template definition could not be serialized: {error}"
+        ))
+    })?;
+
+    let engagement_template_id = Uuid::new_v4().to_string();
+    let engagement_template_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagement_templates (
+            engagement_template_id,
+            name,
+            normalized_name,
+            description,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+        params![
+            &engagement_template_id,
+            &name,
+            &normalized_name,
+            description.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO engagement_template_versions (
+            engagement_template_version_id,
+            engagement_template_id,
+            version_number,
+            source_engagement_id,
+            service_type_id,
+            definition_json,
+            created_at_ms
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)",
+        params![
+            &engagement_template_version_id,
+            &engagement_template_id,
+            source_engagement_id,
+            &service_type_id,
+            &definition_json,
+            now
+        ],
+    )?;
+
+    transaction.commit()?;
+    Ok(EngagementTemplateRecord {
+        engagement_template_id,
+        name,
+        description,
+        latest_version_id: engagement_template_version_id,
+        latest_version_number: 1,
+        service_type_id,
+        source_engagement_id: Some(source_engagement_id.to_string()),
+        created_at_ms: now,
+    })
+}
+
+pub fn list_engagement_templates(
+    database_path: &Path,
+) -> Result<Vec<EngagementTemplateRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            t.engagement_template_id,
+            t.name,
+            t.description,
+            v.engagement_template_version_id,
+            v.version_number,
+            v.service_type_id,
+            v.source_engagement_id,
+            t.created_at_ms
+         FROM engagement_templates t
+         JOIN engagement_template_versions v
+           ON v.engagement_template_id = t.engagement_template_id
+          AND v.version_number = (
+              SELECT MAX(v2.version_number)
+              FROM engagement_template_versions v2
+              WHERE v2.engagement_template_id = t.engagement_template_id
+          )
+         WHERE t.archived_at_ms IS NULL
+         ORDER BY t.name COLLATE NOCASE, t.created_at_ms",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let version_number: i64 = row.get(4)?;
+        Ok(EngagementTemplateRecord {
+            engagement_template_id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            latest_version_id: row.get(3)?,
+            latest_version_number: version_number.max(0) as u64,
+            service_type_id: row.get(5)?,
+            source_engagement_id: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_engagement_from_template(
+    database_path: &Path,
+    engagement_template_version_id: &str,
+    client_id: &str,
+    name: &str,
+    period_start: Option<&str>,
+    period_end: Option<&str>,
+    status: &str,
+) -> Result<EngagementRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "engagement name", 240)?;
+    let status = normalize_domain_label(status, "engagement status", 80)?;
+    let period_start = normalize_optional_domain_text(period_start, 40);
+    let period_end = normalize_optional_domain_text(period_end, 40);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let client_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM clients
+            WHERE client_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if !client_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "client {client_id} does not exist"
+        )));
+    }
+
+    let template_version: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT
+                v.service_type_id,
+                v.definition_json
+             FROM engagement_template_versions v
+             JOIN engagement_templates t
+               ON t.engagement_template_id = v.engagement_template_id
+             WHERE v.engagement_template_version_id = ?1
+               AND t.archived_at_ms IS NULL",
+            [engagement_template_version_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (service_type_id, definition_json) = template_version.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "engagement template version {engagement_template_version_id} does not exist"
+        ))
+    })?;
+
+    let service_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM service_types
+            WHERE service_type_id = ?1 AND archived_at_ms IS NULL
+        )",
+        [&service_type_id],
+        |row| row.get(0),
+    )?;
+    if !service_exists {
+        return Err(PersistenceError::Configuration(
+            "engagement template service type is unavailable".to_string(),
+        ));
+    }
+
+    let definition: EngagementTemplateDefinition =
+        serde_json::from_str(&definition_json).map_err(|error| {
+            PersistenceError::Configuration(format!(
+                "engagement template definition is invalid: {error}"
+            ))
+        })?;
+
+    let engagement_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO engagements (
+            engagement_id,
+            client_id,
+            service_type_id,
+            name,
+            period_start,
+            period_end,
+            status,
+            created_at_ms,
+            archived_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+        params![
+            &engagement_id,
+            client_id,
+            &service_type_id,
+            &name,
+            period_start.as_deref(),
+            period_end.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+
+    let mut area_id_map: Vec<(String, String)> = Vec::new();
+    let mut pending_areas = definition.areas;
+    while !pending_areas.is_empty() {
+        let pending_count = pending_areas.len();
+        let mut next_pending = Vec::new();
+
+        for area in pending_areas {
+            let parent_area_id = match area.parent_source_area_id.as_deref() {
+                None => None,
+                Some(parent_source_area_id) => {
+                    let mapped = area_id_map
+                        .iter()
+                        .find(|(source_id, _)| source_id == parent_source_area_id)
+                        .map(|(_, new_id)| new_id.clone());
+                    let Some(mapped) = mapped else {
+                        next_pending.push(area);
+                        continue;
+                    };
+                    Some(mapped)
+                }
+            };
+
+            let area_name = normalize_domain_label(&area.name, "template area name", 160)?;
+            let area_code = normalize_optional_domain_text(area.code.as_deref(), 40);
+            let area_status = normalize_domain_label(&area.status, "template area status", 80)?;
+            let engagement_area_id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO engagement_areas (
+                    engagement_area_id,
+                    engagement_id,
+                    parent_area_id,
+                    name,
+                    code,
+                    display_order,
+                    status,
+                    created_at_ms,
+                    archived_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+                params![
+                    &engagement_area_id,
+                    &engagement_id,
+                    parent_area_id.as_deref(),
+                    &area_name,
+                    area_code.as_deref(),
+                    area.display_order,
+                    &area_status,
+                    now
+                ],
+            )?;
+            area_id_map.push((area.source_area_id, engagement_area_id));
+        }
+
+        if next_pending.len() == pending_count {
+            return Err(PersistenceError::Configuration(
+                "engagement template area hierarchy is invalid".to_string(),
+            ));
+        }
+        pending_areas = next_pending;
+    }
+
+    for procedure in definition.procedures {
+        let engagement_area_id = match procedure.source_area_id.as_deref() {
+            None => None,
+            Some(source_area_id) => Some(
+                area_id_map
+                    .iter()
+                    .find(|(source_id, _)| source_id == source_area_id)
+                    .map(|(_, new_id)| new_id.clone())
+                    .ok_or_else(|| {
+                        PersistenceError::Configuration(
+                            "engagement template procedure area is unavailable".to_string(),
+                        )
+                    })?,
+            ),
+        };
+        let title = normalize_domain_label(&procedure.title, "template procedure title", 240)?;
+        let reference = normalize_optional_domain_text(procedure.reference.as_deref(), 80);
+        let description = procedure
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let procedure_status =
+            normalize_domain_label(&procedure.status, "template procedure status", 80)?;
+        transaction.execute(
+            "INSERT INTO procedures (
+                procedure_id,
+                engagement_id,
+                engagement_area_id,
+                reference,
+                title,
+                description,
+                status,
+                created_at_ms,
+                archived_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+            params![
+                Uuid::new_v4().to_string(),
+                &engagement_id,
+                engagement_area_id.as_deref(),
+                reference.as_deref(),
+                &title,
+                description.as_deref(),
+                &procedure_status,
+                now
+            ],
+        )?;
+    }
+
+    transaction.commit()?;
+    Ok(EngagementRecord {
+        engagement_id,
+        client_id: client_id.to_string(),
+        service_type_id,
+        name,
+        period_start,
+        period_end,
+        status,
+        created_at_ms: now,
+    })
+}
+
 pub fn create_engagement_area(
     database_path: &Path,
     engagement_id: &str,
@@ -7746,7 +8225,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 9);
+        assert_eq!(migration_count, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -7785,14 +8264,16 @@ mod tests {
                        'pbc_request_evidence_links',
                        'workpaper_signoffs',
                        'workpaper_signoff_evidence',
-                       'workpaper_signoff_supersessions'
+                       'workpaper_signoff_supersessions',
+                       'engagement_templates',
+                       'engagement_template_versions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 33);
+        assert_eq!(table_count, 35);
     }
 
     #[test]
@@ -7828,7 +8309,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -7869,14 +8350,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 9");
+        initialize_database(&database.path).expect("database should upgrade through version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_exists: i64 = connection
             .query_row(
@@ -7918,14 +8399,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 9");
+        initialize_database(&database.path).expect("database should upgrade through version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -7970,14 +8451,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 9");
+        initialize_database(&database.path).expect("database should upgrade to version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_exists: bool = connection
             .query_row(
@@ -8019,14 +8500,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 9");
+        initialize_database(&database.path).expect("database should upgrade to version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -8076,14 +8557,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 9");
+        initialize_database(&database.path).expect("database should upgrade to version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -8128,14 +8609,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 9");
+        initialize_database(&database.path).expect("database should upgrade to version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -8180,14 +8661,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 9");
+        initialize_database(&database.path).expect("database should upgrade to version 10");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
 
         let table_count: i64 = connection
             .query_row(
@@ -8203,6 +8684,228 @@ mod tests {
             )
             .expect("sign-off tables should exist");
         assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn tenth_migration_upgrades_existing_v9_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..9] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 9);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 10");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 10);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'engagement_templates',
+                       'engagement_template_versions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("engagement template tables should exist");
+        assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn engagement_templates_copy_exact_methodology_without_live_linkage() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let source_client =
+            create_client(&database.path, "Template Source Client").expect("source client");
+        let target_client =
+            create_client(&database.path, "Template Target Client").expect("target client");
+        let service =
+            create_service_type(&database.path, "Reusable Assurance").expect("service type");
+
+        let source_engagement = create_engagement(
+            &database.path,
+            &source_client.client_id,
+            &service.service_type_id,
+            "Source methodology engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("source engagement");
+
+        let root_area = create_engagement_area(
+            &database.path,
+            &source_engagement.engagement_id,
+            None,
+            "Revenue",
+            Some("REV"),
+            10,
+            "ACTIVE",
+        )
+        .expect("root area");
+        let child_area = create_engagement_area(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            "Cut-off",
+            Some("CUT"),
+            20,
+            "ACTIVE",
+        )
+        .expect("child area");
+        create_procedure(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&child_area.engagement_area_id),
+            Some("REV-01"),
+            "Test revenue cut-off",
+            Some("Inspect transactions around period end."),
+            "ACTIVE",
+        )
+        .expect("source procedure");
+
+        let template = create_engagement_template_from_engagement(
+            &database.path,
+            &source_engagement.engagement_id,
+            "Core revenue methodology",
+            Some("Reusable revenue areas and procedures."),
+        )
+        .expect("template should be captured");
+        assert_eq!(template.latest_version_number, 1);
+        assert_eq!(template.service_type_id, service.service_type_id);
+        assert_eq!(
+            template.source_engagement_id.as_deref(),
+            Some(source_engagement.engagement_id.as_str())
+        );
+
+        let templates =
+            list_engagement_templates(&database.path).expect("template list should load");
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].latest_version_id, template.latest_version_id);
+
+        create_procedure(
+            &database.path,
+            &source_engagement.engagement_id,
+            Some(&root_area.engagement_area_id),
+            Some("REV-LATER"),
+            "Procedure added after template capture",
+            None,
+            "ACTIVE",
+        )
+        .expect("later source procedure");
+
+        let target_engagement = create_engagement_from_template(
+            &database.path,
+            &template.latest_version_id,
+            &target_client.client_id,
+            "Target engagement from template",
+            Some("2026-04-01"),
+            Some("2027-03-31"),
+            "ACTIVE",
+        )
+        .expect("engagement should instantiate from exact template version");
+        assert_eq!(target_engagement.service_type_id, service.service_type_id);
+
+        let target_areas = list_engagement_areas(&database.path, &target_engagement.engagement_id)
+            .expect("target areas should load");
+        assert_eq!(target_areas.len(), 2);
+        let target_root = target_areas
+            .iter()
+            .find(|area| area.name == "Revenue")
+            .expect("target root area");
+        let target_child = target_areas
+            .iter()
+            .find(|area| area.name == "Cut-off")
+            .expect("target child area");
+        assert_eq!(
+            target_child.parent_area_id.as_deref(),
+            Some(target_root.engagement_area_id.as_str())
+        );
+        assert_ne!(target_root.engagement_area_id, root_area.engagement_area_id);
+        assert_ne!(
+            target_child.engagement_area_id,
+            child_area.engagement_area_id
+        );
+
+        let target_procedures = list_procedures(&database.path, &target_engagement.engagement_id)
+            .expect("target procedures should load");
+        assert_eq!(target_procedures.len(), 1);
+        assert_eq!(target_procedures[0].reference.as_deref(), Some("REV-01"));
+
+        create_engagement_area(
+            &database.path,
+            &target_engagement.engagement_id,
+            None,
+            "Client-specific addition",
+            None,
+            30,
+            "ACTIVE",
+        )
+        .expect("instantiated engagement should remain customizable");
+
+        let second_target = create_engagement_from_template(
+            &database.path,
+            &template.latest_version_id,
+            &target_client.client_id,
+            "Second target from same version",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("same exact template version should remain reusable");
+        assert_eq!(
+            list_engagement_areas(&database.path, &second_target.engagement_id)
+                .expect("second target areas")
+                .len(),
+            2
+        );
+        assert_eq!(
+            list_procedures(&database.path, &second_target.engagement_id)
+                .expect("second target procedures")
+                .len(),
+            1
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE engagement_template_versions
+                 SET definition_json = '{}'
+                 WHERE engagement_template_version_id = ?1",
+                [&template.latest_version_id],
+            )
+            .expect_err("template versions must be immutable");
+        assert!(mutation_error
+            .to_string()
+            .contains("engagement template versions are immutable"));
     }
 
     #[test]
