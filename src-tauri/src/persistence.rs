@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 7;
+const LATEST_SCHEMA_VERSION: i64 = 8;
 
 struct Migration {
     version: i64,
@@ -60,6 +60,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "review_workflow",
         sql: include_str!("../migrations/0007_review_workflow.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "pbc_requests",
+        sql: include_str!("../migrations/0008_pbc_requests.sql"),
     },
 ];
 
@@ -377,6 +382,63 @@ pub struct ReviewNoteAction<'a> {
     pub actor_id: Option<&'a str>,
     pub response_text: Option<&'a str>,
     pub comment: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestRecord {
+    pub pbc_request_id: String,
+    pub engagement_id: String,
+    pub engagement_area_id: Option<String>,
+    pub request_number: String,
+    pub description: String,
+    pub requested_from_party: String,
+    pub due_at_ms: Option<i64>,
+    pub status: String,
+    pub client_visible_content: Option<String>,
+    pub internal_notes: Option<String>,
+    pub latest_assessment: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestEventRecord {
+    pub pbc_request_event_id: String,
+    pub pbc_request_id: String,
+    pub event_type: String,
+    pub actor_id: Option<String>,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub assessment_text: Option<String>,
+    pub comment: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PbcRequestEvidenceLinkRecord {
+    pub pbc_request_evidence_link_id: String,
+    pub pbc_request_id: String,
+    pub document_id: String,
+    pub document_name: String,
+    pub content_version_id: Option<String>,
+    pub content_observed_at_ms: Option<i64>,
+    pub controlled_evidence_version_id: Option<String>,
+    pub controlled_version_number: Option<u64>,
+    pub controlled_captured_at_ms: Option<i64>,
+    pub description: Option<String>,
+    pub created_at_ms: i64,
+}
+
+pub struct NewPbcRequest<'a> {
+    pub engagement_id: &'a str,
+    pub engagement_area_id: Option<&'a str>,
+    pub request_number: &'a str,
+    pub description: &'a str,
+    pub requested_from_party: &'a str,
+    pub due_at_ms: Option<i64>,
+    pub status: &'a str,
+    pub client_visible_content: Option<&'a str>,
+    pub internal_notes: Option<&'a str>,
 }
 
 pub struct NewWorkpaperRevision<'a> {
