@@ -4835,8 +4835,7 @@ pub fn publish_firm_library_version(
     firm_library_item_id: &str,
     definition_json: &str,
 ) -> Result<FirmLibraryItemRecord, PersistenceError> {
-    let (definition_json, definition_hash) =
-        normalize_firm_library_definition(definition_json)?;
+    let (definition_json, definition_hash) = normalize_firm_library_definition(definition_json)?;
 
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
