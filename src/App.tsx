@@ -4094,6 +4094,25 @@ export default function App() {
     trialBalanceImports.find(
       (item) => item.trialBalanceImportId === selectedTrialBalanceImportId,
     ) ?? null;
+  const selectedMappingLedgerImport =
+    ledgerImports.find((item) => item.ledgerImportId === mappingLedgerImportId) ?? null;
+  const compatibleMappingTrialBalanceImports = selectedMappingLedgerImport
+    ? trialBalanceImports.filter(
+        (item) => item.amountScale === selectedMappingLedgerImport.amountScale,
+      )
+    : [];
+  const selectedMappingTrialBalanceImport =
+    trialBalanceImports.find(
+      (item) => item.trialBalanceImportId === mappingTrialBalanceImportId,
+    ) ?? null;
+  const selectedMappingLedgerAccount =
+    ledgerAccountSummaries.find(
+      (item) => item.accountKey === selectedMappingLedgerAccountKey,
+    ) ?? null;
+  const currentMappingForSelectedAccount =
+    ledgerTbMappings.find(
+      (item) => item.ledgerAccountKey === selectedMappingLedgerAccountKey,
+    ) ?? null;
   const trialBalanceControlledEvidenceVersions = trialBalanceEvidenceVersionHistory.filter(
     (entry) =>
       entry.controlledEvidenceVersionId &&
