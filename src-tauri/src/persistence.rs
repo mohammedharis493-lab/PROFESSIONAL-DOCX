@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 13;
+const LATEST_SCHEMA_VERSION: i64 = 14;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -91,6 +91,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "narrow_ledger_provenance",
         sql: include_str!("../migrations/0013_narrow_ledger_provenance.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "trial_balance",
+        sql: include_str!("../migrations/0014_trial_balance.sql"),
     },
 ];
 
@@ -397,6 +402,63 @@ pub struct LedgerExceptionRecord {
     pub sheet_name: String,
     pub source_row_number: u64,
     pub source_row_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceImportRecord {
+    pub trial_balance_import_id: String,
+    pub engagement_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: String,
+    pub header_row_number: u64,
+    pub account_name_column: u32,
+    pub account_code_column: Option<u32>,
+    pub opening_balance_column: Option<u32>,
+    pub closing_balance_column: u32,
+    pub amount_scale: u32,
+    pub account_count: u64,
+    pub opening_total_minor: i64,
+    pub closing_total_minor: i64,
+    pub imported_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceAccountInput {
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
+    pub account_code_text: Option<String>,
+    pub account_name_text: String,
+    pub opening_minor: i64,
+    pub closing_minor: i64,
+}
+
+pub struct TrialBalanceImportDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub controlled_evidence_version_id: &'a str,
+    pub sheet_name: &'a str,
+    pub header_row_number: u64,
+    pub account_name_column: u32,
+    pub account_code_column: Option<u32>,
+    pub opening_balance_column: Option<u32>,
+    pub closing_balance_column: u32,
+    pub amount_scale: u32,
+    pub accounts: &'a [TrialBalanceAccountInput],
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceAccountRecord {
+    pub trial_balance_account_id: String,
+    pub trial_balance_import_id: String,
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
+    pub account_code_text: Option<String>,
+    pub account_name_text: String,
+    pub opening_minor: i64,
+    pub closing_minor: i64,
     pub created_at_ms: i64,
 }
 
@@ -5697,6 +5759,395 @@ pub fn list_ledger_exceptions(
     Ok(result)
 }
 
+pub fn create_trial_balance_import(
+    database_path: &Path,
+    definition: TrialBalanceImportDefinition<'_>,
+) -> Result<TrialBalanceImportRecord, PersistenceError> {
+    let TrialBalanceImportDefinition {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        account_name_column,
+        account_code_column,
+        opening_balance_column,
+        closing_balance_column,
+        amount_scale,
+        accounts,
+    } = definition;
+
+    let sheet_name = sheet_name.trim();
+    if sheet_name.is_empty()
+        || sheet_name.chars().count() > 255
+        || sheet_name.chars().any(|character| character.is_control())
+    {
+        return Err(PersistenceError::Configuration(
+            "trial balance worksheet name must contain 1 to 255 printable characters".to_string(),
+        ));
+    }
+    if header_row_number == 0 {
+        return Err(PersistenceError::Configuration(
+            "trial balance header row number must be at least 1".to_string(),
+        ));
+    }
+    if amount_scale > 6 {
+        return Err(PersistenceError::Configuration(
+            "trial balance amount scale must be between 0 and 6".to_string(),
+        ));
+    }
+    if accounts.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "trial balance import must contain at least one account".to_string(),
+        ));
+    }
+
+    let mut opening_total_minor = 0_i64;
+    let mut closing_total_minor = 0_i64;
+    for account in accounts {
+        if account.source_row_number <= header_row_number || account.source_row_hash.len() != 32 {
+            return Err(PersistenceError::Configuration(
+                "trial balance account provenance is incomplete".to_string(),
+            ));
+        }
+
+        let account_name = account.account_name_text.trim();
+        if account_name.is_empty()
+            || account_name.chars().count() > 500
+            || account_name.chars().any(|character| character.is_control())
+        {
+            return Err(PersistenceError::Configuration(
+                "trial balance account name must contain 1 to 500 printable characters".to_string(),
+            ));
+        }
+
+        if let Some(account_code) = account.account_code_text.as_deref() {
+            let account_code = account_code.trim();
+            if account_code.is_empty()
+                || account_code.chars().count() > 200
+                || account_code.chars().any(|character| character.is_control())
+            {
+                return Err(PersistenceError::Configuration(
+                    "trial balance account code must contain 1 to 200 printable characters"
+                        .to_string(),
+                ));
+            }
+        }
+
+        opening_total_minor = opening_total_minor
+            .checked_add(account.opening_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "trial balance opening total exceeds supported range".to_string(),
+                )
+            })?;
+        closing_total_minor = closing_total_minor
+            .checked_add(account.closing_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "trial balance closing total exceeds supported range".to_string(),
+                )
+            })?;
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "trial balance imports require retained hash-verified controlled evidence".to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled trial balance evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let trial_balance_import_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO trial_balance_imports (
+            trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            account_name_column,
+            account_code_column,
+            opening_balance_column,
+            closing_balance_column,
+            amount_scale,
+            account_count,
+            opening_total_minor,
+            closing_total_minor,
+            imported_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+         )",
+        params![
+            &trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            sheet_name,
+            u64_to_i64(header_row_number)?,
+            i64::from(account_name_column),
+            account_code_column.map(i64::from),
+            opening_balance_column.map(i64::from),
+            i64::from(closing_balance_column),
+            i64::from(amount_scale),
+            u64_to_i64(accounts.len() as u64)?,
+            opening_total_minor,
+            closing_total_minor,
+            now
+        ],
+    )?;
+
+    for account in accounts {
+        transaction.execute(
+            "INSERT INTO trial_balance_accounts (
+                trial_balance_account_id,
+                trial_balance_import_id,
+                source_row_number,
+                source_row_hash,
+                account_code_text,
+                account_name_text,
+                opening_minor,
+                closing_minor,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                Uuid::new_v4().to_string(),
+                &trial_balance_import_id,
+                u64_to_i64(account.source_row_number)?,
+                &account.source_row_hash,
+                account.account_code_text.as_deref().map(str::trim),
+                account.account_name_text.trim(),
+                account.opening_minor,
+                account.closing_minor,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "TRIAL_BALANCE_IMPORTED",
+            entity_type: "TRIAL_BALANCE_IMPORT",
+            entity_id: &trial_balance_import_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "sheetName": sheet_name,
+                "accountCount": accounts.len(),
+                "amountScale": amount_scale,
+                "openingTotalMinor": opening_total_minor,
+                "closingTotalMinor": closing_total_minor
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(TrialBalanceImportRecord {
+        trial_balance_import_id,
+        engagement_id: engagement_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        sheet_name: sheet_name.to_string(),
+        header_row_number,
+        account_name_column,
+        account_code_column,
+        opening_balance_column,
+        closing_balance_column,
+        amount_scale,
+        account_count: accounts.len() as u64,
+        opening_total_minor,
+        closing_total_minor,
+        imported_at_ms: now,
+    })
+}
+
+pub fn list_trial_balance_imports(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<TrialBalanceImportRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            account_name_column,
+            account_code_column,
+            opening_balance_column,
+            closing_balance_column,
+            amount_scale,
+            account_count,
+            opening_total_minor,
+            closing_total_minor,
+            imported_at_ms
+         FROM trial_balance_imports
+         WHERE engagement_id = ?1
+         ORDER BY imported_at_ms DESC, trial_balance_import_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let header_row_number: i64 = row.get(7)?;
+        let account_name_column: i64 = row.get(8)?;
+        let account_code_column: Option<i64> = row.get(9)?;
+        let opening_balance_column: Option<i64> = row.get(10)?;
+        let closing_balance_column: i64 = row.get(11)?;
+        let amount_scale: i64 = row.get(12)?;
+        let account_count: i64 = row.get(13)?;
+        Ok(TrialBalanceImportRecord {
+            trial_balance_import_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            sheet_name: row.get(6)?,
+            header_row_number: header_row_number.max(0) as u64,
+            account_name_column: account_name_column.max(0) as u32,
+            account_code_column: account_code_column.map(|value| value.max(0) as u32),
+            opening_balance_column: opening_balance_column.map(|value| value.max(0) as u32),
+            closing_balance_column: closing_balance_column.max(0) as u32,
+            amount_scale: amount_scale.max(0) as u32,
+            account_count: account_count.max(0) as u64,
+            opening_total_minor: row.get(14)?,
+            closing_total_minor: row.get(15)?,
+            imported_at_ms: row.get(16)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_trial_balance_accounts(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<Vec<TrialBalanceAccountRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM trial_balance_imports
+            WHERE trial_balance_import_id = ?1
+        )",
+        [trial_balance_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "trial balance import {trial_balance_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            trial_balance_account_id,
+            trial_balance_import_id,
+            source_row_number,
+            source_row_hash,
+            account_code_text,
+            account_name_text,
+            opening_minor,
+            closing_minor,
+            created_at_ms
+         FROM trial_balance_accounts
+         WHERE trial_balance_import_id = ?1
+         ORDER BY source_row_number, trial_balance_account_id",
+    )?;
+    let rows = statement.query_map([trial_balance_import_id], |row| {
+        let source_row_number: i64 = row.get(2)?;
+        Ok(TrialBalanceAccountRecord {
+            trial_balance_account_id: row.get(0)?,
+            trial_balance_import_id: row.get(1)?,
+            source_row_number: source_row_number.max(0) as u64,
+            source_row_hash: row.get(3)?,
+            account_code_text: row.get(4)?,
+            account_name_text: row.get(5)?,
+            opening_minor: row.get(6)?,
+            closing_minor: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_engagement_from_template(
     database_path: &Path,
     engagement_template_version_id: &str,
@@ -9402,7 +9853,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 13);
+        assert_eq!(migration_count, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9449,14 +9900,16 @@ mod tests {
                        'ledger_imports',
                        'ledger_transactions',
                        'ledger_test_runs',
-                       'ledger_exceptions'
+                       'ledger_exceptions',
+                       'trial_balance_imports',
+                       'trial_balance_accounts'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 41);
+        assert_eq!(table_count, 43);
     }
 
     #[test]
@@ -9492,7 +9945,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9533,14 +9986,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 12");
+        initialize_database(&database.path).expect("database should upgrade through version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_exists: i64 = connection
             .query_row(
@@ -9582,14 +10035,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 12");
+        initialize_database(&database.path).expect("database should upgrade through version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9634,14 +10087,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_exists: bool = connection
             .query_row(
@@ -9683,14 +10136,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9740,14 +10193,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9792,14 +10245,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9844,14 +10297,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9896,14 +10349,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9947,14 +10400,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -9998,14 +10451,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let table_count: i64 = connection
             .query_row(
@@ -10062,14 +10515,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 13");
+        initialize_database(&database.path).expect("database should upgrade to version 14");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -10095,7 +10548,58 @@ mod tests {
     }
 
     #[test]
-    fn high_value_ledger_test_is_deterministic_and_source_traceable() {
+    fn fourteenth_migration_adds_trial_balance_tables() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..13] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 13);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 14");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 14);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'trial_balance_imports',
+                       'trial_balance_accounts'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("trial balance tables should exist");
+        assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn controlled_accounting_imports_are_deterministic_and_source_traceable() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
 
@@ -10378,6 +10882,83 @@ mod tests {
         assert!(mutation_error
             .to_string()
             .contains("ledger transactions are immutable"));
+
+        let trial_balance_rows = vec![
+            TrialBalanceAccountInput {
+                source_row_number: 2,
+                source_row_hash: Sha256::digest(b"tb-row-2").to_vec(),
+                account_code_text: Some("1000".to_string()),
+                account_name_text: "Cash".to_string(),
+                opening_minor: 100_000,
+                closing_minor: 120_000,
+            },
+            TrialBalanceAccountInput {
+                source_row_number: 3,
+                source_row_hash: Sha256::digest(b"tb-row-3").to_vec(),
+                account_code_text: Some("4000".to_string()),
+                account_name_text: "Revenue".to_string(),
+                opening_minor: -200_000,
+                closing_minor: -250_000,
+            },
+        ];
+        let trial_balance_import = create_trial_balance_import(
+            &database.path,
+            TrialBalanceImportDefinition {
+                engagement_id: &engagement.engagement_id,
+                controlled_evidence_version_id: &controlled_evidence_version_id,
+                sheet_name: "Trial Balance",
+                header_row_number: 1,
+                account_name_column: 1,
+                account_code_column: Some(0),
+                opening_balance_column: Some(2),
+                closing_balance_column: 3,
+                amount_scale: 2,
+                accounts: &trial_balance_rows,
+            },
+        )
+        .expect("trial balance import should succeed");
+
+        assert_eq!(trial_balance_import.account_count, 2);
+        assert_eq!(trial_balance_import.opening_total_minor, -100_000);
+        assert_eq!(trial_balance_import.closing_total_minor, -130_000);
+        assert_eq!(trial_balance_import.source_sha256, source_sha256);
+        assert_eq!(
+            trial_balance_import.controlled_evidence_version_id,
+            controlled_evidence_version_id
+        );
+
+        let trial_balance_imports =
+            list_trial_balance_imports(&database.path, &engagement.engagement_id)
+                .expect("trial balance imports");
+        assert_eq!(trial_balance_imports.len(), 1);
+        assert_eq!(
+            trial_balance_imports[0].trial_balance_import_id,
+            trial_balance_import.trial_balance_import_id
+        );
+
+        let trial_balance_accounts = list_trial_balance_accounts(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("trial balance accounts");
+        assert_eq!(trial_balance_accounts.len(), 2);
+        assert_eq!(trial_balance_accounts[0].account_name_text, "Cash");
+        assert_eq!(trial_balance_accounts[0].source_row_number, 2);
+        assert_eq!(trial_balance_accounts[0].source_row_hash.len(), 32);
+        assert_eq!(trial_balance_accounts[1].account_name_text, "Revenue");
+        assert_eq!(trial_balance_accounts[1].closing_minor, -250_000);
+
+        let trial_balance_mutation_error = connection
+            .execute(
+                "UPDATE trial_balance_accounts
+                 SET closing_minor = closing_minor + 1
+                 WHERE trial_balance_import_id = ?1",
+                [&trial_balance_import.trial_balance_import_id],
+            )
+            .expect_err("imported trial balance accounts must be immutable");
+        assert!(trial_balance_mutation_error
+            .to_string()
+            .contains("trial balance accounts are immutable"));
     }
 
     #[test]
