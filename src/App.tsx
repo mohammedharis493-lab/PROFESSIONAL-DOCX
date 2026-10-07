@@ -2523,6 +2523,113 @@ export default function App() {
     }
   }
 
+  async function loadLedgerTbMappingPair(
+    ledgerImportId: string,
+    trialBalanceImportId: string | null,
+  ) {
+    setWorkspaceBusy(true);
+    try {
+      const summaries = await invoke<LedgerAccountSummary[]>("list_ledger_account_summaries", {
+        ledgerImportId,
+      });
+      const [accounts, mappings] = trialBalanceImportId
+        ? await Promise.all([
+            invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+              trialBalanceImportId,
+            }),
+            invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+              ledgerImportId,
+              trialBalanceImportId,
+            }),
+          ])
+        : [[], []];
+
+      setLedgerAccountSummaries(summaries);
+      setMappingTrialBalanceAccounts(accounts);
+      setLedgerTbMappings(mappings);
+      const firstAccountKey = summaries[0]?.accountKey ?? "";
+      setSelectedMappingLedgerAccountKey(firstAccountKey);
+      const existingTarget = mappings.find(
+        (mapping) => mapping.ledgerAccountKey === firstAccountKey,
+      );
+      setSelectedMappingTrialBalanceAccountId(
+        existingTarget?.trialBalanceAccountId ?? accounts[0]?.trialBalanceAccountId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectMappingLedgerImport(ledgerImportId: string | null) {
+    setMappingLedgerImportId(ledgerImportId);
+    setMappingTrialBalanceImportId(null);
+    setLedgerAccountSummaries([]);
+    setMappingTrialBalanceAccounts([]);
+    setLedgerTbMappings([]);
+    setSelectedMappingLedgerAccountKey("");
+    setSelectedMappingTrialBalanceAccountId("");
+    if (!ledgerImportId) return;
+
+    const ledgerImport = ledgerImports.find((item) => item.ledgerImportId === ledgerImportId);
+    const compatibleTrialBalanceImport = ledgerImport
+      ? trialBalanceImports.find((item) => item.amountScale === ledgerImport.amountScale) ?? null
+      : null;
+    const trialBalanceImportId = compatibleTrialBalanceImport?.trialBalanceImportId ?? null;
+    setMappingTrialBalanceImportId(trialBalanceImportId);
+    await loadLedgerTbMappingPair(ledgerImportId, trialBalanceImportId);
+  }
+
+  async function selectMappingTrialBalanceImport(trialBalanceImportId: string | null) {
+    setMappingTrialBalanceImportId(trialBalanceImportId);
+    if (!mappingLedgerImportId) return;
+    await loadLedgerTbMappingPair(mappingLedgerImportId, trialBalanceImportId);
+  }
+
+  function selectMappingLedgerAccount(accountKey: string) {
+    setSelectedMappingLedgerAccountKey(accountKey);
+    const existingTarget = ledgerTbMappings.find(
+      (mapping) => mapping.ledgerAccountKey === accountKey,
+    );
+    setSelectedMappingTrialBalanceAccountId(
+      existingTarget?.trialBalanceAccountId ??
+        mappingTrialBalanceAccounts[0]?.trialBalanceAccountId ??
+        "",
+    );
+  }
+
+  async function submitLedgerTbMapping(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !mappingLedgerImportId ||
+      !mappingTrialBalanceImportId ||
+      !selectedMappingLedgerAccountKey ||
+      !selectedMappingTrialBalanceAccountId
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<LedgerTbMapping>("create_ledger_tb_mapping", {
+        ledgerImportId: mappingLedgerImportId,
+        trialBalanceImportId: mappingTrialBalanceImportId,
+        ledgerAccountKey: selectedMappingLedgerAccountKey,
+        trialBalanceAccountId: selectedMappingTrialBalanceAccountId,
+      });
+      const mappings = await invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+        ledgerImportId: mappingLedgerImportId,
+        trialBalanceImportId: mappingTrialBalanceImportId,
+      });
+      setLedgerTbMappings(mappings);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function selectLedgerImportForTesting(ledgerImportId: string | null) {
     setSelectedLedgerImportId(ledgerImportId);
     setLedgerTestRuns([]);
