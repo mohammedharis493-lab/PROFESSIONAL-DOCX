@@ -404,6 +404,22 @@ type TrialBalanceScheduleMapping = {
   mappedAtMs: number;
 };
 
+type FinancialStatementScheduleLink = {
+  financialStatementScheduleLinkId: string;
+  financialStatementScheduleId: string;
+  scheduleReference: string;
+  scheduleName: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  locationKind: string;
+  locationValue: string;
+  versionNumber: number;
+  supersedesLinkId: string | null;
+  linkedAtMs: number;
+};
+
 type TrialBalanceImport = {
   trialBalanceImportId: string;
   engagementId: string;
@@ -1176,6 +1192,19 @@ export default function App() {
     useState("");
   const [selectedFinancialStatementScheduleId, setSelectedFinancialStatementScheduleId] =
     useState("");
+  const [financialStatementScheduleLinks, setFinancialStatementScheduleLinks] =
+    useState<FinancialStatementScheduleLink[]>([]);
+  const [selectedFsLinkScheduleId, setSelectedFsLinkScheduleId] = useState("");
+  const [fsEvidenceSearchQuery, setFsEvidenceSearchQuery] = useState("");
+  const [fsEvidenceSearchResults, setFsEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedFsEvidenceDocument, setSelectedFsEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [fsEvidenceVersionHistory, setFsEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedFsControlledVersionId, setSelectedFsControlledVersionId] = useState("");
+  const [fsEvidenceSearchBusy, setFsEvidenceSearchBusy] = useState(false);
+  const [fsLocationKind, setFsLocationKind] = useState("PAGE");
+  const [fsLocationValue, setFsLocationValue] = useState("1");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1483,6 +1512,14 @@ export default function App() {
     setTrialBalanceScheduleMappings([]);
     setSelectedScheduleMappingTrialBalanceAccountId("");
     setSelectedFinancialStatementScheduleId("");
+    setFinancialStatementScheduleLinks([]);
+    setSelectedFsLinkScheduleId("");
+    setFsEvidenceSearchResults([]);
+    setSelectedFsEvidenceDocument(null);
+    setFsEvidenceVersionHistory([]);
+    setSelectedFsControlledVersionId("");
+    setFsLocationKind("PAGE");
+    setFsLocationValue("1");
     try {
       const [
         areas,
@@ -1492,6 +1529,7 @@ export default function App() {
         ledgerImportRecords,
         trialBalanceImportRecords,
         scheduleRecords,
+        statementLinkRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1502,6 +1540,10 @@ export default function App() {
         invoke<FinancialStatementSchedule[]>("list_financial_statement_schedules", {
           engagementId,
         }),
+        invoke<FinancialStatementScheduleLink[]>(
+          "list_current_financial_statement_schedule_links",
+          { engagementId },
+        ),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1510,9 +1552,10 @@ export default function App() {
       setLedgerImports(ledgerImportRecords);
       setTrialBalanceImports(trialBalanceImportRecords);
       setFinancialStatementSchedules(scheduleRecords);
-      setSelectedFinancialStatementScheduleId(
-        scheduleRecords[0]?.financialStatementScheduleId ?? "",
-      );
+      setFinancialStatementScheduleLinks(statementLinkRecords);
+      const firstScheduleId = scheduleRecords[0]?.financialStatementScheduleId ?? "";
+      setSelectedFinancialStatementScheduleId(firstScheduleId);
+      setSelectedFsLinkScheduleId(firstScheduleId);
       const firstTrialBalanceImportId =
         trialBalanceImportRecords[0]?.trialBalanceImportId ?? null;
       setSelectedTrialBalanceImportId(firstTrialBalanceImportId);
@@ -2822,6 +2865,116 @@ export default function App() {
         { trialBalanceImportId: scheduleMappingTrialBalanceImportId },
       );
       setTrialBalanceScheduleMappings(mappings);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchFinancialStatementEvidence(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    const searchText = fsEvidenceSearchQuery.trim();
+    if (!searchText) return;
+
+    setFsEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setFsEvidenceSearchResults(
+        results.filter((result) =>
+          new Set(["pdf", "xlsx", "xls", "xlsm", "xlsb", "ods"]).has(
+            result.extension.toLowerCase().replace(/^\./, ""),
+          ),
+        ),
+      );
+      setSelectedFsEvidenceDocument(null);
+      setFsEvidenceVersionHistory([]);
+      setSelectedFsControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setFsEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectFinancialStatementEvidenceDocument(document: SearchResult) {
+    setFsEvidenceSearchBusy(true);
+    setSelectedFsEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setFsEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedFsControlledVersionId(controlled?.controlledEvidenceVersionId ?? "");
+
+      const extension = document.extension.toLowerCase().replace(/^\./, "");
+      if (extension === "pdf") {
+        setFsLocationKind("PAGE");
+        setFsLocationValue("1");
+      } else {
+        setFsLocationKind("WORKSHEET");
+        setFsLocationValue("");
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setFsEvidenceVersionHistory([]);
+      setSelectedFsControlledVersionId("");
+    } finally {
+      setFsEvidenceSearchBusy(false);
+    }
+  }
+
+  function selectFsLinkSchedule(financialStatementScheduleId: string) {
+    setSelectedFsLinkScheduleId(financialStatementScheduleId);
+    const current = financialStatementScheduleLinks.find(
+      (link) => link.financialStatementScheduleId === financialStatementScheduleId,
+    );
+    if (current) {
+      setFsLocationKind(current.locationKind);
+      setFsLocationValue(current.locationValue);
+    }
+  }
+
+  async function submitFinancialStatementScheduleLink(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      !selectedEngagementId ||
+      !selectedFsLinkScheduleId ||
+      !selectedFsControlledVersionId ||
+      !fsLocationValue.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<FinancialStatementScheduleLink>(
+        "create_financial_statement_schedule_link",
+        {
+          financialStatementScheduleId: selectedFsLinkScheduleId,
+          controlledEvidenceVersionId: selectedFsControlledVersionId,
+          locationKind: fsLocationKind,
+          locationValue: fsLocationValue.trim(),
+        },
+      );
+      const links = await invoke<FinancialStatementScheduleLink[]>(
+        "list_current_financial_statement_schedule_links",
+        { engagementId: selectedEngagementId },
+      );
+      setFinancialStatementScheduleLinks(links);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -4326,6 +4479,15 @@ export default function App() {
       (item) =>
         item.trialBalanceAccountId === selectedScheduleMappingTrialBalanceAccountId,
     ) ?? null;
+  const currentFinancialStatementScheduleLink =
+    financialStatementScheduleLinks.find(
+      (item) => item.financialStatementScheduleId === selectedFsLinkScheduleId,
+    ) ?? null;
+  const fsControlledEvidenceVersions = fsEvidenceVersionHistory.filter(
+    (entry) =>
+      entry.controlledEvidenceVersionId &&
+      entry.controlledVerificationState === "HASH_VERIFIED",
+  );
   const trialBalanceControlledEvidenceVersions = trialBalanceEvidenceVersionHistory.filter(
     (entry) =>
       entry.controlledEvidenceVersionId &&
@@ -6284,6 +6446,215 @@ export default function App() {
                       ) : (
                         <div className="empty-result">
                           Select an immutable Trial Balance import to map accounts to schedules.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">FS REFERENCE LINKAGE</span>
+                        <h3>Schedule → exact statement location</h3>
+                      </div>
+                    </div>
+
+                    <form
+                      className="workspace-form compact"
+                      onSubmit={searchFinancialStatementEvidence}
+                    >
+                      <label>
+                        <span>Find controlled financial statements</span>
+                        <input
+                          value={fsEvidenceSearchQuery}
+                          onChange={(event) => setFsEvidenceSearchQuery(event.target.value)}
+                          placeholder="Search PDF or statement workbook"
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={fsEvidenceSearchBusy || !fsEvidenceSearchQuery.trim()}
+                      >
+                        {fsEvidenceSearchBusy ? "Searching…" : "Search statements"}
+                      </button>
+                    </form>
+
+                    {fsEvidenceSearchResults.length ? (
+                      <div className="workspace-mini-list">
+                        {fsEvidenceSearchResults.map((result) => (
+                          <button
+                            className={`workspace-list-row${selectedFsEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                            type="button"
+                            key={result.documentId}
+                            onClick={() =>
+                              void selectFinancialStatementEvidenceDocument(result)
+                            }
+                          >
+                            <span>
+                              <strong>{result.name}</strong>
+                              <small>{result.path}</small>
+                            </span>
+                            <span className="workspace-row-action">Select →</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {selectedFsEvidenceDocument ? (
+                      <form
+                        className="workspace-form compact"
+                        onSubmit={submitFinancialStatementScheduleLink}
+                      >
+                        <label>
+                          <span>Financial statement schedule</span>
+                          <select
+                            value={selectedFsLinkScheduleId}
+                            onChange={(event) => selectFsLinkSchedule(event.target.value)}
+                          >
+                            <option value="">Select schedule</option>
+                            {financialStatementSchedules.map((schedule) => (
+                              <option
+                                key={schedule.financialStatementScheduleId}
+                                value={schedule.financialStatementScheduleId}
+                              >
+                                {schedule.reference} · {schedule.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Exact controlled statement version</span>
+                          <select
+                            value={selectedFsControlledVersionId}
+                            onChange={(event) =>
+                              setSelectedFsControlledVersionId(event.target.value)
+                            }
+                          >
+                            <option value="">Select controlled evidence</option>
+                            {fsControlledEvidenceVersions.map((entry) => (
+                              <option
+                                key={entry.controlledEvidenceVersionId ?? entry.contentVersionId}
+                                value={entry.controlledEvidenceVersionId ?? ""}
+                              >
+                                v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                {formatTimestamp(entry.capturedAtMs)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {!fsControlledEvidenceVersions.length ? (
+                          <p className="evidence-integrity-note">
+                            This statement has no hash-verified controlled evidence version yet.
+                            Capture it as controlled evidence before linking.
+                          </p>
+                        ) : null}
+                        <label>
+                          <span>Exact location kind</span>
+                          <select
+                            value={fsLocationKind}
+                            onChange={(event) => {
+                              setFsLocationKind(event.target.value);
+                              setFsLocationValue(
+                                event.target.value === "PAGE"
+                                  ? "1"
+                                  : event.target.value === "WORKSHEET"
+                                    ? ""
+                                    : "",
+                              );
+                            }}
+                          >
+                            <option value="PAGE">Page</option>
+                            <option value="WORKSHEET">Worksheet</option>
+                            <option value="CELL">Cell</option>
+                            <option value="RANGE">Range</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Exact location</span>
+                          <input
+                            value={fsLocationValue}
+                            onChange={(event) => setFsLocationValue(event.target.value)}
+                            placeholder={
+                              fsLocationKind === "PAGE"
+                                ? "2"
+                                : fsLocationKind === "WORKSHEET"
+                                  ? "Financial Statements"
+                                  : fsLocationKind === "CELL"
+                                    ? "Financial Statements!B12"
+                                    : "Financial Statements!B12:D20"
+                            }
+                          />
+                        </label>
+                        <p className="evidence-integrity-note">
+                          The backend accepts only exact PAGE, WORKSHEET, CELL, or RANGE anchors
+                          against retained hash-verified controlled evidence. Relinking creates a
+                          new immutable version.
+                        </p>
+                        <button
+                          className="secondary-button"
+                          type="submit"
+                          disabled={
+                            workspaceBusy ||
+                            !selectedFsLinkScheduleId ||
+                            !selectedFsControlledVersionId ||
+                            !fsLocationValue.trim() ||
+                            (currentFinancialStatementScheduleLink?.controlledEvidenceVersionId ===
+                              selectedFsControlledVersionId &&
+                              currentFinancialStatementScheduleLink?.locationKind ===
+                                fsLocationKind &&
+                              currentFinancialStatementScheduleLink?.locationValue ===
+                                fsLocationValue.trim())
+                          }
+                        >
+                          {currentFinancialStatementScheduleLink
+                            ? currentFinancialStatementScheduleLink.controlledEvidenceVersionId ===
+                                selectedFsControlledVersionId &&
+                              currentFinancialStatementScheduleLink.locationKind ===
+                                fsLocationKind &&
+                              currentFinancialStatementScheduleLink.locationValue ===
+                                fsLocationValue.trim()
+                              ? "Linked"
+                              : "Relink schedule"
+                            : "Link schedule"}
+                        </button>
+                      </form>
+                    ) : null}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">CURRENT FS LINKS</span>
+                        <h3>{financialStatementScheduleLinks.length} linked schedule(s)</h3>
+                      </div>
+                    </div>
+                    <div className="workspace-mini-list">
+                      {financialStatementScheduleLinks.length ? (
+                        financialStatementScheduleLinks.map((link) => (
+                          <span key={link.financialStatementScheduleLinkId}>
+                            <strong>
+                              {link.scheduleReference} · {link.scheduleName} →{" "}
+                              {link.locationKind} {link.locationValue}
+                            </strong>
+                            <small>
+                              Link v{link.versionNumber} · source SHA{" "}
+                              {link.sourceSha256Hex.slice(0, 16)}… · controlled ID{" "}
+                              {link.controlledEvidenceVersionId.slice(0, 18)}…
+                            </small>
+                            <small>
+                              {link.supersedesLinkId
+                                ? "Supersedes " + link.supersedesLinkId.slice(0, 18) + "… · "
+                                : ""}
+                              {formatTimestamp(link.linkedAtMs)}
+                            </small>
+                          </span>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          No financial statement schedules have exact controlled-evidence links yet.
                         </div>
                       )}
                     </div>
