@@ -5759,6 +5759,395 @@ pub fn list_ledger_exceptions(
     Ok(result)
 }
 
+pub fn create_trial_balance_import(
+    database_path: &Path,
+    definition: TrialBalanceImportDefinition<'_>,
+) -> Result<TrialBalanceImportRecord, PersistenceError> {
+    let TrialBalanceImportDefinition {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        account_name_column,
+        account_code_column,
+        opening_balance_column,
+        closing_balance_column,
+        amount_scale,
+        accounts,
+    } = definition;
+
+    let sheet_name = sheet_name.trim();
+    if sheet_name.is_empty()
+        || sheet_name.chars().count() > 255
+        || sheet_name.chars().any(|character| character.is_control())
+    {
+        return Err(PersistenceError::Configuration(
+            "trial balance worksheet name must contain 1 to 255 printable characters".to_string(),
+        ));
+    }
+    if header_row_number == 0 {
+        return Err(PersistenceError::Configuration(
+            "trial balance header row number must be at least 1".to_string(),
+        ));
+    }
+    if amount_scale > 6 {
+        return Err(PersistenceError::Configuration(
+            "trial balance amount scale must be between 0 and 6".to_string(),
+        ));
+    }
+    if accounts.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "trial balance import must contain at least one account".to_string(),
+        ));
+    }
+
+    let mut opening_total_minor = 0_i64;
+    let mut closing_total_minor = 0_i64;
+    for account in accounts {
+        if account.source_row_number <= header_row_number || account.source_row_hash.len() != 32 {
+            return Err(PersistenceError::Configuration(
+                "trial balance account provenance is incomplete".to_string(),
+            ));
+        }
+
+        let account_name = account.account_name_text.trim();
+        if account_name.is_empty()
+            || account_name.chars().count() > 500
+            || account_name.chars().any(|character| character.is_control())
+        {
+            return Err(PersistenceError::Configuration(
+                "trial balance account name must contain 1 to 500 printable characters".to_string(),
+            ));
+        }
+
+        if let Some(account_code) = account.account_code_text.as_deref() {
+            let account_code = account_code.trim();
+            if account_code.is_empty()
+                || account_code.chars().count() > 200
+                || account_code.chars().any(|character| character.is_control())
+            {
+                return Err(PersistenceError::Configuration(
+                    "trial balance account code must contain 1 to 200 printable characters"
+                        .to_string(),
+                ));
+            }
+        }
+
+        opening_total_minor = opening_total_minor
+            .checked_add(account.opening_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "trial balance opening total exceeds supported range".to_string(),
+                )
+            })?;
+        closing_total_minor = closing_total_minor
+            .checked_add(account.closing_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "trial balance closing total exceeds supported range".to_string(),
+                )
+            })?;
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "trial balance imports require retained hash-verified controlled evidence".to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled trial balance evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let trial_balance_import_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO trial_balance_imports (
+            trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            account_name_column,
+            account_code_column,
+            opening_balance_column,
+            closing_balance_column,
+            amount_scale,
+            account_count,
+            opening_total_minor,
+            closing_total_minor,
+            imported_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+         )",
+        params![
+            &trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            sheet_name,
+            u64_to_i64(header_row_number)?,
+            i64::from(account_name_column),
+            account_code_column.map(i64::from),
+            opening_balance_column.map(i64::from),
+            i64::from(closing_balance_column),
+            i64::from(amount_scale),
+            u64_to_i64(accounts.len() as u64)?,
+            opening_total_minor,
+            closing_total_minor,
+            now
+        ],
+    )?;
+
+    for account in accounts {
+        transaction.execute(
+            "INSERT INTO trial_balance_accounts (
+                trial_balance_account_id,
+                trial_balance_import_id,
+                source_row_number,
+                source_row_hash,
+                account_code_text,
+                account_name_text,
+                opening_minor,
+                closing_minor,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                Uuid::new_v4().to_string(),
+                &trial_balance_import_id,
+                u64_to_i64(account.source_row_number)?,
+                &account.source_row_hash,
+                account.account_code_text.as_deref().map(str::trim),
+                account.account_name_text.trim(),
+                account.opening_minor,
+                account.closing_minor,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "TRIAL_BALANCE_IMPORTED",
+            entity_type: "TRIAL_BALANCE_IMPORT",
+            entity_id: &trial_balance_import_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "sheetName": sheet_name,
+                "accountCount": accounts.len(),
+                "amountScale": amount_scale,
+                "openingTotalMinor": opening_total_minor,
+                "closingTotalMinor": closing_total_minor
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(TrialBalanceImportRecord {
+        trial_balance_import_id,
+        engagement_id: engagement_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        sheet_name: sheet_name.to_string(),
+        header_row_number,
+        account_name_column,
+        account_code_column,
+        opening_balance_column,
+        closing_balance_column,
+        amount_scale,
+        account_count: accounts.len() as u64,
+        opening_total_minor,
+        closing_total_minor,
+        imported_at_ms: now,
+    })
+}
+
+pub fn list_trial_balance_imports(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<TrialBalanceImportRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            trial_balance_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            account_name_column,
+            account_code_column,
+            opening_balance_column,
+            closing_balance_column,
+            amount_scale,
+            account_count,
+            opening_total_minor,
+            closing_total_minor,
+            imported_at_ms
+         FROM trial_balance_imports
+         WHERE engagement_id = ?1
+         ORDER BY imported_at_ms DESC, trial_balance_import_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let header_row_number: i64 = row.get(7)?;
+        let account_name_column: i64 = row.get(8)?;
+        let account_code_column: Option<i64> = row.get(9)?;
+        let opening_balance_column: Option<i64> = row.get(10)?;
+        let closing_balance_column: i64 = row.get(11)?;
+        let amount_scale: i64 = row.get(12)?;
+        let account_count: i64 = row.get(13)?;
+        Ok(TrialBalanceImportRecord {
+            trial_balance_import_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            sheet_name: row.get(6)?,
+            header_row_number: header_row_number.max(0) as u64,
+            account_name_column: account_name_column.max(0) as u32,
+            account_code_column: account_code_column.map(|value| value.max(0) as u32),
+            opening_balance_column: opening_balance_column.map(|value| value.max(0) as u32),
+            closing_balance_column: closing_balance_column.max(0) as u32,
+            amount_scale: amount_scale.max(0) as u32,
+            account_count: account_count.max(0) as u64,
+            opening_total_minor: row.get(14)?,
+            closing_total_minor: row.get(15)?,
+            imported_at_ms: row.get(16)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_trial_balance_accounts(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<Vec<TrialBalanceAccountRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM trial_balance_imports
+            WHERE trial_balance_import_id = ?1
+        )",
+        [trial_balance_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "trial balance import {trial_balance_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            trial_balance_account_id,
+            trial_balance_import_id,
+            source_row_number,
+            source_row_hash,
+            account_code_text,
+            account_name_text,
+            opening_minor,
+            closing_minor,
+            created_at_ms
+         FROM trial_balance_accounts
+         WHERE trial_balance_import_id = ?1
+         ORDER BY source_row_number, trial_balance_account_id",
+    )?;
+    let rows = statement.query_map([trial_balance_import_id], |row| {
+        let source_row_number: i64 = row.get(2)?;
+        Ok(TrialBalanceAccountRecord {
+            trial_balance_account_id: row.get(0)?,
+            trial_balance_import_id: row.get(1)?,
+            source_row_number: source_row_number.max(0) as u64,
+            source_row_hash: row.get(3)?,
+            account_code_text: row.get(4)?,
+            account_name_text: row.get(5)?,
+            opening_minor: row.get(6)?,
+            closing_minor: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_engagement_from_template(
     database_path: &Path,
     engagement_template_version_id: &str,
