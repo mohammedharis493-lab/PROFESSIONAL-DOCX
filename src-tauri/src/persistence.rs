@@ -5601,6 +5601,372 @@ pub fn list_ledger_imports(
     Ok(result)
 }
 
+fn ledger_account_summaries_from_connection(
+    connection: &Connection,
+    ledger_import_id: &str,
+) -> Result<Vec<LedgerAccountSummaryRecord>, PersistenceError> {
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM ledger_imports
+            WHERE ledger_import_id = ?1
+        )",
+        [ledger_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "ledger import {ledger_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT account_text, amount_minor, source_row_number
+         FROM ledger_transactions
+         WHERE ledger_import_id = ?1
+           AND account_text IS NOT NULL
+           AND length(trim(account_text)) > 0
+         ORDER BY source_row_number, ledger_transaction_id",
+    )?;
+    let rows = statement.query_map([ledger_import_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    #[derive(Debug)]
+    struct SummaryAccumulator {
+        account_text: String,
+        transaction_count: u64,
+        total_minor: i64,
+        first_source_row_number: u64,
+        last_source_row_number: u64,
+    }
+
+    let mut summaries = BTreeMap::<String, SummaryAccumulator>::new();
+    for row in rows {
+        let (account_text, amount_minor, source_row_number) = row?;
+        let account_key = normalize_ledger_account_key(&account_text)?;
+        let source_row_number = source_row_number.max(0) as u64;
+
+        if let Some(summary) = summaries.get_mut(&account_key) {
+            summary.transaction_count = summary.transaction_count.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "ledger account transaction count exceeds supported range".to_string(),
+                )
+            })?;
+            summary.total_minor = summary.total_minor.checked_add(amount_minor).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "ledger account total exceeds supported range".to_string(),
+                )
+            })?;
+            summary.last_source_row_number = source_row_number;
+        } else {
+            summaries.insert(
+                account_key,
+                SummaryAccumulator {
+                    account_text,
+                    transaction_count: 1,
+                    total_minor: amount_minor,
+                    first_source_row_number: source_row_number,
+                    last_source_row_number: source_row_number,
+                },
+            );
+        }
+    }
+
+    Ok(summaries
+        .into_iter()
+        .map(|(account_key, summary)| LedgerAccountSummaryRecord {
+            ledger_import_id: ledger_import_id.to_string(),
+            account_key,
+            account_text: summary.account_text,
+            transaction_count: summary.transaction_count,
+            total_minor: summary.total_minor,
+            first_source_row_number: summary.first_source_row_number,
+            last_source_row_number: summary.last_source_row_number,
+        })
+        .collect())
+}
+
+pub fn list_ledger_account_summaries(
+    database_path: &Path,
+    ledger_import_id: &str,
+) -> Result<Vec<LedgerAccountSummaryRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    ledger_account_summaries_from_connection(&connection, ledger_import_id)
+}
+
+pub fn create_ledger_tb_mapping(
+    database_path: &Path,
+    ledger_import_id: &str,
+    trial_balance_import_id: &str,
+    ledger_account_key: &str,
+    trial_balance_account_id: &str,
+) -> Result<LedgerTbMappingRecord, PersistenceError> {
+    let ledger_account_key = normalize_ledger_account_key(ledger_account_key)?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let import_pair: Option<(String, i64, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                li.engagement_id,
+                li.amount_scale,
+                tbi.engagement_id,
+                tbi.amount_scale
+             FROM ledger_imports li
+             CROSS JOIN trial_balance_imports tbi
+             WHERE li.ledger_import_id = ?1
+               AND tbi.trial_balance_import_id = ?2",
+            params![ledger_import_id, trial_balance_import_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((
+        ledger_engagement_id,
+        ledger_amount_scale,
+        trial_balance_engagement_id,
+        trial_balance_amount_scale,
+    )) = import_pair
+    else {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must both exist".to_string(),
+        ));
+    };
+    if ledger_engagement_id != trial_balance_engagement_id {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must belong to the same engagement".to_string(),
+        ));
+    }
+    if ledger_amount_scale != trial_balance_amount_scale {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must use the same amount scale".to_string(),
+        ));
+    }
+
+    let summaries = ledger_account_summaries_from_connection(&transaction, ledger_import_id)?;
+    let ledger_summary = summaries
+        .into_iter()
+        .find(|summary| summary.account_key == ledger_account_key)
+        .ok_or_else(|| {
+            PersistenceError::Configuration(
+                "ledger account key does not exist in the selected immutable ledger import"
+                    .to_string(),
+            )
+        })?;
+
+    let trial_balance_account: Option<(String, Option<String>, String, i64, Vec<u8>)> = transaction
+        .query_row(
+            "SELECT
+                trial_balance_import_id,
+                account_code_text,
+                account_name_text,
+                source_row_number,
+                source_row_hash
+             FROM trial_balance_accounts
+             WHERE trial_balance_account_id = ?1",
+            [trial_balance_account_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        account_trial_balance_import_id,
+        trial_balance_account_code_text,
+        trial_balance_account_name_text,
+        trial_balance_source_row_number,
+        trial_balance_source_row_hash,
+    )) = trial_balance_account
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "Trial Balance account {trial_balance_account_id} does not exist"
+        )));
+    };
+    if account_trial_balance_import_id != trial_balance_import_id {
+        return Err(PersistenceError::Configuration(
+            "selected Trial Balance account does not belong to the selected immutable import"
+                .to_string(),
+        ));
+    }
+
+    let latest_mapping: Option<(String, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                ledger_tb_mapping_id,
+                trial_balance_account_id,
+                version_number
+             FROM ledger_tb_mappings
+             WHERE ledger_import_id = ?1
+               AND trial_balance_import_id = ?2
+               AND ledger_account_key = ?3
+             ORDER BY version_number DESC
+             LIMIT 1",
+            params![ledger_import_id, trial_balance_import_id, &ledger_account_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    if latest_mapping
+        .as_ref()
+        .is_some_and(|(_, account_id, _)| account_id == trial_balance_account_id)
+    {
+        return Err(PersistenceError::Configuration(
+            "ledger account is already mapped to the selected Trial Balance account".to_string(),
+        ));
+    }
+
+    let (supersedes_mapping_id, version_number) = match latest_mapping {
+        Some((mapping_id, _, version_number)) => (
+            Some(mapping_id),
+            version_number.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "ledger to Trial Balance mapping version exceeds supported range".to_string(),
+                )
+            })?,
+        ),
+        None => (None, 1),
+    };
+    let version_number_u64 = version_number.max(0) as u64;
+    let trial_balance_source_row_number = trial_balance_source_row_number.max(0) as u64;
+    let ledger_tb_mapping_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO ledger_tb_mappings (
+            ledger_tb_mapping_id,
+            ledger_import_id,
+            trial_balance_import_id,
+            ledger_account_key,
+            ledger_account_text,
+            trial_balance_account_id,
+            version_number,
+            supersedes_mapping_id,
+            mapped_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &ledger_tb_mapping_id,
+            ledger_import_id,
+            trial_balance_import_id,
+            &ledger_account_key,
+            &ledger_summary.account_text,
+            trial_balance_account_id,
+            version_number,
+            supersedes_mapping_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_TB_MAPPING_CREATED",
+            entity_type: "LEDGER_TB_MAPPING",
+            entity_id: &ledger_tb_mapping_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(&ledger_engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "ledgerImportId": ledger_import_id,
+                "trialBalanceImportId": trial_balance_import_id,
+                "ledgerAccountKey": ledger_account_key,
+                "ledgerAccountText": ledger_summary.account_text,
+                "trialBalanceAccountId": trial_balance_account_id,
+                "versionNumber": version_number_u64,
+                "supersedesMappingId": supersedes_mapping_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerTbMappingRecord {
+        ledger_tb_mapping_id,
+        ledger_import_id: ledger_import_id.to_string(),
+        trial_balance_import_id: trial_balance_import_id.to_string(),
+        ledger_account_key,
+        ledger_account_text: ledger_summary.account_text,
+        trial_balance_account_id: trial_balance_account_id.to_string(),
+        trial_balance_account_code_text,
+        trial_balance_account_name_text,
+        trial_balance_source_row_number,
+        trial_balance_source_row_hash,
+        version_number: version_number_u64,
+        supersedes_mapping_id,
+        mapped_at_ms: now,
+    })
+}
+
+pub fn list_current_ledger_tb_mappings(
+    database_path: &Path,
+    ledger_import_id: &str,
+    trial_balance_import_id: &str,
+) -> Result<Vec<LedgerTbMappingRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            m.ledger_tb_mapping_id,
+            m.ledger_import_id,
+            m.trial_balance_import_id,
+            m.ledger_account_key,
+            m.ledger_account_text,
+            m.trial_balance_account_id,
+            a.account_code_text,
+            a.account_name_text,
+            a.source_row_number,
+            a.source_row_hash,
+            m.version_number,
+            m.supersedes_mapping_id,
+            m.mapped_at_ms
+         FROM ledger_tb_mappings m
+         JOIN trial_balance_accounts a
+           ON a.trial_balance_account_id = m.trial_balance_account_id
+         WHERE m.ledger_import_id = ?1
+           AND m.trial_balance_import_id = ?2
+           AND NOT EXISTS (
+               SELECT 1
+               FROM ledger_tb_mappings newer
+               WHERE newer.ledger_import_id = m.ledger_import_id
+                 AND newer.trial_balance_import_id = m.trial_balance_import_id
+                 AND newer.ledger_account_key = m.ledger_account_key
+                 AND newer.version_number > m.version_number
+           )
+         ORDER BY m.ledger_account_key, m.version_number DESC",
+    )?;
+    let rows = statement.query_map(params![ledger_import_id, trial_balance_import_id], |row| {
+        let trial_balance_source_row_number: i64 = row.get(8)?;
+        let version_number: i64 = row.get(10)?;
+        Ok(LedgerTbMappingRecord {
+            ledger_tb_mapping_id: row.get(0)?,
+            ledger_import_id: row.get(1)?,
+            trial_balance_import_id: row.get(2)?,
+            ledger_account_key: row.get(3)?,
+            ledger_account_text: row.get(4)?,
+            trial_balance_account_id: row.get(5)?,
+            trial_balance_account_code_text: row.get(6)?,
+            trial_balance_account_name_text: row.get(7)?,
+            trial_balance_source_row_number: trial_balance_source_row_number.max(0) as u64,
+            trial_balance_source_row_hash: row.get(9)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_mapping_id: row.get(11)?,
+            mapped_at_ms: row.get(12)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn list_ledger_test_runs(
     database_path: &Path,
     ledger_import_id: &str,
