@@ -354,6 +354,32 @@ type LedgerException = {
   createdAtMs: number;
 };
 
+type LedgerAccountSummary = {
+  ledgerImportId: string;
+  accountKey: string;
+  accountText: string;
+  transactionCount: number;
+  totalMinor: number;
+  firstSourceRowNumber: number;
+  lastSourceRowNumber: number;
+};
+
+type LedgerTbMapping = {
+  ledgerTbMappingId: string;
+  ledgerImportId: string;
+  trialBalanceImportId: string;
+  ledgerAccountKey: string;
+  ledgerAccountText: string;
+  trialBalanceAccountId: string;
+  trialBalanceAccountCodeText: string | null;
+  trialBalanceAccountNameText: string;
+  trialBalanceSourceRowNumber: number;
+  trialBalanceSourceRowHashHex: string;
+  versionNumber: number;
+  supersedesMappingId: string | null;
+  mappedAtMs: number;
+};
+
 type TrialBalanceImport = {
   trialBalanceImportId: string;
   engagementId: string;
@@ -372,6 +398,18 @@ type TrialBalanceImport = {
   openingTotalMinor: number;
   closingTotalMinor: number;
   importedAtMs: number;
+};
+
+type TrialBalanceAccount = {
+  trialBalanceAccountId: string;
+  trialBalanceImportId: string;
+  sourceRowNumber: number;
+  sourceRowHashHex: string;
+  accountCodeText: string | null;
+  accountNameText: string;
+  openingMinor: number;
+  closingMinor: number;
+  createdAtMs: number;
 };
 
 type TrialBalanceMovement = {
@@ -1088,6 +1126,17 @@ export default function App() {
   const [trialBalanceAccountNameColumn, setTrialBalanceAccountNameColumn] = useState("B");
   const [trialBalanceOpeningColumn, setTrialBalanceOpeningColumn] = useState("C");
   const [trialBalanceClosingColumn, setTrialBalanceClosingColumn] = useState("D");
+  const [mappingLedgerImportId, setMappingLedgerImportId] = useState<string | null>(null);
+  const [mappingTrialBalanceImportId, setMappingTrialBalanceImportId] =
+    useState<string | null>(null);
+  const [ledgerAccountSummaries, setLedgerAccountSummaries] =
+    useState<LedgerAccountSummary[]>([]);
+  const [mappingTrialBalanceAccounts, setMappingTrialBalanceAccounts] =
+    useState<TrialBalanceAccount[]>([]);
+  const [ledgerTbMappings, setLedgerTbMappings] = useState<LedgerTbMapping[]>([]);
+  const [selectedMappingLedgerAccountKey, setSelectedMappingLedgerAccountKey] = useState("");
+  const [selectedMappingTrialBalanceAccountId, setSelectedMappingTrialBalanceAccountId] =
+    useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1382,6 +1431,13 @@ export default function App() {
     setSelectedTrialBalanceEvidenceDocument(null);
     setTrialBalanceEvidenceVersionHistory([]);
     setSelectedTrialBalanceControlledVersionId("");
+    setMappingLedgerImportId(null);
+    setMappingTrialBalanceImportId(null);
+    setLedgerAccountSummaries([]);
+    setMappingTrialBalanceAccounts([]);
+    setLedgerTbMappings([]);
+    setSelectedMappingLedgerAccountKey("");
+    setSelectedMappingTrialBalanceAccountId("");
     try {
       const [
         areas,
@@ -1414,8 +1470,48 @@ export default function App() {
         );
         setTrialBalanceComparison(comparison);
       }
-      const firstLedgerImportId = ledgerImportRecords[0]?.ledgerImportId ?? null;
+      const firstLedgerImport = ledgerImportRecords[0] ?? null;
+      const firstLedgerImportId = firstLedgerImport?.ledgerImportId ?? null;
       setSelectedLedgerImportId(firstLedgerImportId);
+      if (firstLedgerImport) {
+        setMappingLedgerImportId(firstLedgerImport.ledgerImportId);
+        const compatibleTrialBalanceImport =
+          trialBalanceImportRecords.find(
+            (item) => item.amountScale === firstLedgerImport.amountScale,
+          ) ?? null;
+        setMappingTrialBalanceImportId(
+          compatibleTrialBalanceImport?.trialBalanceImportId ?? null,
+        );
+
+        const summaries = await invoke<LedgerAccountSummary[]>(
+          "list_ledger_account_summaries",
+          { ledgerImportId: firstLedgerImport.ledgerImportId },
+        );
+        setLedgerAccountSummaries(summaries);
+        setSelectedMappingLedgerAccountKey(summaries[0]?.accountKey ?? "");
+
+        if (compatibleTrialBalanceImport) {
+          const [mappingAccounts, mappings] = await Promise.all([
+            invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+              trialBalanceImportId: compatibleTrialBalanceImport.trialBalanceImportId,
+            }),
+            invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+              ledgerImportId: firstLedgerImport.ledgerImportId,
+              trialBalanceImportId: compatibleTrialBalanceImport.trialBalanceImportId,
+            }),
+          ]);
+          setMappingTrialBalanceAccounts(mappingAccounts);
+          setLedgerTbMappings(mappings);
+          const existingTarget = mappings.find(
+            (mapping) => mapping.ledgerAccountKey === summaries[0]?.accountKey,
+          );
+          setSelectedMappingTrialBalanceAccountId(
+            existingTarget?.trialBalanceAccountId ??
+              mappingAccounts[0]?.trialBalanceAccountId ??
+              "",
+          );
+        }
+      }
       if (firstLedgerImportId) {
         const runRecords = await invoke<LedgerTestRun[]>("list_ledger_test_runs", {
           ledgerImportId: firstLedgerImportId,
@@ -2420,6 +2516,113 @@ export default function App() {
       setLedgerTestRuns([]);
       setLedgerTestRun(null);
       setLedgerExceptions([]);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadLedgerTbMappingPair(
+    ledgerImportId: string,
+    trialBalanceImportId: string | null,
+  ) {
+    setWorkspaceBusy(true);
+    try {
+      const summaries = await invoke<LedgerAccountSummary[]>("list_ledger_account_summaries", {
+        ledgerImportId,
+      });
+      const [accounts, mappings] = trialBalanceImportId
+        ? await Promise.all([
+            invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+              trialBalanceImportId,
+            }),
+            invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+              ledgerImportId,
+              trialBalanceImportId,
+            }),
+          ])
+        : [[], []];
+
+      setLedgerAccountSummaries(summaries);
+      setMappingTrialBalanceAccounts(accounts);
+      setLedgerTbMappings(mappings);
+      const firstAccountKey = summaries[0]?.accountKey ?? "";
+      setSelectedMappingLedgerAccountKey(firstAccountKey);
+      const existingTarget = mappings.find(
+        (mapping) => mapping.ledgerAccountKey === firstAccountKey,
+      );
+      setSelectedMappingTrialBalanceAccountId(
+        existingTarget?.trialBalanceAccountId ?? accounts[0]?.trialBalanceAccountId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectMappingLedgerImport(ledgerImportId: string | null) {
+    setMappingLedgerImportId(ledgerImportId);
+    setMappingTrialBalanceImportId(null);
+    setLedgerAccountSummaries([]);
+    setMappingTrialBalanceAccounts([]);
+    setLedgerTbMappings([]);
+    setSelectedMappingLedgerAccountKey("");
+    setSelectedMappingTrialBalanceAccountId("");
+    if (!ledgerImportId) return;
+
+    const ledgerImport = ledgerImports.find((item) => item.ledgerImportId === ledgerImportId);
+    const compatibleTrialBalanceImport = ledgerImport
+      ? trialBalanceImports.find((item) => item.amountScale === ledgerImport.amountScale) ?? null
+      : null;
+    const trialBalanceImportId = compatibleTrialBalanceImport?.trialBalanceImportId ?? null;
+    setMappingTrialBalanceImportId(trialBalanceImportId);
+    await loadLedgerTbMappingPair(ledgerImportId, trialBalanceImportId);
+  }
+
+  async function selectMappingTrialBalanceImport(trialBalanceImportId: string | null) {
+    setMappingTrialBalanceImportId(trialBalanceImportId);
+    if (!mappingLedgerImportId) return;
+    await loadLedgerTbMappingPair(mappingLedgerImportId, trialBalanceImportId);
+  }
+
+  function selectMappingLedgerAccount(accountKey: string) {
+    setSelectedMappingLedgerAccountKey(accountKey);
+    const existingTarget = ledgerTbMappings.find(
+      (mapping) => mapping.ledgerAccountKey === accountKey,
+    );
+    setSelectedMappingTrialBalanceAccountId(
+      existingTarget?.trialBalanceAccountId ??
+        mappingTrialBalanceAccounts[0]?.trialBalanceAccountId ??
+        "",
+    );
+  }
+
+  async function submitLedgerTbMapping(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !mappingLedgerImportId ||
+      !mappingTrialBalanceImportId ||
+      !selectedMappingLedgerAccountKey ||
+      !selectedMappingTrialBalanceAccountId
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<LedgerTbMapping>("create_ledger_tb_mapping", {
+        ledgerImportId: mappingLedgerImportId,
+        trialBalanceImportId: mappingTrialBalanceImportId,
+        ledgerAccountKey: selectedMappingLedgerAccountKey,
+        trialBalanceAccountId: selectedMappingTrialBalanceAccountId,
+      });
+      const mappings = await invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+        ledgerImportId: mappingLedgerImportId,
+        trialBalanceImportId: mappingTrialBalanceImportId,
+      });
+      setLedgerTbMappings(mappings);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -3890,6 +4093,25 @@ export default function App() {
   const selectedTrialBalanceImport =
     trialBalanceImports.find(
       (item) => item.trialBalanceImportId === selectedTrialBalanceImportId,
+    ) ?? null;
+  const selectedMappingLedgerImport =
+    ledgerImports.find((item) => item.ledgerImportId === mappingLedgerImportId) ?? null;
+  const compatibleMappingTrialBalanceImports = selectedMappingLedgerImport
+    ? trialBalanceImports.filter(
+        (item) => item.amountScale === selectedMappingLedgerImport.amountScale,
+      )
+    : [];
+  const selectedMappingTrialBalanceImport =
+    trialBalanceImports.find(
+      (item) => item.trialBalanceImportId === mappingTrialBalanceImportId,
+    ) ?? null;
+  const selectedMappingLedgerAccount =
+    ledgerAccountSummaries.find(
+      (item) => item.accountKey === selectedMappingLedgerAccountKey,
+    ) ?? null;
+  const currentMappingForSelectedAccount =
+    ledgerTbMappings.find(
+      (item) => item.ledgerAccountKey === selectedMappingLedgerAccountKey,
     ) ?? null;
   const trialBalanceControlledEvidenceVersions = trialBalanceEvidenceVersionHistory.filter(
     (entry) =>
@@ -5440,6 +5662,202 @@ export default function App() {
                         Import a controlled Trial Balance workbook to establish accounting linkage.
                       </div>
                     )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">ACCOUNT LINKAGE</span>
+                        <h3>Ledger → Trial Balance mapping</h3>
+                      </div>
+                    </div>
+
+                    <form className="workspace-form compact" onSubmit={submitLedgerTbMapping}>
+                      <label>
+                        <span>Immutable ledger import</span>
+                        <select
+                          value={mappingLedgerImportId ?? ""}
+                          onChange={(event) =>
+                            void selectMappingLedgerImport(event.target.value || null)
+                          }
+                        >
+                          <option value="">Select ledger import</option>
+                          {ledgerImports.map((ledgerImport) => (
+                            <option
+                              key={ledgerImport.ledgerImportId}
+                              value={ledgerImport.ledgerImportId}
+                            >
+                              {ledgerImport.sheetName} ·{" "}
+                              {ledgerImport.transactionCount.toLocaleString()} rows ·{" "}
+                              {formatTimestamp(ledgerImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Compatible Trial Balance import</span>
+                        <select
+                          value={mappingTrialBalanceImportId ?? ""}
+                          onChange={(event) =>
+                            void selectMappingTrialBalanceImport(event.target.value || null)
+                          }
+                          disabled={!selectedMappingLedgerImport}
+                        >
+                          <option value="">Select Trial Balance import</option>
+                          {compatibleMappingTrialBalanceImports.map((trialBalanceImport) => (
+                            <option
+                              key={trialBalanceImport.trialBalanceImportId}
+                              value={trialBalanceImport.trialBalanceImportId}
+                            >
+                              {trialBalanceImport.sheetName} ·{" "}
+                              {trialBalanceImport.accountCount.toLocaleString()} accounts ·{" "}
+                              {formatTimestamp(trialBalanceImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedMappingLedgerImport &&
+                      !compatibleMappingTrialBalanceImports.length ? (
+                        <p className="evidence-integrity-note">
+                          No Trial Balance import uses the same amount scale as this ledger import.
+                          Import a compatible TB before mapping accounts.
+                        </p>
+                      ) : null}
+                      <label>
+                        <span>Ledger account</span>
+                        <select
+                          value={selectedMappingLedgerAccountKey}
+                          onChange={(event) => selectMappingLedgerAccount(event.target.value)}
+                          disabled={!mappingTrialBalanceImportId}
+                        >
+                          <option value="">Select ledger account</option>
+                          {ledgerAccountSummaries.map((summary) => (
+                            <option key={summary.accountKey} value={summary.accountKey}>
+                              {summary.accountText} · {summary.transactionCount.toLocaleString()} tx
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Trial Balance account</span>
+                        <select
+                          value={selectedMappingTrialBalanceAccountId}
+                          onChange={(event) =>
+                            setSelectedMappingTrialBalanceAccountId(event.target.value)
+                          }
+                          disabled={!mappingTrialBalanceImportId}
+                        >
+                          <option value="">Select TB account</option>
+                          {mappingTrialBalanceAccounts.map((account) => (
+                            <option
+                              key={account.trialBalanceAccountId}
+                              value={account.trialBalanceAccountId}
+                            >
+                              {account.accountCodeText
+                                ? account.accountCodeText + " · "
+                                : ""}
+                              {account.accountNameText}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedMappingLedgerAccount && selectedMappingLedgerImport ? (
+                        <p className="evidence-integrity-note">
+                          Ledger total{" "}
+                          {formatMinorUnitAmount(
+                            selectedMappingLedgerAccount.totalMinor,
+                            selectedMappingLedgerImport.amountScale,
+                          )}{" "}
+                          across {selectedMappingLedgerAccount.transactionCount.toLocaleString()}{" "}
+                          transaction(s), source rows{" "}
+                          {selectedMappingLedgerAccount.firstSourceRowNumber}–
+                          {selectedMappingLedgerAccount.lastSourceRowNumber}.
+                          {currentMappingForSelectedAccount
+                            ? " Current mapping v" +
+                              currentMappingForSelectedAccount.versionNumber +
+                              ": " +
+                              currentMappingForSelectedAccount.trialBalanceAccountNameText +
+                              "."
+                            : " Not yet mapped."}
+                        </p>
+                      ) : null}
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !mappingLedgerImportId ||
+                          !mappingTrialBalanceImportId ||
+                          !selectedMappingLedgerAccountKey ||
+                          !selectedMappingTrialBalanceAccountId ||
+                          currentMappingForSelectedAccount?.trialBalanceAccountId ===
+                            selectedMappingTrialBalanceAccountId
+                        }
+                      >
+                        {currentMappingForSelectedAccount?.trialBalanceAccountId ===
+                        selectedMappingTrialBalanceAccountId
+                          ? "Mapped"
+                          : currentMappingForSelectedAccount
+                            ? "Remap account"
+                            : "Map account"}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">CURRENT MAP</span>
+                        <h3>{ledgerTbMappings.length} mapped account(s)</h3>
+                      </div>
+                    </div>
+                    <div className="workspace-mini-list">
+                      {ledgerTbMappings.length ? (
+                        ledgerTbMappings.map((mapping) => (
+                          <span key={mapping.ledgerTbMappingId}>
+                            <strong>
+                              {mapping.ledgerAccountText} →{" "}
+                              {mapping.trialBalanceAccountCodeText
+                                ? mapping.trialBalanceAccountCodeText + " · "
+                                : ""}
+                              {mapping.trialBalanceAccountNameText}
+                            </strong>
+                            <small>
+                              Mapping v{mapping.versionNumber} · TB row{" "}
+                              {mapping.trialBalanceSourceRowNumber} · row SHA{" "}
+                              {mapping.trialBalanceSourceRowHashHex.slice(0, 16)}…
+                            </small>
+                            <small>
+                              {mapping.supersedesMappingId
+                                ? "Supersedes " +
+                                  mapping.supersedesMappingId.slice(0, 18) +
+                                  "… · "
+                                : ""}
+                              {formatTimestamp(mapping.mappedAtMs)}
+                            </small>
+                          </span>
+                        ))
+                      ) : mappingLedgerImportId && mappingTrialBalanceImportId ? (
+                        <div className="empty-result">
+                          No ledger accounts are mapped to this exact Trial Balance import yet.
+                        </div>
+                      ) : (
+                        <div className="empty-result">
+                          Select compatible immutable ledger and Trial Balance imports to map
+                          accounts.
+                        </div>
+                      )}
+                    </div>
+                    {selectedMappingTrialBalanceImport ? (
+                      <p className="evidence-integrity-note">
+                        Mapping target: {selectedMappingTrialBalanceImport.sheetName} · source SHA{" "}
+                        {selectedMappingTrialBalanceImport.sourceSha256Hex.slice(0, 16)}… ·
+                        controlled ID{" "}
+                        {selectedMappingTrialBalanceImport.controlledEvidenceVersionId.slice(0, 18)}…
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 
