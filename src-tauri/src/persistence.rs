@@ -6008,6 +6008,404 @@ pub fn list_current_ledger_tb_mappings(
     Ok(result)
 }
 
+pub fn create_financial_statement_schedule(
+    database_path: &Path,
+    engagement_id: &str,
+    reference: &str,
+    name: &str,
+) -> Result<FinancialStatementScheduleRecord, PersistenceError> {
+    let reference = normalize_domain_label(reference, "financial statement schedule reference", 80)?;
+    let normalized_reference = normalize_search_text(&reference);
+    if normalized_reference.is_empty() {
+        return Err(PersistenceError::Configuration(
+            "financial statement schedule reference is invalid".to_string(),
+        ));
+    }
+    let name = normalize_domain_label(name, "financial statement schedule name", 240)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let duplicate_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM financial_statement_schedules
+            WHERE engagement_id = ?1
+              AND normalized_reference = ?2
+        )",
+        params![engagement_id, &normalized_reference],
+        |row| row.get(0),
+    )?;
+    if duplicate_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "financial statement schedule reference {reference} already exists in this engagement"
+        )));
+    }
+
+    let financial_statement_schedule_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO financial_statement_schedules (
+            financial_statement_schedule_id,
+            engagement_id,
+            reference,
+            normalized_reference,
+            name,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            &financial_statement_schedule_id,
+            engagement_id,
+            &reference,
+            &normalized_reference,
+            &name,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FINANCIAL_STATEMENT_SCHEDULE_CREATED",
+            entity_type: "FINANCIAL_STATEMENT_SCHEDULE",
+            entity_id: &financial_statement_schedule_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "name": name
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FinancialStatementScheduleRecord {
+        financial_statement_schedule_id,
+        engagement_id: engagement_id.to_string(),
+        reference,
+        name,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_financial_statement_schedules(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<FinancialStatementScheduleRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let engagement_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            financial_statement_schedule_id,
+            engagement_id,
+            reference,
+            name,
+            created_at_ms
+         FROM financial_statement_schedules
+         WHERE engagement_id = ?1
+         ORDER BY normalized_reference, financial_statement_schedule_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(FinancialStatementScheduleRecord {
+            financial_statement_schedule_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            reference: row.get(2)?,
+            name: row.get(3)?,
+            created_at_ms: row.get(4)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_trial_balance_schedule_mapping(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+    trial_balance_account_id: &str,
+    financial_statement_schedule_id: &str,
+) -> Result<TrialBalanceScheduleMappingRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let trial_balance_engagement_id: Option<String> = transaction
+        .query_row(
+            "SELECT engagement_id
+             FROM trial_balance_imports
+             WHERE trial_balance_import_id = ?1",
+            [trial_balance_import_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(trial_balance_engagement_id) = trial_balance_engagement_id else {
+        return Err(PersistenceError::Configuration(format!(
+            "Trial Balance import {trial_balance_import_id} does not exist"
+        )));
+    };
+
+    let trial_balance_account: Option<TrialBalanceMappingTarget> = transaction
+        .query_row(
+            "SELECT
+                trial_balance_import_id,
+                account_code_text,
+                account_name_text,
+                source_row_number,
+                source_row_hash
+             FROM trial_balance_accounts
+             WHERE trial_balance_account_id = ?1",
+            [trial_balance_account_id],
+            |row| {
+                Ok(TrialBalanceMappingTarget {
+                    trial_balance_import_id: row.get(0)?,
+                    account_code_text: row.get(1)?,
+                    account_name_text: row.get(2)?,
+                    source_row_number: row.get(3)?,
+                    source_row_hash: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(trial_balance_account) = trial_balance_account else {
+        return Err(PersistenceError::Configuration(format!(
+            "Trial Balance account {trial_balance_account_id} does not exist"
+        )));
+    };
+    if trial_balance_account.trial_balance_import_id != trial_balance_import_id {
+        return Err(PersistenceError::Configuration(
+            "selected Trial Balance account does not belong to the selected immutable import"
+                .to_string(),
+        ));
+    }
+
+    let schedule: Option<(String, String, String)> = transaction
+        .query_row(
+            "SELECT engagement_id, reference, name
+             FROM financial_statement_schedules
+             WHERE financial_statement_schedule_id = ?1",
+            [financial_statement_schedule_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((schedule_engagement_id, schedule_reference, schedule_name)) = schedule else {
+        return Err(PersistenceError::Configuration(format!(
+            "financial statement schedule {financial_statement_schedule_id} does not exist"
+        )));
+    };
+    if schedule_engagement_id != trial_balance_engagement_id {
+        return Err(PersistenceError::Configuration(
+            "Trial Balance import and financial statement schedule must belong to the same engagement"
+                .to_string(),
+        ));
+    }
+
+    let latest_mapping: Option<(String, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                trial_balance_schedule_mapping_id,
+                financial_statement_schedule_id,
+                version_number
+             FROM trial_balance_schedule_mappings
+             WHERE trial_balance_import_id = ?1
+               AND trial_balance_account_id = ?2
+             ORDER BY version_number DESC
+             LIMIT 1",
+            params![trial_balance_import_id, trial_balance_account_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    if latest_mapping
+        .as_ref()
+        .is_some_and(|(_, schedule_id, _)| schedule_id == financial_statement_schedule_id)
+    {
+        return Err(PersistenceError::Configuration(
+            "Trial Balance account is already mapped to the selected schedule".to_string(),
+        ));
+    }
+
+    let (supersedes_mapping_id, version_number) = match latest_mapping {
+        Some((mapping_id, _, version_number)) => (
+            Some(mapping_id),
+            version_number.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "Trial Balance schedule mapping version exceeds supported range".to_string(),
+                )
+            })?,
+        ),
+        None => (None, 1),
+    };
+    let version_number_u64 = version_number.max(0) as u64;
+    let source_row_number = trial_balance_account.source_row_number.max(0) as u64;
+    let trial_balance_schedule_mapping_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO trial_balance_schedule_mappings (
+            trial_balance_schedule_mapping_id,
+            trial_balance_import_id,
+            trial_balance_account_id,
+            financial_statement_schedule_id,
+            version_number,
+            supersedes_mapping_id,
+            mapped_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &trial_balance_schedule_mapping_id,
+            trial_balance_import_id,
+            trial_balance_account_id,
+            financial_statement_schedule_id,
+            version_number,
+            supersedes_mapping_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "TRIAL_BALANCE_SCHEDULE_MAPPING_CREATED",
+            entity_type: "TRIAL_BALANCE_SCHEDULE_MAPPING",
+            entity_id: &trial_balance_schedule_mapping_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(&trial_balance_engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "trialBalanceImportId": trial_balance_import_id,
+                "trialBalanceAccountId": trial_balance_account_id,
+                "financialStatementScheduleId": financial_statement_schedule_id,
+                "scheduleReference": schedule_reference,
+                "versionNumber": version_number_u64,
+                "supersedesMappingId": supersedes_mapping_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(TrialBalanceScheduleMappingRecord {
+        trial_balance_schedule_mapping_id,
+        trial_balance_import_id: trial_balance_import_id.to_string(),
+        trial_balance_account_id: trial_balance_account_id.to_string(),
+        trial_balance_account_code_text: trial_balance_account.account_code_text,
+        trial_balance_account_name_text: trial_balance_account.account_name_text,
+        trial_balance_source_row_number: source_row_number,
+        trial_balance_source_row_hash: trial_balance_account.source_row_hash,
+        financial_statement_schedule_id: financial_statement_schedule_id.to_string(),
+        schedule_reference,
+        schedule_name,
+        version_number: version_number_u64,
+        supersedes_mapping_id,
+        mapped_at_ms: now,
+    })
+}
+
+pub fn list_current_trial_balance_schedule_mappings(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<Vec<TrialBalanceScheduleMappingRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM trial_balance_imports
+            WHERE trial_balance_import_id = ?1
+        )",
+        [trial_balance_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "Trial Balance import {trial_balance_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            m.trial_balance_schedule_mapping_id,
+            m.trial_balance_import_id,
+            m.trial_balance_account_id,
+            a.account_code_text,
+            a.account_name_text,
+            a.source_row_number,
+            a.source_row_hash,
+            m.financial_statement_schedule_id,
+            s.reference,
+            s.name,
+            m.version_number,
+            m.supersedes_mapping_id,
+            m.mapped_at_ms
+         FROM trial_balance_schedule_mappings m
+         JOIN trial_balance_accounts a
+           ON a.trial_balance_account_id = m.trial_balance_account_id
+         JOIN financial_statement_schedules s
+           ON s.financial_statement_schedule_id = m.financial_statement_schedule_id
+         WHERE m.trial_balance_import_id = ?1
+           AND NOT EXISTS (
+               SELECT 1
+               FROM trial_balance_schedule_mappings newer
+               WHERE newer.trial_balance_import_id = m.trial_balance_import_id
+                 AND newer.trial_balance_account_id = m.trial_balance_account_id
+                 AND newer.version_number > m.version_number
+           )
+         ORDER BY a.source_row_number, m.trial_balance_account_id",
+    )?;
+    let rows = statement.query_map([trial_balance_import_id], |row| {
+        let source_row_number: i64 = row.get(5)?;
+        let version_number: i64 = row.get(10)?;
+        Ok(TrialBalanceScheduleMappingRecord {
+            trial_balance_schedule_mapping_id: row.get(0)?,
+            trial_balance_import_id: row.get(1)?,
+            trial_balance_account_id: row.get(2)?,
+            trial_balance_account_code_text: row.get(3)?,
+            trial_balance_account_name_text: row.get(4)?,
+            trial_balance_source_row_number: source_row_number.max(0) as u64,
+            trial_balance_source_row_hash: row.get(6)?,
+            financial_statement_schedule_id: row.get(7)?,
+            schedule_reference: row.get(8)?,
+            schedule_name: row.get(9)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_mapping_id: row.get(11)?,
+            mapped_at_ms: row.get(12)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn list_ledger_test_runs(
     database_path: &Path,
     ledger_import_id: &str,
