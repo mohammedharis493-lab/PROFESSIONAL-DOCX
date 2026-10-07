@@ -462,6 +462,28 @@ pub struct TrialBalanceAccountRecord {
     pub created_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct TrialBalanceMovementRecord {
+    pub trial_balance_account_id: String,
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
+    pub account_code_text: Option<String>,
+    pub account_name_text: String,
+    pub opening_minor: i64,
+    pub closing_minor: i64,
+    pub movement_minor: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceComparisonRecord {
+    pub trial_balance_import_id: String,
+    pub opening_total_minor: i64,
+    pub closing_total_minor: i64,
+    pub net_movement_minor: i64,
+    pub account_count: u64,
+    pub movements: Vec<TrialBalanceMovementRecord>,
+}
+
 struct FirmLibraryItemIdentity {
     category: String,
     name: String,
@@ -6148,6 +6170,96 @@ pub fn list_trial_balance_accounts(
     Ok(result)
 }
 
+pub fn compare_trial_balance_opening_closing(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<TrialBalanceComparisonRecord, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+
+    let summary: Option<(i64, i64, i64)> = connection
+        .query_row(
+            "SELECT opening_total_minor, closing_total_minor, account_count
+             FROM trial_balance_imports
+             WHERE trial_balance_import_id = ?1",
+            [trial_balance_import_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((opening_total_minor, closing_total_minor, account_count)) = summary else {
+        return Err(PersistenceError::Configuration(format!(
+            "trial balance import {trial_balance_import_id} does not exist"
+        )));
+    };
+    let net_movement_minor = closing_total_minor
+        .checked_sub(opening_total_minor)
+        .ok_or_else(|| {
+            PersistenceError::Configuration(
+                "trial balance net movement exceeds supported range".to_string(),
+            )
+        })?;
+
+    let accounts = list_trial_balance_accounts(database_path, trial_balance_import_id)?;
+    let mut movements = Vec::with_capacity(accounts.len());
+    let mut recomputed_movement_total = 0_i64;
+    for account in accounts {
+        let movement_minor = account
+            .closing_minor
+            .checked_sub(account.opening_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(format!(
+                    "trial balance account movement exceeds supported range for row {}",
+                    account.source_row_number
+                ))
+            })?;
+        recomputed_movement_total = recomputed_movement_total
+            .checked_add(movement_minor)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "trial balance movement total exceeds supported range".to_string(),
+                )
+            })?;
+        movements.push(TrialBalanceMovementRecord {
+            trial_balance_account_id: account.trial_balance_account_id,
+            source_row_number: account.source_row_number,
+            source_row_hash: account.source_row_hash,
+            account_code_text: account.account_code_text,
+            account_name_text: account.account_name_text,
+            opening_minor: account.opening_minor,
+            closing_minor: account.closing_minor,
+            movement_minor,
+        });
+    }
+
+    if recomputed_movement_total != net_movement_minor {
+        return Err(PersistenceError::Configuration(
+            "trial balance movement comparison does not reconcile to imported totals".to_string(),
+        ));
+    }
+    if account_count.max(0) as usize != movements.len() {
+        return Err(PersistenceError::Configuration(
+            "trial balance account count does not match imported rows".to_string(),
+        ));
+    }
+
+    movements.sort_by(|left, right| {
+        right
+            .movement_minor
+            .unsigned_abs()
+            .cmp(&left.movement_minor.unsigned_abs())
+            .then_with(|| left.source_row_number.cmp(&right.source_row_number))
+            .then_with(|| left.trial_balance_account_id.cmp(&right.trial_balance_account_id))
+    });
+
+    Ok(TrialBalanceComparisonRecord {
+        trial_balance_import_id: trial_balance_import_id.to_string(),
+        opening_total_minor,
+        closing_total_minor,
+        net_movement_minor,
+        account_count: movements.len() as u64,
+        movements,
+    })
+}
+
 pub fn create_engagement_from_template(
     database_path: &Path,
     engagement_template_version_id: &str,
@@ -10947,6 +11059,21 @@ mod tests {
         assert_eq!(trial_balance_accounts[0].source_row_hash.len(), 32);
         assert_eq!(trial_balance_accounts[1].account_name_text, "Revenue");
         assert_eq!(trial_balance_accounts[1].closing_minor, -250_000);
+
+        let comparison = compare_trial_balance_opening_closing(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("opening and closing comparison");
+        assert_eq!(comparison.opening_total_minor, -100_000);
+        assert_eq!(comparison.closing_total_minor, -130_000);
+        assert_eq!(comparison.net_movement_minor, -30_000);
+        assert_eq!(comparison.account_count, 2);
+        assert_eq!(comparison.movements[0].account_name_text, "Revenue");
+        assert_eq!(comparison.movements[0].movement_minor, -50_000);
+        assert_eq!(comparison.movements[0].source_row_number, 3);
+        assert_eq!(comparison.movements[1].account_name_text, "Cash");
+        assert_eq!(comparison.movements[1].movement_minor, 20_000);
 
         let trial_balance_mutation_error = connection
             .execute(
