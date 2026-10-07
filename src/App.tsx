@@ -5665,6 +5665,195 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">ACCOUNT LINKAGE</span>
+                        <h3>Ledger → Trial Balance mapping</h3>
+                      </div>
+                    </div>
+
+                    <form className="workspace-form compact" onSubmit={submitLedgerTbMapping}>
+                      <label>
+                        <span>Immutable ledger import</span>
+                        <select
+                          value={mappingLedgerImportId ?? ""}
+                          onChange={(event) =>
+                            void selectMappingLedgerImport(event.target.value || null)
+                          }
+                        >
+                          <option value="">Select ledger import</option>
+                          {ledgerImports.map((ledgerImport) => (
+                            <option
+                              key={ledgerImport.ledgerImportId}
+                              value={ledgerImport.ledgerImportId}
+                            >
+                              {ledgerImport.sheetName} ·{" "}
+                              {ledgerImport.transactionCount.toLocaleString()} rows ·{" "}
+                              {formatTimestamp(ledgerImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Compatible Trial Balance import</span>
+                        <select
+                          value={mappingTrialBalanceImportId ?? ""}
+                          onChange={(event) =>
+                            void selectMappingTrialBalanceImport(event.target.value || null)
+                          }
+                          disabled={!selectedMappingLedgerImport}
+                        >
+                          <option value="">Select Trial Balance import</option>
+                          {compatibleMappingTrialBalanceImports.map((trialBalanceImport) => (
+                            <option
+                              key={trialBalanceImport.trialBalanceImportId}
+                              value={trialBalanceImport.trialBalanceImportId}
+                            >
+                              {trialBalanceImport.sheetName} ·{" "}
+                              {trialBalanceImport.accountCount.toLocaleString()} accounts ·{" "}
+                              {formatTimestamp(trialBalanceImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedMappingLedgerImport &&
+                      !compatibleMappingTrialBalanceImports.length ? (
+                        <p className="evidence-integrity-note">
+                          No Trial Balance import uses the same amount scale as this ledger import.
+                          Import a compatible TB before mapping accounts.
+                        </p>
+                      ) : null}
+                      <label>
+                        <span>Ledger account</span>
+                        <select
+                          value={selectedMappingLedgerAccountKey}
+                          onChange={(event) => selectMappingLedgerAccount(event.target.value)}
+                          disabled={!mappingTrialBalanceImportId}
+                        >
+                          <option value="">Select ledger account</option>
+                          {ledgerAccountSummaries.map((summary) => (
+                            <option key={summary.accountKey} value={summary.accountKey}>
+                              {summary.accountText} · {summary.transactionCount.toLocaleString()} tx
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Trial Balance account</span>
+                        <select
+                          value={selectedMappingTrialBalanceAccountId}
+                          onChange={(event) =>
+                            setSelectedMappingTrialBalanceAccountId(event.target.value)
+                          }
+                          disabled={!mappingTrialBalanceImportId}
+                        >
+                          <option value="">Select TB account</option>
+                          {mappingTrialBalanceAccounts.map((account) => (
+                            <option
+                              key={account.trialBalanceAccountId}
+                              value={account.trialBalanceAccountId}
+                            >
+                              {account.accountCodeText
+                                ? account.accountCodeText + " · "
+                                : ""}
+                              {account.accountNameText}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedMappingLedgerAccount && selectedMappingLedgerImport ? (
+                        <p className="evidence-integrity-note">
+                          Ledger total{" "}
+                          {formatMinorUnitAmount(
+                            selectedMappingLedgerAccount.totalMinor,
+                            selectedMappingLedgerImport.amountScale,
+                          )}{" "}
+                          across {selectedMappingLedgerAccount.transactionCount.toLocaleString()}{" "}
+                          transaction(s), source rows{" "}
+                          {selectedMappingLedgerAccount.firstSourceRowNumber}–
+                          {selectedMappingLedgerAccount.lastSourceRowNumber}.
+                          {currentMappingForSelectedAccount
+                            ? " Current mapping v" +
+                              currentMappingForSelectedAccount.versionNumber +
+                              ": " +
+                              currentMappingForSelectedAccount.trialBalanceAccountNameText +
+                              "."
+                            : " Not yet mapped."}
+                        </p>
+                      ) : null}
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !mappingLedgerImportId ||
+                          !mappingTrialBalanceImportId ||
+                          !selectedMappingLedgerAccountKey ||
+                          !selectedMappingTrialBalanceAccountId
+                        }
+                      >
+                        {currentMappingForSelectedAccount ? "Remap account" : "Map account"}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">CURRENT MAP</span>
+                        <h3>{ledgerTbMappings.length} mapped account(s)</h3>
+                      </div>
+                    </div>
+                    <div className="workspace-mini-list">
+                      {ledgerTbMappings.length ? (
+                        ledgerTbMappings.map((mapping) => (
+                          <span key={mapping.ledgerTbMappingId}>
+                            <strong>
+                              {mapping.ledgerAccountText} →{" "}
+                              {mapping.trialBalanceAccountCodeText
+                                ? mapping.trialBalanceAccountCodeText + " · "
+                                : ""}
+                              {mapping.trialBalanceAccountNameText}
+                            </strong>
+                            <small>
+                              Mapping v{mapping.versionNumber} · TB row{" "}
+                              {mapping.trialBalanceSourceRowNumber} · row SHA{" "}
+                              {mapping.trialBalanceSourceRowHashHex.slice(0, 16)}…
+                            </small>
+                            <small>
+                              {mapping.supersedesMappingId
+                                ? "Supersedes " +
+                                  mapping.supersedesMappingId.slice(0, 18) +
+                                  "… · "
+                                : ""}
+                              {formatTimestamp(mapping.mappedAtMs)}
+                            </small>
+                          </span>
+                        ))
+                      ) : mappingLedgerImportId && mappingTrialBalanceImportId ? (
+                        <div className="empty-result">
+                          No ledger accounts are mapped to this exact Trial Balance import yet.
+                        </div>
+                      ) : (
+                        <div className="empty-result">
+                          Select compatible immutable ledger and Trial Balance imports to map
+                          accounts.
+                        </div>
+                      )}
+                    </div>
+                    {selectedMappingTrialBalanceImport ? (
+                      <p className="evidence-integrity-note">
+                        Mapping target: {selectedMappingTrialBalanceImport.sheetName} · source SHA{" "}
+                        {selectedMappingTrialBalanceImport.sourceSha256Hex.slice(0, 16)}… ·
+                        controlled ID{" "}
+                        {selectedMappingTrialBalanceImport.controlledEvidenceVersionId.slice(0, 18)}…
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
                 <div className="workspace-grid workspace-grid-three">
                   <div className="workspace-card">
                     <div className="workspace-card-heading">
