@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 16;
+const LATEST_SCHEMA_VERSION: i64 = 17;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -107,6 +107,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 16,
         name: "tb_schedule_mappings",
         sql: include_str!("../migrations/0016_tb_schedule_mappings.sql"),
+    },
+    Migration {
+        version: 17,
+        name: "fs_schedule_links",
+        sql: include_str!("../migrations/0017_fs_schedule_links.sql"),
     },
 ];
 
@@ -547,6 +552,23 @@ pub struct TrialBalanceScheduleMappingRecord {
     pub version_number: u64,
     pub supersedes_mapping_id: Option<String>,
     pub mapped_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinancialStatementScheduleLinkRecord {
+    pub financial_statement_schedule_link_id: String,
+    pub financial_statement_schedule_id: String,
+    pub schedule_reference: String,
+    pub schedule_name: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub location_kind: String,
+    pub location_value: String,
+    pub version_number: u64,
+    pub supersedes_link_id: Option<String>,
+    pub linked_at_ms: i64,
 }
 
 struct TrialBalanceMappingTarget {
