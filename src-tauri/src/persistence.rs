@@ -5205,7 +5205,8 @@ pub fn create_ledger_import(
                 "ledger transaction source row must be at least 1".to_string(),
             ));
         }
-        if transaction.source_row_json.trim().is_empty() || transaction.source_row_hash.len() != 32 {
+        if transaction.source_row_json.trim().is_empty() || transaction.source_row_hash.len() != 32
+        {
             return Err(PersistenceError::Configuration(
                 "ledger transaction provenance is incomplete".to_string(),
             ));
@@ -5252,8 +5253,13 @@ pub fn create_ledger_import(
             },
         )
         .optional()?;
-    let Some((document_id, source_content_version_id, source_sha256, verification_state, retention_state)) =
-        evidence
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
     else {
         return Err(PersistenceError::Configuration(format!(
             "controlled evidence version {controlled_evidence_version_id} does not exist"
@@ -10040,7 +10046,12 @@ mod tests {
                         ?1, ?2, ?3, ?4, 'TEST', 'Ledger.xlsx', 'ledger xlsx',
                         NULL, NULL, NULL, NULL, 128, NULL, NULL, 1, 1, NULL, NULL, 'AVAILABLE'
                      )",
-                    params![&file_instance_id, &document_id, &storage_root_id, b"Ledger.xlsx".to_vec()],
+                    params![
+                        &file_instance_id,
+                        &document_id,
+                        &storage_root_id,
+                        b"Ledger.xlsx".to_vec()
+                    ],
                 )
                 .expect("file instance should insert");
             connection
@@ -10057,7 +10068,12 @@ mod tests {
                         verification_state,
                         source_stable_during_read
                      ) VALUES (?1, ?2, ?3, 1, 128, NULL, NULL, ?4, 'HASH_VERIFIED', 1)",
-                    params![&content_version_id, &document_id, &file_instance_id, &source_sha256],
+                    params![
+                        &content_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &source_sha256
+                    ],
                 )
                 .expect("content version should insert");
             connection
@@ -10197,14 +10213,12 @@ mod tests {
             assert_eq!(exception.source_row_hash.len(), 32);
         }
 
-        assert!(run_high_value_ledger_test(
-            &database.path,
-            &ledger_import.ledger_import_id,
-            0
-        )
-        .expect_err("zero threshold should fail")
-        .to_string()
-        .contains("greater than zero"));
+        assert!(
+            run_high_value_ledger_test(&database.path, &ledger_import.ledger_import_id, 0)
+                .expect_err("zero threshold should fail")
+                .to_string()
+                .contains("greater than zero")
+        );
 
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
