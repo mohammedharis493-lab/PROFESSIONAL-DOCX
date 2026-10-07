@@ -215,7 +215,7 @@ fn mapped_text(range: &calamine::Range<Data>, row: u32, column: Option<u32>) -> 
         .filter(|value| !value.is_empty())
 }
 
-fn amount_to_minor_units(value: &Data, scale: u32) -> Result<i64, String> {
+pub(crate) fn amount_to_minor_units(value: &Data, scale: u32) -> Result<i64, String> {
     let factor = 10_i128
         .checked_pow(scale)
         .ok_or_else(|| "amount scale overflowed".to_string())?;
