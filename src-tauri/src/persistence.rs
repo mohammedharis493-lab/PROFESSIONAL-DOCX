@@ -7344,13 +7344,14 @@ pub fn create_financial_statement_schedule_link(
         )
         .optional()?;
 
-    if latest_link.as_ref().is_some_and(
-        |(_, evidence_id, latest_kind, latest_value, _)| {
+    if latest_link
+        .as_ref()
+        .is_some_and(|(_, evidence_id, latest_kind, latest_value, _)| {
             evidence_id == controlled_evidence_version_id
                 && latest_kind == &location_kind
                 && latest_value == &location_value
-        },
-    ) {
+        })
+    {
         return Err(PersistenceError::Configuration(
             "financial statement schedule is already linked to the selected exact evidence location"
                 .to_string(),
@@ -12683,7 +12684,11 @@ mod tests {
         assert_eq!(second_statement_link.version_number, 2);
         assert_eq!(
             second_statement_link.supersedes_link_id.as_deref(),
-            Some(first_statement_link.financial_statement_schedule_link_id.as_str())
+            Some(
+                first_statement_link
+                    .financial_statement_schedule_link_id
+                    .as_str()
+            )
         );
         assert_eq!(second_statement_link.location_value, "3");
 
