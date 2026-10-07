@@ -11542,6 +11542,83 @@ mod tests {
         assert_eq!(comparison.movements[1].account_name_text, "Cash");
         assert_eq!(comparison.movements[1].movement_minor, 20_000);
 
+        let ledger_account_summaries =
+            list_ledger_account_summaries(&database.path, &ledger_import.ledger_import_id)
+                .expect("ledger account summaries");
+        assert_eq!(ledger_account_summaries.len(), 1);
+        assert_eq!(ledger_account_summaries[0].account_key, "revenue");
+        assert_eq!(ledger_account_summaries[0].account_text, "Revenue");
+        assert_eq!(ledger_account_summaries[0].transaction_count, 4);
+        assert_eq!(ledger_account_summaries[0].total_minor, 9_999);
+        assert_eq!(ledger_account_summaries[0].first_source_row_number, 2);
+        assert_eq!(ledger_account_summaries[0].last_source_row_number, 5);
+
+        let first_mapping = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "  Revenue ",
+            &trial_balance_accounts[1].trial_balance_account_id,
+        )
+        .expect("initial ledger to Trial Balance mapping");
+        assert_eq!(first_mapping.version_number, 1);
+        assert_eq!(first_mapping.ledger_account_key, "revenue");
+        assert_eq!(first_mapping.trial_balance_account_name_text, "Revenue");
+        assert_eq!(first_mapping.supersedes_mapping_id, None);
+
+        let duplicate_mapping_error = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "REVENUE",
+            &trial_balance_accounts[1].trial_balance_account_id,
+        )
+        .expect_err("mapping the same account to the same TB account should be rejected");
+        assert!(duplicate_mapping_error
+            .to_string()
+            .contains("already mapped"));
+
+        let second_mapping = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "revenue",
+            &trial_balance_accounts[0].trial_balance_account_id,
+        )
+        .expect("ledger account remap should append a new version");
+        assert_eq!(second_mapping.version_number, 2);
+        assert_eq!(
+            second_mapping.supersedes_mapping_id.as_deref(),
+            Some(first_mapping.ledger_tb_mapping_id.as_str())
+        );
+        assert_eq!(second_mapping.trial_balance_account_name_text, "Cash");
+
+        let current_mappings = list_current_ledger_tb_mappings(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("current ledger to Trial Balance mappings");
+        assert_eq!(current_mappings.len(), 1);
+        assert_eq!(
+            current_mappings[0].ledger_tb_mapping_id,
+            second_mapping.ledger_tb_mapping_id
+        );
+        assert_eq!(current_mappings[0].version_number, 2);
+        assert_eq!(current_mappings[0].trial_balance_account_name_text, "Cash");
+
+        let mapping_mutation_error = connection
+            .execute(
+                "UPDATE ledger_tb_mappings
+                 SET ledger_account_text = 'Changed'
+                 WHERE ledger_tb_mapping_id = ?1",
+                [&first_mapping.ledger_tb_mapping_id],
+            )
+            .expect_err("ledger to Trial Balance mapping history must be immutable");
+        assert!(mapping_mutation_error
+            .to_string()
+            .contains("ledger to trial balance mappings are immutable"));
+
         let trial_balance_mutation_error = connection
             .execute(
                 "UPDATE trial_balance_accounts
