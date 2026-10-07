@@ -1,6 +1,9 @@
 use crate::{
     filesystem, launcher,
-    persistence::{self, ControlledEvidenceVersionRecord, EvidenceCaptureSourceRecord},
+    persistence::{
+        self, ControlledEvidenceReadRecord, ControlledEvidenceVersionRecord,
+        EvidenceCaptureSourceRecord,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -71,6 +74,12 @@ impl From<launcher::LaunchError> for EvidenceError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ControlledEvidenceBytes {
+    pub record: ControlledEvidenceReadRecord,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceSnapshot {
     size_bytes: u64,
@@ -86,6 +95,98 @@ pub fn capture_controlled_evidence(
     file_instance_id: &str,
 ) -> Result<ControlledEvidenceVersionRecord, EvidenceError> {
     capture_controlled_evidence_internal(database_path, state, file_instance_id, |_| {})
+}
+
+pub fn read_controlled_evidence_bytes(
+    database_path: &Path,
+    state: &EvidenceState,
+    controlled_evidence_version_id: &str,
+    max_bytes: usize,
+) -> Result<ControlledEvidenceBytes, EvidenceError> {
+    Uuid::parse_str(controlled_evidence_version_id).map_err(|_| {
+        EvidenceError::Configuration("controlled evidence identifier is not a UUID".to_string())
+    })?;
+
+    let record = persistence::get_controlled_evidence_read_record(
+        database_path,
+        controlled_evidence_version_id,
+    )?
+    .ok_or_else(|| {
+        EvidenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        ))
+    })?;
+
+    if record.verification_state != "HASH_VERIFIED" || record.retention_state != "RETAINED" {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence is not retained and hash verified".to_string(),
+        ));
+    }
+    if record.sha256.len() != 32 {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence stored hash is invalid".to_string(),
+        ));
+    }
+    if record.size_bytes > max_bytes as u64 {
+        return Err(EvidenceError::Configuration(format!(
+            "controlled evidence exceeds the {} byte read limit",
+            max_bytes
+        )));
+    }
+
+    let expected_locator = format!(
+        "{}/{}",
+        record.document_id, record.controlled_evidence_version_id
+    );
+    if record.controlled_storage_locator != expected_locator {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence locator does not match its immutable identifiers".to_string(),
+        ));
+    }
+
+    let canonical_root = fs::canonicalize(&state.root).map_err(|error| {
+        EvidenceError::Configuration(format!(
+            "controlled evidence root is unavailable: {error}"
+        ))
+    })?;
+    let evidence_path = state
+        .root
+        .join(&record.document_id)
+        .join(&record.controlled_evidence_version_id);
+    let canonical_path = fs::canonicalize(&evidence_path).map_err(|error| {
+        EvidenceError::Configuration(format!(
+            "controlled evidence bytes are unavailable: {error}"
+        ))
+    })?;
+
+    if !canonical_path.starts_with(&canonical_root) || !canonical_path.is_file() {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence resolved outside its managed evidence root".to_string(),
+        ));
+    }
+
+    let metadata = fs::metadata(&canonical_path)?;
+    if metadata.len() != record.size_bytes {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence size no longer matches its captured metadata".to_string(),
+        ));
+    }
+
+    let bytes = fs::read(&canonical_path)?;
+    if bytes.len() > max_bytes {
+        return Err(EvidenceError::Configuration(format!(
+            "controlled evidence exceeds the {} byte read limit",
+            max_bytes
+        )));
+    }
+    let digest = Sha256::digest(&bytes);
+    if digest.as_slice() != record.sha256.as_slice() {
+        return Err(EvidenceError::Integrity(
+            "controlled evidence bytes no longer match the captured SHA-256".to_string(),
+        ));
+    }
+
+    Ok(ControlledEvidenceBytes { record, bytes })
 }
 
 fn capture_controlled_evidence_internal<F>(
