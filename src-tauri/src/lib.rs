@@ -1350,6 +1350,17 @@ fn list_ledger_imports(
 }
 
 #[tauri::command]
+fn list_ledger_test_runs(
+    ledger_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<LedgerTestRunDto>, String> {
+    validate_uuid(&ledger_import_id, "ledger-import")?;
+    persistence::list_ledger_test_runs(database.path(), &ledger_import_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn run_high_value_ledger_test(
     ledger_import_id: String,
     threshold_minor: i64,
@@ -2482,6 +2493,7 @@ pub fn run() {
             list_firm_library_versions,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
+            list_ledger_test_runs,
             run_high_value_ledger_test,
             list_ledger_exceptions,
             create_engagement_from_template,
