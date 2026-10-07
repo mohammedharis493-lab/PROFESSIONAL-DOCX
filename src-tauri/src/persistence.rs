@@ -5651,16 +5651,21 @@ fn ledger_account_summaries_from_connection(
         let source_row_number = source_row_number.max(0) as u64;
 
         if let Some(summary) = summaries.get_mut(&account_key) {
-            summary.transaction_count = summary.transaction_count.checked_add(1).ok_or_else(|| {
-                PersistenceError::Configuration(
-                    "ledger account transaction count exceeds supported range".to_string(),
-                )
-            })?;
-            summary.total_minor = summary.total_minor.checked_add(amount_minor).ok_or_else(|| {
-                PersistenceError::Configuration(
-                    "ledger account total exceeds supported range".to_string(),
-                )
-            })?;
+            summary.transaction_count =
+                summary.transaction_count.checked_add(1).ok_or_else(|| {
+                    PersistenceError::Configuration(
+                        "ledger account transaction count exceeds supported range".to_string(),
+                    )
+                })?;
+            summary.total_minor =
+                summary
+                    .total_minor
+                    .checked_add(amount_minor)
+                    .ok_or_else(|| {
+                        PersistenceError::Configuration(
+                            "ledger account total exceeds supported range".to_string(),
+                        )
+                    })?;
             summary.last_source_row_number = source_row_number;
         } else {
             summaries.insert(
@@ -5810,7 +5815,11 @@ pub fn create_ledger_tb_mapping(
                AND ledger_account_key = ?3
              ORDER BY version_number DESC
              LIMIT 1",
-            params![ledger_import_id, trial_balance_import_id, &ledger_account_key],
+            params![
+                ledger_import_id,
+                trial_balance_import_id,
+                &ledger_account_key
+            ],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
