@@ -10599,7 +10599,7 @@ mod tests {
     }
 
     #[test]
-    fn high_value_ledger_test_is_deterministic_and_source_traceable() {
+    fn controlled_accounting_imports_are_deterministic_and_source_traceable() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
 
@@ -10882,6 +10882,83 @@ mod tests {
         assert!(mutation_error
             .to_string()
             .contains("ledger transactions are immutable"));
+
+        let trial_balance_rows = vec![
+            TrialBalanceAccountInput {
+                source_row_number: 2,
+                source_row_hash: Sha256::digest(b"tb-row-2").to_vec(),
+                account_code_text: Some("1000".to_string()),
+                account_name_text: "Cash".to_string(),
+                opening_minor: 100_000,
+                closing_minor: 120_000,
+            },
+            TrialBalanceAccountInput {
+                source_row_number: 3,
+                source_row_hash: Sha256::digest(b"tb-row-3").to_vec(),
+                account_code_text: Some("4000".to_string()),
+                account_name_text: "Revenue".to_string(),
+                opening_minor: -200_000,
+                closing_minor: -250_000,
+            },
+        ];
+        let trial_balance_import = create_trial_balance_import(
+            &database.path,
+            TrialBalanceImportDefinition {
+                engagement_id: &engagement.engagement_id,
+                controlled_evidence_version_id: &controlled_evidence_version_id,
+                sheet_name: "Trial Balance",
+                header_row_number: 1,
+                account_name_column: 1,
+                account_code_column: Some(0),
+                opening_balance_column: Some(2),
+                closing_balance_column: 3,
+                amount_scale: 2,
+                accounts: &trial_balance_rows,
+            },
+        )
+        .expect("trial balance import should succeed");
+
+        assert_eq!(trial_balance_import.account_count, 2);
+        assert_eq!(trial_balance_import.opening_total_minor, -100_000);
+        assert_eq!(trial_balance_import.closing_total_minor, -130_000);
+        assert_eq!(trial_balance_import.source_sha256, source_sha256);
+        assert_eq!(
+            trial_balance_import.controlled_evidence_version_id,
+            controlled_evidence_version_id
+        );
+
+        let trial_balance_imports =
+            list_trial_balance_imports(&database.path, &engagement.engagement_id)
+                .expect("trial balance imports");
+        assert_eq!(trial_balance_imports.len(), 1);
+        assert_eq!(
+            trial_balance_imports[0].trial_balance_import_id,
+            trial_balance_import.trial_balance_import_id
+        );
+
+        let trial_balance_accounts = list_trial_balance_accounts(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("trial balance accounts");
+        assert_eq!(trial_balance_accounts.len(), 2);
+        assert_eq!(trial_balance_accounts[0].account_name_text, "Cash");
+        assert_eq!(trial_balance_accounts[0].source_row_number, 2);
+        assert_eq!(trial_balance_accounts[0].source_row_hash.len(), 32);
+        assert_eq!(trial_balance_accounts[1].account_name_text, "Revenue");
+        assert_eq!(trial_balance_accounts[1].closing_minor, -250_000);
+
+        let trial_balance_mutation_error = connection
+            .execute(
+                "UPDATE trial_balance_accounts
+                 SET closing_minor = closing_minor + 1
+                 WHERE trial_balance_import_id = ?1",
+                [&trial_balance_import.trial_balance_import_id],
+            )
+            .expect_err("imported trial balance accounts must be immutable");
+        assert!(trial_balance_mutation_error
+            .to_string()
+            .contains("trial balance accounts are immutable"));
     }
 
     #[test]
