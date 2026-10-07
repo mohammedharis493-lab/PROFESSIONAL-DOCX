@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 16;
+const LATEST_SCHEMA_VERSION: i64 = 17;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -107,6 +107,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 16,
         name: "tb_schedule_mappings",
         sql: include_str!("../migrations/0016_tb_schedule_mappings.sql"),
+    },
+    Migration {
+        version: 17,
+        name: "fs_schedule_links",
+        sql: include_str!("../migrations/0017_fs_schedule_links.sql"),
     },
 ];
 
@@ -547,6 +552,23 @@ pub struct TrialBalanceScheduleMappingRecord {
     pub version_number: u64,
     pub supersedes_mapping_id: Option<String>,
     pub mapped_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinancialStatementScheduleLinkRecord {
+    pub financial_statement_schedule_link_id: String,
+    pub financial_statement_schedule_id: String,
+    pub schedule_reference: String,
+    pub schedule_name: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub location_kind: String,
+    pub location_value: String,
+    pub version_number: u64,
+    pub supersedes_link_id: Option<String>,
+    pub linked_at_ms: i64,
 }
 
 struct TrialBalanceMappingTarget {
@@ -4415,6 +4437,107 @@ fn normalize_review_note_location(
     Ok((Some(kind), Some(normalized_value)))
 }
 
+fn normalize_exact_evidence_worksheet(
+    value: &str,
+    subject: &str,
+) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 255 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(format!(
+            "{subject} worksheet must contain 1 to 255 printable characters"
+        )));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_exact_evidence_workbook_anchor(
+    subject: &str,
+    location_kind: &str,
+    value: &str,
+    expects_range: bool,
+) -> Result<String, PersistenceError> {
+    let (worksheet, address) = value.rsplit_once('!').ok_or_else(|| {
+        let expected_format = if expects_range {
+            "Worksheet!B12:D20"
+        } else {
+            "Worksheet!B12"
+        };
+        PersistenceError::Configuration(format!(
+            "{subject} {location_kind} location must use {expected_format} format"
+        ))
+    })?;
+    let worksheet = normalize_exact_evidence_worksheet(worksheet, subject)?;
+
+    if expects_range {
+        let Some((start, end)) = address.split_once(':') else {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} RANGE location must use Worksheet!B12:D20 format"
+            )));
+        };
+        let start = start.trim();
+        let end = end.trim();
+        if end.contains(':') || !is_a1_cell_reference(start) || !is_a1_cell_reference(end) {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} RANGE location must use Worksheet!B12:D20 format"
+            )));
+        }
+        Ok(format!(
+            "{worksheet}!{}:{}",
+            start.to_ascii_uppercase(),
+            end.to_ascii_uppercase()
+        ))
+    } else {
+        let address = address.trim();
+        if address.contains(':') || !is_a1_cell_reference(address) {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} CELL location must use Worksheet!B12 format"
+            )));
+        }
+        Ok(format!("{worksheet}!{}", address.to_ascii_uppercase()))
+    }
+}
+
+fn normalize_exact_evidence_location(
+    location_kind: &str,
+    location_value: &str,
+    subject: &str,
+) -> Result<(String, String), PersistenceError> {
+    let kind = location_kind.trim().to_ascii_uppercase();
+    let value = location_value.trim();
+    if kind.is_empty() || value.is_empty() {
+        return Err(PersistenceError::Configuration(format!(
+            "{subject} location kind and value are required"
+        )));
+    }
+
+    let normalized_value = match kind.as_str() {
+        "PAGE" => {
+            let page = value.parse::<u32>().map_err(|_| {
+                PersistenceError::Configuration(format!(
+                    "{subject} PAGE location must be a positive page number"
+                ))
+            })?;
+            if page == 0 {
+                return Err(PersistenceError::Configuration(format!(
+                    "{subject} PAGE location must be a positive page number"
+                )));
+            }
+            page.to_string()
+        }
+        "WORKSHEET" => normalize_exact_evidence_worksheet(value, subject)?,
+        "CELL" => normalize_exact_evidence_workbook_anchor(subject, "CELL", value, false)?,
+        "RANGE" => normalize_exact_evidence_workbook_anchor(subject, "RANGE", value, true)?,
+        _ => {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} location kind must be PAGE, WORKSHEET, CELL, or RANGE"
+            )))
+        }
+    };
+
+    Ok((kind, normalized_value))
+}
+
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -7115,6 +7238,284 @@ pub fn compare_trial_balance_opening_closing(
         account_count: movements.len() as u64,
         movements,
     })
+}
+
+pub fn create_financial_statement_schedule_link(
+    database_path: &Path,
+    financial_statement_schedule_id: &str,
+    controlled_evidence_version_id: &str,
+    location_kind: &str,
+    location_value: &str,
+) -> Result<FinancialStatementScheduleLinkRecord, PersistenceError> {
+    let (location_kind, location_value) = normalize_exact_evidence_location(
+        location_kind,
+        location_value,
+        "financial statement schedule",
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let schedule: Option<(String, String, String)> = transaction
+        .query_row(
+            "SELECT engagement_id, reference, name
+             FROM financial_statement_schedules
+             WHERE financial_statement_schedule_id = ?1",
+            [financial_statement_schedule_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((engagement_id, schedule_reference, schedule_name)) = schedule else {
+        return Err(PersistenceError::Configuration(format!(
+            "financial statement schedule {financial_statement_schedule_id} does not exist"
+        )));
+    };
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                cev.document_id,
+                cev.source_content_version_id,
+                cev.sha256,
+                cev.verification_state,
+                cev.retention_state
+             FROM controlled_evidence_versions cev
+             JOIN documents d ON d.document_id = cev.document_id
+             WHERE cev.controlled_evidence_version_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "financial statement schedule links require retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled financial statement evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let latest_link: Option<(String, String, String, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                financial_statement_schedule_link_id,
+                controlled_evidence_version_id,
+                location_kind,
+                location_value,
+                version_number
+             FROM financial_statement_schedule_links
+             WHERE financial_statement_schedule_id = ?1
+             ORDER BY version_number DESC
+             LIMIT 1",
+            [financial_statement_schedule_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    if latest_link
+        .as_ref()
+        .is_some_and(|(_, evidence_id, latest_kind, latest_value, _)| {
+            evidence_id == controlled_evidence_version_id
+                && latest_kind == &location_kind
+                && latest_value == &location_value
+        })
+    {
+        return Err(PersistenceError::Configuration(
+            "financial statement schedule is already linked to the selected exact evidence location"
+                .to_string(),
+        ));
+    }
+
+    let (supersedes_link_id, version_number) = match latest_link {
+        Some((link_id, _, _, _, version_number)) => (
+            Some(link_id),
+            version_number.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "financial statement schedule link version exceeds supported range".to_string(),
+                )
+            })?,
+        ),
+        None => (None, 1),
+    };
+    let version_number_u64 = version_number.max(0) as u64;
+    let financial_statement_schedule_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO financial_statement_schedule_links (
+            financial_statement_schedule_link_id,
+            financial_statement_schedule_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            location_kind,
+            location_value,
+            version_number,
+            supersedes_link_id,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &financial_statement_schedule_link_id,
+            financial_statement_schedule_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            &location_kind,
+            &location_value,
+            version_number,
+            supersedes_link_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FINANCIAL_STATEMENT_SCHEDULE_LINK_CREATED",
+            entity_type: "FINANCIAL_STATEMENT_SCHEDULE_LINK",
+            entity_id: &financial_statement_schedule_link_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(&engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "financialStatementScheduleId": financial_statement_schedule_id,
+                "scheduleReference": schedule_reference,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "locationKind": location_kind,
+                "locationValue": location_value,
+                "versionNumber": version_number_u64,
+                "supersedesLinkId": supersedes_link_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FinancialStatementScheduleLinkRecord {
+        financial_statement_schedule_link_id,
+        financial_statement_schedule_id: financial_statement_schedule_id.to_string(),
+        schedule_reference,
+        schedule_name,
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        location_kind,
+        location_value,
+        version_number: version_number_u64,
+        supersedes_link_id,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_current_financial_statement_schedule_links(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<FinancialStatementScheduleLinkRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let engagement_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            l.financial_statement_schedule_link_id,
+            l.financial_statement_schedule_id,
+            s.reference,
+            s.name,
+            l.controlled_evidence_version_id,
+            l.document_id,
+            l.source_content_version_id,
+            l.source_sha256,
+            l.location_kind,
+            l.location_value,
+            l.version_number,
+            l.supersedes_link_id,
+            l.linked_at_ms
+         FROM financial_statement_schedule_links l
+         JOIN financial_statement_schedules s
+           ON s.financial_statement_schedule_id = l.financial_statement_schedule_id
+         WHERE s.engagement_id = ?1
+           AND NOT EXISTS (
+               SELECT 1
+               FROM financial_statement_schedule_links newer
+               WHERE newer.financial_statement_schedule_id =
+                     l.financial_statement_schedule_id
+                 AND newer.version_number > l.version_number
+           )
+         ORDER BY s.normalized_reference, l.financial_statement_schedule_link_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let version_number: i64 = row.get(10)?;
+        Ok(FinancialStatementScheduleLinkRecord {
+            financial_statement_schedule_link_id: row.get(0)?,
+            financial_statement_schedule_id: row.get(1)?,
+            schedule_reference: row.get(2)?,
+            schedule_name: row.get(3)?,
+            controlled_evidence_version_id: row.get(4)?,
+            document_id: row.get(5)?,
+            source_content_version_id: row.get(6)?,
+            source_sha256: row.get(7)?,
+            location_kind: row.get(8)?,
+            location_value: row.get(9)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_link_id: row.get(11)?,
+            linked_at_ms: row.get(12)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
 }
 
 pub fn create_engagement_from_template(
@@ -10822,7 +11223,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 16);
+        assert_eq!(migration_count, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -10874,14 +11275,15 @@ mod tests {
                        'trial_balance_accounts',
                        'ledger_tb_mappings',
                        'financial_statement_schedules',
-                       'trial_balance_schedule_mappings'
+                       'trial_balance_schedule_mappings',
+                       'financial_statement_schedule_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 46);
+        assert_eq!(table_count, 47);
     }
 
     #[test]
@@ -10917,7 +11319,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -10958,14 +11360,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 16");
+        initialize_database(&database.path).expect("database should upgrade through version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_exists: i64 = connection
             .query_row(
@@ -11007,14 +11409,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 16");
+        initialize_database(&database.path).expect("database should upgrade through version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11059,14 +11461,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_exists: bool = connection
             .query_row(
@@ -11108,14 +11510,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11165,14 +11567,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11217,14 +11619,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11269,14 +11671,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11321,14 +11723,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11372,14 +11774,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11423,14 +11825,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11487,14 +11889,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -11546,14 +11948,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11597,14 +11999,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_exists: bool = connection
             .query_row(
@@ -11646,14 +12048,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 16");
+        initialize_database(&database.path).expect("database should upgrade to version 17");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 16);
+        assert_eq!(user_version, 17);
 
         let table_count: i64 = connection
             .query_row(
@@ -11668,6 +12070,56 @@ mod tests {
             )
             .expect("schedule mapping tables should exist");
         assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn seventeenth_migration_adds_immutable_financial_statement_schedule_links() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..16] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 16);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 17");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 17);
+
+        let table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'financial_statement_schedule_links'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("financial statement schedule link table should exist");
+        assert!(table_exists);
     }
 
     #[test]
@@ -12194,6 +12646,89 @@ mod tests {
         );
         assert_eq!(current_schedule_mappings[0].version_number, 2);
         assert_eq!(current_schedule_mappings[0].schedule_reference, "SCH-CASH");
+
+        let first_statement_link = create_financial_statement_schedule_link(
+            &database.path,
+            &revenue_schedule.financial_statement_schedule_id,
+            &controlled_evidence_version_id,
+            "page",
+            " 2 ",
+        )
+        .expect("financial statement schedule should link to exact evidence");
+        assert_eq!(first_statement_link.version_number, 1);
+        assert_eq!(first_statement_link.location_kind, "PAGE");
+        assert_eq!(first_statement_link.location_value, "2");
+        assert_eq!(first_statement_link.source_sha256, source_sha256);
+        assert_eq!(first_statement_link.supersedes_link_id, None);
+
+        let duplicate_statement_link_error = create_financial_statement_schedule_link(
+            &database.path,
+            &revenue_schedule.financial_statement_schedule_id,
+            &controlled_evidence_version_id,
+            "PAGE",
+            "2",
+        )
+        .expect_err("duplicate exact financial statement link should be rejected");
+        assert!(duplicate_statement_link_error
+            .to_string()
+            .contains("already linked"));
+
+        let second_statement_link = create_financial_statement_schedule_link(
+            &database.path,
+            &revenue_schedule.financial_statement_schedule_id,
+            &controlled_evidence_version_id,
+            "PAGE",
+            "3",
+        )
+        .expect("financial statement relink should append a version");
+        assert_eq!(second_statement_link.version_number, 2);
+        assert_eq!(
+            second_statement_link.supersedes_link_id.as_deref(),
+            Some(
+                first_statement_link
+                    .financial_statement_schedule_link_id
+                    .as_str()
+            )
+        );
+        assert_eq!(second_statement_link.location_value, "3");
+
+        let current_statement_links = list_current_financial_statement_schedule_links(
+            &database.path,
+            &engagement.engagement_id,
+        )
+        .expect("current financial statement schedule links");
+        assert_eq!(current_statement_links.len(), 1);
+        assert_eq!(
+            current_statement_links[0].financial_statement_schedule_link_id,
+            second_statement_link.financial_statement_schedule_link_id
+        );
+        assert_eq!(current_statement_links[0].schedule_reference, "SCH-REV");
+        assert_eq!(current_statement_links[0].location_kind, "PAGE");
+        assert_eq!(current_statement_links[0].location_value, "3");
+
+        let invalid_statement_anchor = create_financial_statement_schedule_link(
+            &database.path,
+            &cash_schedule.financial_statement_schedule_id,
+            &controlled_evidence_version_id,
+            "CELL",
+            "B12",
+        )
+        .expect_err("unqualified workbook anchor should be rejected");
+        assert!(invalid_statement_anchor
+            .to_string()
+            .contains("Worksheet!B12"));
+
+        let statement_link_mutation_error = connection
+            .execute(
+                "UPDATE financial_statement_schedule_links
+                 SET location_value = '4'
+                 WHERE financial_statement_schedule_link_id = ?1",
+                [&first_statement_link.financial_statement_schedule_link_id],
+            )
+            .expect_err("financial statement schedule link history must be immutable");
+        assert!(statement_link_mutation_error
+            .to_string()
+            .contains("financial statement schedule links are immutable"));
 
         let schedule_mutation_error = connection
             .execute(
