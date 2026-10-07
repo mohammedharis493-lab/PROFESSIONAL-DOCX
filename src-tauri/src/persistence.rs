@@ -3,6 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     error::Error,
     ffi::OsString,
     fmt, fs,
@@ -17,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 14;
+const LATEST_SCHEMA_VERSION: i64 = 15;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -96,6 +97,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "trial_balance",
         sql: include_str!("../migrations/0014_trial_balance.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "ledger_tb_mappings",
+        sql: include_str!("../migrations/0015_ledger_tb_mappings.sql"),
     },
 ];
 
@@ -482,6 +488,34 @@ pub struct TrialBalanceComparisonRecord {
     pub net_movement_minor: i64,
     pub account_count: u64,
     pub movements: Vec<TrialBalanceMovementRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerAccountSummaryRecord {
+    pub ledger_import_id: String,
+    pub account_key: String,
+    pub account_text: String,
+    pub transaction_count: u64,
+    pub total_minor: i64,
+    pub first_source_row_number: u64,
+    pub last_source_row_number: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerTbMappingRecord {
+    pub ledger_tb_mapping_id: String,
+    pub ledger_import_id: String,
+    pub trial_balance_import_id: String,
+    pub ledger_account_key: String,
+    pub ledger_account_text: String,
+    pub trial_balance_account_id: String,
+    pub trial_balance_account_code_text: Option<String>,
+    pub trial_balance_account_name_text: String,
+    pub trial_balance_source_row_number: u64,
+    pub trial_balance_source_row_hash: Vec<u8>,
+    pub version_number: u64,
+    pub supersedes_mapping_id: Option<String>,
+    pub mapped_at_ms: i64,
 }
 
 struct FirmLibraryItemIdentity {
@@ -4103,6 +4137,20 @@ fn normalize_domain_label(
         return Err(PersistenceError::Configuration(format!(
             "{field_name} must contain 1 to {max_chars} characters"
         )));
+    }
+    Ok(normalized)
+}
+
+fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if normalized.is_empty() || normalized.chars().count() > 500 {
+        return Err(PersistenceError::Configuration(
+            "ledger account key must contain 1 to 500 characters".to_string(),
+        ));
     }
     Ok(normalized)
 }
