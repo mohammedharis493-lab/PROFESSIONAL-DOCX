@@ -145,9 +145,7 @@ pub fn read_controlled_evidence_bytes(
     }
 
     let canonical_root = fs::canonicalize(&state.root).map_err(|error| {
-        EvidenceError::Configuration(format!(
-            "controlled evidence root is unavailable: {error}"
-        ))
+        EvidenceError::Configuration(format!("controlled evidence root is unavailable: {error}"))
     })?;
     let evidence_path = state
         .root
