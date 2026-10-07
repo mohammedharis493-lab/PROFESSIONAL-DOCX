@@ -3,6 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     error::Error,
     ffi::OsString,
     fmt, fs,
@@ -17,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 14;
+const LATEST_SCHEMA_VERSION: i64 = 15;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -96,6 +97,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "trial_balance",
         sql: include_str!("../migrations/0014_trial_balance.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "ledger_tb_mappings",
+        sql: include_str!("../migrations/0015_ledger_tb_mappings.sql"),
     },
 ];
 
@@ -482,6 +488,42 @@ pub struct TrialBalanceComparisonRecord {
     pub net_movement_minor: i64,
     pub account_count: u64,
     pub movements: Vec<TrialBalanceMovementRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerAccountSummaryRecord {
+    pub ledger_import_id: String,
+    pub account_key: String,
+    pub account_text: String,
+    pub transaction_count: u64,
+    pub total_minor: i64,
+    pub first_source_row_number: u64,
+    pub last_source_row_number: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerTbMappingRecord {
+    pub ledger_tb_mapping_id: String,
+    pub ledger_import_id: String,
+    pub trial_balance_import_id: String,
+    pub ledger_account_key: String,
+    pub ledger_account_text: String,
+    pub trial_balance_account_id: String,
+    pub trial_balance_account_code_text: Option<String>,
+    pub trial_balance_account_name_text: String,
+    pub trial_balance_source_row_number: u64,
+    pub trial_balance_source_row_hash: Vec<u8>,
+    pub version_number: u64,
+    pub supersedes_mapping_id: Option<String>,
+    pub mapped_at_ms: i64,
+}
+
+struct TrialBalanceMappingTarget {
+    trial_balance_import_id: String,
+    account_code_text: Option<String>,
+    account_name_text: String,
+    source_row_number: i64,
+    source_row_hash: Vec<u8>,
 }
 
 struct FirmLibraryItemIdentity {
@@ -4107,6 +4149,20 @@ fn normalize_domain_label(
     Ok(normalized)
 }
 
+fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if normalized.is_empty() || normalized.chars().count() > 500 {
+        return Err(PersistenceError::Configuration(
+            "ledger account key must contain 1 to 500 characters".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
 fn normalize_optional_domain_text(value: Option<&str>, max_chars: usize) -> Option<String> {
     value.and_then(|raw| {
         let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -5543,6 +5599,374 @@ pub fn list_ledger_imports(
             amount_scale: amount_scale.max(0) as u32,
             transaction_count: transaction_count.max(0) as u64,
             imported_at_ms: row.get(15)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+fn ledger_account_summaries_from_connection(
+    connection: &Connection,
+    ledger_import_id: &str,
+) -> Result<Vec<LedgerAccountSummaryRecord>, PersistenceError> {
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM ledger_imports
+            WHERE ledger_import_id = ?1
+        )",
+        [ledger_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "ledger import {ledger_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT account_text, amount_minor, source_row_number
+         FROM ledger_transactions
+         WHERE ledger_import_id = ?1
+           AND account_text IS NOT NULL
+           AND length(trim(account_text)) > 0
+         ORDER BY source_row_number, ledger_transaction_id",
+    )?;
+    let rows = statement.query_map([ledger_import_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    #[derive(Debug)]
+    struct SummaryAccumulator {
+        account_text: String,
+        transaction_count: u64,
+        total_minor: i64,
+        first_source_row_number: u64,
+        last_source_row_number: u64,
+    }
+
+    let mut summaries = BTreeMap::<String, SummaryAccumulator>::new();
+    for row in rows {
+        let (account_text, amount_minor, source_row_number) = row?;
+        let account_key = normalize_ledger_account_key(&account_text)?;
+        let source_row_number = source_row_number.max(0) as u64;
+
+        if let Some(summary) = summaries.get_mut(&account_key) {
+            summary.transaction_count =
+                summary.transaction_count.checked_add(1).ok_or_else(|| {
+                    PersistenceError::Configuration(
+                        "ledger account transaction count exceeds supported range".to_string(),
+                    )
+                })?;
+            summary.total_minor =
+                summary
+                    .total_minor
+                    .checked_add(amount_minor)
+                    .ok_or_else(|| {
+                        PersistenceError::Configuration(
+                            "ledger account total exceeds supported range".to_string(),
+                        )
+                    })?;
+            summary.last_source_row_number = source_row_number;
+        } else {
+            summaries.insert(
+                account_key,
+                SummaryAccumulator {
+                    account_text,
+                    transaction_count: 1,
+                    total_minor: amount_minor,
+                    first_source_row_number: source_row_number,
+                    last_source_row_number: source_row_number,
+                },
+            );
+        }
+    }
+
+    Ok(summaries
+        .into_iter()
+        .map(|(account_key, summary)| LedgerAccountSummaryRecord {
+            ledger_import_id: ledger_import_id.to_string(),
+            account_key,
+            account_text: summary.account_text,
+            transaction_count: summary.transaction_count,
+            total_minor: summary.total_minor,
+            first_source_row_number: summary.first_source_row_number,
+            last_source_row_number: summary.last_source_row_number,
+        })
+        .collect())
+}
+
+pub fn list_ledger_account_summaries(
+    database_path: &Path,
+    ledger_import_id: &str,
+) -> Result<Vec<LedgerAccountSummaryRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    ledger_account_summaries_from_connection(&connection, ledger_import_id)
+}
+
+pub fn create_ledger_tb_mapping(
+    database_path: &Path,
+    ledger_import_id: &str,
+    trial_balance_import_id: &str,
+    ledger_account_key: &str,
+    trial_balance_account_id: &str,
+) -> Result<LedgerTbMappingRecord, PersistenceError> {
+    let ledger_account_key = normalize_ledger_account_key(ledger_account_key)?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let import_pair: Option<(String, i64, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                li.engagement_id,
+                li.amount_scale,
+                tbi.engagement_id,
+                tbi.amount_scale
+             FROM ledger_imports li
+             CROSS JOIN trial_balance_imports tbi
+             WHERE li.ledger_import_id = ?1
+               AND tbi.trial_balance_import_id = ?2",
+            params![ledger_import_id, trial_balance_import_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((
+        ledger_engagement_id,
+        ledger_amount_scale,
+        trial_balance_engagement_id,
+        trial_balance_amount_scale,
+    )) = import_pair
+    else {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must both exist".to_string(),
+        ));
+    };
+    if ledger_engagement_id != trial_balance_engagement_id {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must belong to the same engagement".to_string(),
+        ));
+    }
+    if ledger_amount_scale != trial_balance_amount_scale {
+        return Err(PersistenceError::Configuration(
+            "ledger and Trial Balance imports must use the same amount scale".to_string(),
+        ));
+    }
+
+    let summaries = ledger_account_summaries_from_connection(&transaction, ledger_import_id)?;
+    let ledger_summary = summaries
+        .into_iter()
+        .find(|summary| summary.account_key == ledger_account_key)
+        .ok_or_else(|| {
+            PersistenceError::Configuration(
+                "ledger account key does not exist in the selected immutable ledger import"
+                    .to_string(),
+            )
+        })?;
+
+    let trial_balance_account: Option<TrialBalanceMappingTarget> = transaction
+        .query_row(
+            "SELECT
+                trial_balance_import_id,
+                account_code_text,
+                account_name_text,
+                source_row_number,
+                source_row_hash
+             FROM trial_balance_accounts
+             WHERE trial_balance_account_id = ?1",
+            [trial_balance_account_id],
+            |row| {
+                Ok(TrialBalanceMappingTarget {
+                    trial_balance_import_id: row.get(0)?,
+                    account_code_text: row.get(1)?,
+                    account_name_text: row.get(2)?,
+                    source_row_number: row.get(3)?,
+                    source_row_hash: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(trial_balance_account) = trial_balance_account else {
+        return Err(PersistenceError::Configuration(format!(
+            "Trial Balance account {trial_balance_account_id} does not exist"
+        )));
+    };
+    if trial_balance_account.trial_balance_import_id != trial_balance_import_id {
+        return Err(PersistenceError::Configuration(
+            "selected Trial Balance account does not belong to the selected immutable import"
+                .to_string(),
+        ));
+    }
+
+    let latest_mapping: Option<(String, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                ledger_tb_mapping_id,
+                trial_balance_account_id,
+                version_number
+             FROM ledger_tb_mappings
+             WHERE ledger_import_id = ?1
+               AND trial_balance_import_id = ?2
+               AND ledger_account_key = ?3
+             ORDER BY version_number DESC
+             LIMIT 1",
+            params![
+                ledger_import_id,
+                trial_balance_import_id,
+                &ledger_account_key
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+
+    if latest_mapping
+        .as_ref()
+        .is_some_and(|(_, account_id, _)| account_id == trial_balance_account_id)
+    {
+        return Err(PersistenceError::Configuration(
+            "ledger account is already mapped to the selected Trial Balance account".to_string(),
+        ));
+    }
+
+    let (supersedes_mapping_id, version_number) = match latest_mapping {
+        Some((mapping_id, _, version_number)) => (
+            Some(mapping_id),
+            version_number.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "ledger to Trial Balance mapping version exceeds supported range".to_string(),
+                )
+            })?,
+        ),
+        None => (None, 1),
+    };
+    let version_number_u64 = version_number.max(0) as u64;
+    let trial_balance_source_row_number = trial_balance_account.source_row_number.max(0) as u64;
+    let ledger_tb_mapping_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO ledger_tb_mappings (
+            ledger_tb_mapping_id,
+            ledger_import_id,
+            trial_balance_import_id,
+            ledger_account_key,
+            ledger_account_text,
+            trial_balance_account_id,
+            version_number,
+            supersedes_mapping_id,
+            mapped_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &ledger_tb_mapping_id,
+            ledger_import_id,
+            trial_balance_import_id,
+            &ledger_account_key,
+            &ledger_summary.account_text,
+            trial_balance_account_id,
+            version_number,
+            supersedes_mapping_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_TB_MAPPING_CREATED",
+            entity_type: "LEDGER_TB_MAPPING",
+            entity_id: &ledger_tb_mapping_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(&ledger_engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "ledgerImportId": ledger_import_id,
+                "trialBalanceImportId": trial_balance_import_id,
+                "ledgerAccountKey": ledger_account_key,
+                "ledgerAccountText": ledger_summary.account_text,
+                "trialBalanceAccountId": trial_balance_account_id,
+                "versionNumber": version_number_u64,
+                "supersedesMappingId": supersedes_mapping_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerTbMappingRecord {
+        ledger_tb_mapping_id,
+        ledger_import_id: ledger_import_id.to_string(),
+        trial_balance_import_id: trial_balance_import_id.to_string(),
+        ledger_account_key,
+        ledger_account_text: ledger_summary.account_text,
+        trial_balance_account_id: trial_balance_account_id.to_string(),
+        trial_balance_account_code_text: trial_balance_account.account_code_text,
+        trial_balance_account_name_text: trial_balance_account.account_name_text,
+        trial_balance_source_row_number,
+        trial_balance_source_row_hash: trial_balance_account.source_row_hash,
+        version_number: version_number_u64,
+        supersedes_mapping_id,
+        mapped_at_ms: now,
+    })
+}
+
+pub fn list_current_ledger_tb_mappings(
+    database_path: &Path,
+    ledger_import_id: &str,
+    trial_balance_import_id: &str,
+) -> Result<Vec<LedgerTbMappingRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            m.ledger_tb_mapping_id,
+            m.ledger_import_id,
+            m.trial_balance_import_id,
+            m.ledger_account_key,
+            m.ledger_account_text,
+            m.trial_balance_account_id,
+            a.account_code_text,
+            a.account_name_text,
+            a.source_row_number,
+            a.source_row_hash,
+            m.version_number,
+            m.supersedes_mapping_id,
+            m.mapped_at_ms
+         FROM ledger_tb_mappings m
+         JOIN trial_balance_accounts a
+           ON a.trial_balance_account_id = m.trial_balance_account_id
+         WHERE m.ledger_import_id = ?1
+           AND m.trial_balance_import_id = ?2
+           AND NOT EXISTS (
+               SELECT 1
+               FROM ledger_tb_mappings newer
+               WHERE newer.ledger_import_id = m.ledger_import_id
+                 AND newer.trial_balance_import_id = m.trial_balance_import_id
+                 AND newer.ledger_account_key = m.ledger_account_key
+                 AND newer.version_number > m.version_number
+           )
+         ORDER BY m.ledger_account_key, m.version_number DESC",
+    )?;
+    let rows = statement.query_map(params![ledger_import_id, trial_balance_import_id], |row| {
+        let trial_balance_source_row_number: i64 = row.get(8)?;
+        let version_number: i64 = row.get(10)?;
+        Ok(LedgerTbMappingRecord {
+            ledger_tb_mapping_id: row.get(0)?,
+            ledger_import_id: row.get(1)?,
+            trial_balance_import_id: row.get(2)?,
+            ledger_account_key: row.get(3)?,
+            ledger_account_text: row.get(4)?,
+            trial_balance_account_id: row.get(5)?,
+            trial_balance_account_code_text: row.get(6)?,
+            trial_balance_account_name_text: row.get(7)?,
+            trial_balance_source_row_number: trial_balance_source_row_number.max(0) as u64,
+            trial_balance_source_row_hash: row.get(9)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_mapping_id: row.get(11)?,
+            mapped_at_ms: row.get(12)?,
         })
     })?;
 
@@ -9968,7 +10392,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 14);
+        assert_eq!(migration_count, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10017,14 +10441,15 @@ mod tests {
                        'ledger_test_runs',
                        'ledger_exceptions',
                        'trial_balance_imports',
-                       'trial_balance_accounts'
+                       'trial_balance_accounts',
+                       'ledger_tb_mappings'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 43);
+        assert_eq!(table_count, 44);
     }
 
     #[test]
@@ -10060,7 +10485,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10101,14 +10526,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 14");
+        initialize_database(&database.path).expect("database should upgrade through version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_exists: i64 = connection
             .query_row(
@@ -10150,14 +10575,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 14");
+        initialize_database(&database.path).expect("database should upgrade through version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10202,14 +10627,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_exists: bool = connection
             .query_row(
@@ -10251,14 +10676,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10308,14 +10733,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10360,14 +10785,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10412,14 +10837,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10464,14 +10889,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10515,14 +10940,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10566,14 +10991,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10630,14 +11055,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -10689,14 +11114,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 14");
+        initialize_database(&database.path).expect("database should upgrade to version 15");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 14);
+        assert_eq!(user_version, 15);
 
         let table_count: i64 = connection
             .query_row(
@@ -10711,6 +11136,55 @@ mod tests {
             )
             .expect("trial balance tables should exist");
         assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn fifteenth_migration_adds_immutable_ledger_tb_mappings() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..14] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 14);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 15");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 15);
+
+        let table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'ledger_tb_mappings'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ledger to Trial Balance mapping table should exist");
+        assert!(table_exists);
     }
 
     #[test]
@@ -11077,6 +11551,83 @@ mod tests {
         assert_eq!(comparison.movements[0].source_row_number, 3);
         assert_eq!(comparison.movements[1].account_name_text, "Cash");
         assert_eq!(comparison.movements[1].movement_minor, 20_000);
+
+        let ledger_account_summaries =
+            list_ledger_account_summaries(&database.path, &ledger_import.ledger_import_id)
+                .expect("ledger account summaries");
+        assert_eq!(ledger_account_summaries.len(), 1);
+        assert_eq!(ledger_account_summaries[0].account_key, "revenue");
+        assert_eq!(ledger_account_summaries[0].account_text, "Revenue");
+        assert_eq!(ledger_account_summaries[0].transaction_count, 4);
+        assert_eq!(ledger_account_summaries[0].total_minor, 9_999);
+        assert_eq!(ledger_account_summaries[0].first_source_row_number, 2);
+        assert_eq!(ledger_account_summaries[0].last_source_row_number, 5);
+
+        let first_mapping = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "  Revenue ",
+            &trial_balance_accounts[1].trial_balance_account_id,
+        )
+        .expect("initial ledger to Trial Balance mapping");
+        assert_eq!(first_mapping.version_number, 1);
+        assert_eq!(first_mapping.ledger_account_key, "revenue");
+        assert_eq!(first_mapping.trial_balance_account_name_text, "Revenue");
+        assert_eq!(first_mapping.supersedes_mapping_id, None);
+
+        let duplicate_mapping_error = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "REVENUE",
+            &trial_balance_accounts[1].trial_balance_account_id,
+        )
+        .expect_err("mapping the same account to the same TB account should be rejected");
+        assert!(duplicate_mapping_error
+            .to_string()
+            .contains("already mapped"));
+
+        let second_mapping = create_ledger_tb_mapping(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+            "revenue",
+            &trial_balance_accounts[0].trial_balance_account_id,
+        )
+        .expect("ledger account remap should append a new version");
+        assert_eq!(second_mapping.version_number, 2);
+        assert_eq!(
+            second_mapping.supersedes_mapping_id.as_deref(),
+            Some(first_mapping.ledger_tb_mapping_id.as_str())
+        );
+        assert_eq!(second_mapping.trial_balance_account_name_text, "Cash");
+
+        let current_mappings = list_current_ledger_tb_mappings(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("current ledger to Trial Balance mappings");
+        assert_eq!(current_mappings.len(), 1);
+        assert_eq!(
+            current_mappings[0].ledger_tb_mapping_id,
+            second_mapping.ledger_tb_mapping_id
+        );
+        assert_eq!(current_mappings[0].version_number, 2);
+        assert_eq!(current_mappings[0].trial_balance_account_name_text, "Cash");
+
+        let mapping_mutation_error = connection
+            .execute(
+                "UPDATE ledger_tb_mappings
+                 SET ledger_account_text = 'Changed'
+                 WHERE ledger_tb_mapping_id = ?1",
+                [&first_mapping.ledger_tb_mapping_id],
+            )
+            .expect_err("ledger to Trial Balance mapping history must be immutable");
+        assert!(mapping_mutation_error
+            .to_string()
+            .contains("ledger to trial balance mappings are immutable"));
 
         let trial_balance_mutation_error = connection
             .execute(
