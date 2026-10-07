@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 12;
+const LATEST_SCHEMA_VERSION: i64 = 13;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -86,6 +86,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         name: "ledger_scrutiny",
         sql: include_str!("../migrations/0012_ledger_scrutiny.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "narrow_ledger_provenance",
+        sql: include_str!("../migrations/0013_narrow_ledger_provenance.sql"),
     },
 ];
 
@@ -342,7 +347,6 @@ pub struct LedgerImportRecord {
 #[derive(Debug, Clone)]
 pub struct LedgerTransactionInput {
     pub source_row_number: u64,
-    pub source_row_json: String,
     pub source_row_hash: Vec<u8>,
     pub transaction_date_text: Option<String>,
     pub account_text: Option<String>,
@@ -1221,7 +1225,7 @@ pub fn persist_index_batch(
                 os_error_code,
                 message,
                 observed_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 Uuid::new_v4().to_string(),
                 index_job_id,
@@ -5219,8 +5223,7 @@ pub fn create_ledger_import(
                 "ledger transaction source row must be at least 1".to_string(),
             ));
         }
-        if transaction.source_row_json.trim().is_empty() || transaction.source_row_hash.len() != 32
-        {
+        if transaction.source_row_hash.len() != 32 {
             return Err(PersistenceError::Configuration(
                 "ledger transaction provenance is incomplete".to_string(),
             ));
@@ -5339,7 +5342,6 @@ pub fn create_ledger_import(
                 ledger_transaction_id,
                 ledger_import_id,
                 source_row_number,
-                source_row_json,
                 source_row_hash,
                 transaction_date_text,
                 account_text,
@@ -5352,7 +5354,6 @@ pub fn create_ledger_import(
                 Uuid::new_v4().to_string(),
                 &ledger_import_id,
                 u64_to_i64(ledger_transaction.source_row_number)?,
-                &ledger_transaction.source_row_json,
                 &ledger_transaction.source_row_hash,
                 ledger_transaction.transaction_date_text.as_deref(),
                 ledger_transaction.account_text.as_deref(),
@@ -9351,7 +9352,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 12);
+        assert_eq!(migration_count, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9441,7 +9442,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9489,7 +9490,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_exists: i64 = connection
             .query_row(
@@ -9538,7 +9539,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9583,14 +9584,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_exists: bool = connection
             .query_row(
@@ -9632,14 +9633,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9689,14 +9690,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9741,14 +9742,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9793,14 +9794,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9845,14 +9846,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9896,14 +9897,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9947,14 +9948,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 12");
+        initialize_database(&database.path).expect("database should upgrade to version 13");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
 
         let table_count: i64 = connection
             .query_row(
@@ -9971,6 +9972,76 @@ mod tests {
             )
             .expect("ledger scrutiny tables should exist");
         assert_eq!(table_count, 4);
+    }
+
+    #[test]
+    fn thirteenth_migration_drops_redundant_ledger_row_payloads() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..12] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 12);
+
+            let source_row_json_column_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM pragma_table_info('ledger_transactions')
+                     WHERE name = 'source_row_json'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("v12 ledger schema should expose source row JSON");
+            assert_eq!(source_row_json_column_count, 1);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 13");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 13);
+
+        let source_row_json_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM pragma_table_info('ledger_transactions')
+                 WHERE name = 'source_row_json'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("v13 ledger schema should be queryable");
+        assert_eq!(source_row_json_column_count, 0);
+
+        let source_row_hash_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM pragma_table_info('ledger_transactions')
+                 WHERE name = 'source_row_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("row hash column should remain");
+        assert_eq!(source_row_hash_column_count, 1);
     }
 
     #[test]
@@ -10161,7 +10232,6 @@ mod tests {
             LedgerTransactionInput {
                 source_row_number,
                 source_row_hash: Sha256::digest(source_row_json.as_bytes()).to_vec(),
-                source_row_json,
                 transaction_date_text: Some("2026-03-31".to_string()),
                 account_text: Some("Revenue".to_string()),
                 voucher_text: Some(format!("JV-{source_row_number}")),
