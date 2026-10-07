@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 11;
+const LATEST_SCHEMA_VERSION: i64 = 12;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -81,6 +81,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "firm_library",
         sql: include_str!("../migrations/0011_firm_library.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "ledger_scrutiny",
+        sql: include_str!("../migrations/0012_ledger_scrutiny.sql"),
     },
 ];
 
@@ -225,6 +230,17 @@ pub struct ControlledEvidenceVersionRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct ControlledEvidenceReadRecord {
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub controlled_storage_locator: String,
+    pub sha256: Vec<u8>,
+    pub size_bytes: u64,
+    pub verification_state: String,
+    pub retention_state: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct DocumentVersionHistoryRecord {
     pub content_version_id: String,
     pub observed_at_ms: i64,
@@ -300,6 +316,83 @@ pub struct FirmLibraryVersionRecord {
     pub version_number: u64,
     pub definition_json: String,
     pub definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerImportRecord {
+    pub ledger_import_id: String,
+    pub engagement_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: String,
+    pub header_row_number: u64,
+    pub amount_column: u32,
+    pub date_column: Option<u32>,
+    pub account_column: Option<u32>,
+    pub voucher_column: Option<u32>,
+    pub narration_column: Option<u32>,
+    pub amount_scale: u32,
+    pub transaction_count: u64,
+    pub imported_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerTransactionInput {
+    pub source_row_number: u64,
+    pub source_row_json: String,
+    pub source_row_hash: Vec<u8>,
+    pub transaction_date_text: Option<String>,
+    pub account_text: Option<String>,
+    pub voucher_text: Option<String>,
+    pub narration_text: Option<String>,
+    pub amount_minor: i64,
+}
+
+pub struct LedgerImportDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub controlled_evidence_version_id: &'a str,
+    pub sheet_name: &'a str,
+    pub header_row_number: u64,
+    pub amount_column: u32,
+    pub date_column: Option<u32>,
+    pub account_column: Option<u32>,
+    pub voucher_column: Option<u32>,
+    pub narration_column: Option<u32>,
+    pub amount_scale: u32,
+    pub transactions: &'a [LedgerTransactionInput],
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerTestRunRecord {
+    pub ledger_test_run_id: String,
+    pub ledger_import_id: String,
+    pub test_type: String,
+    pub threshold_minor: i64,
+    pub exception_count: u64,
+    pub ran_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LedgerExceptionRecord {
+    pub ledger_exception_id: String,
+    pub ledger_test_run_id: String,
+    pub ledger_transaction_id: String,
+    pub exception_code: String,
+    pub amount_minor: i64,
+    pub transaction_date_text: Option<String>,
+    pub account_text: Option<String>,
+    pub voucher_text: Option<String>,
+    pub narration_text: Option<String>,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: String,
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
     pub created_at_ms: i64,
 }
 
@@ -3133,6 +3226,42 @@ pub fn begin_evidence_capture(
     })
 }
 
+pub fn get_controlled_evidence_read_record(
+    database_path: &Path,
+    controlled_evidence_version_id: &str,
+) -> Result<Option<ControlledEvidenceReadRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    connection
+        .query_row(
+            "SELECT
+                cev.controlled_evidence_version_id,
+                cev.document_id,
+                cev.controlled_storage_locator,
+                cev.sha256,
+                cev.size_bytes,
+                cev.verification_state,
+                cev.retention_state
+             FROM controlled_evidence_versions cev
+             JOIN documents d ON d.document_id = cev.document_id
+             WHERE cev.controlled_evidence_version_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok(ControlledEvidenceReadRecord {
+                    controlled_evidence_version_id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    controlled_storage_locator: row.get(2)?,
+                    sha256: row.get(3)?,
+                    size_bytes: row.get::<_, i64>(4)?.max(0) as u64,
+                    verification_state: row.get(5)?,
+                    retention_state: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
 pub fn list_document_version_history(
     database_path: &Path,
     document_id: &str,
@@ -5037,6 +5166,476 @@ pub fn list_firm_library_versions(
             definition_json: row.get(3)?,
             definition_hash: row.get(4)?,
             created_at_ms: row.get(5)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_ledger_import(
+    database_path: &Path,
+    definition: LedgerImportDefinition<'_>,
+) -> Result<LedgerImportRecord, PersistenceError> {
+    let LedgerImportDefinition {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        amount_column,
+        date_column,
+        account_column,
+        voucher_column,
+        narration_column,
+        amount_scale,
+        transactions,
+    } = definition;
+    let sheet_name = sheet_name.trim();
+    if sheet_name.is_empty()
+        || sheet_name.chars().count() > 255
+        || sheet_name.chars().any(|character| character.is_control())
+    {
+        return Err(PersistenceError::Configuration(
+            "ledger worksheet name must contain 1 to 255 printable characters".to_string(),
+        ));
+    }
+    if header_row_number == 0 {
+        return Err(PersistenceError::Configuration(
+            "ledger header row number must be at least 1".to_string(),
+        ));
+    }
+    if amount_scale > 6 {
+        return Err(PersistenceError::Configuration(
+            "ledger amount scale must be between 0 and 6".to_string(),
+        ));
+    }
+
+    for transaction in transactions {
+        if transaction.source_row_number == 0 {
+            return Err(PersistenceError::Configuration(
+                "ledger transaction source row must be at least 1".to_string(),
+            ));
+        }
+        if transaction.source_row_json.trim().is_empty() || transaction.source_row_hash.len() != 32
+        {
+            return Err(PersistenceError::Configuration(
+                "ledger transaction provenance is incomplete".to_string(),
+            ));
+        }
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "ledger imports require retained hash-verified controlled evidence".to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled ledger evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let ledger_import_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO ledger_imports (
+            ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            amount_column,
+            date_column,
+            account_column,
+            voucher_column,
+            narration_column,
+            amount_scale,
+            transaction_count,
+            imported_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+         )",
+        params![
+            &ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            sheet_name,
+            u64_to_i64(header_row_number)?,
+            i64::from(amount_column),
+            date_column.map(i64::from),
+            account_column.map(i64::from),
+            voucher_column.map(i64::from),
+            narration_column.map(i64::from),
+            i64::from(amount_scale),
+            u64_to_i64(transactions.len() as u64)?,
+            now
+        ],
+    )?;
+
+    for ledger_transaction in transactions {
+        transaction.execute(
+            "INSERT INTO ledger_transactions (
+                ledger_transaction_id,
+                ledger_import_id,
+                source_row_number,
+                source_row_json,
+                source_row_hash,
+                transaction_date_text,
+                account_text,
+                voucher_text,
+                narration_text,
+                amount_minor,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                Uuid::new_v4().to_string(),
+                &ledger_import_id,
+                u64_to_i64(ledger_transaction.source_row_number)?,
+                &ledger_transaction.source_row_json,
+                &ledger_transaction.source_row_hash,
+                ledger_transaction.transaction_date_text.as_deref(),
+                ledger_transaction.account_text.as_deref(),
+                ledger_transaction.voucher_text.as_deref(),
+                ledger_transaction.narration_text.as_deref(),
+                ledger_transaction.amount_minor,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_IMPORTED",
+            entity_type: "LEDGER_IMPORT",
+            entity_id: &ledger_import_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "sheetName": sheet_name,
+                "transactionCount": transactions.len(),
+                "amountScale": amount_scale
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerImportRecord {
+        ledger_import_id,
+        engagement_id: engagement_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        sheet_name: sheet_name.to_string(),
+        header_row_number,
+        amount_column,
+        date_column,
+        account_column,
+        voucher_column,
+        narration_column,
+        amount_scale,
+        transaction_count: transactions.len() as u64,
+        imported_at_ms: now,
+    })
+}
+
+pub fn list_ledger_imports(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<LedgerImportRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            amount_column,
+            date_column,
+            account_column,
+            voucher_column,
+            narration_column,
+            amount_scale,
+            transaction_count,
+            imported_at_ms
+         FROM ledger_imports
+         WHERE engagement_id = ?1
+         ORDER BY imported_at_ms DESC, ledger_import_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let header_row_number: i64 = row.get(7)?;
+        let amount_column: i64 = row.get(8)?;
+        let date_column: Option<i64> = row.get(9)?;
+        let account_column: Option<i64> = row.get(10)?;
+        let voucher_column: Option<i64> = row.get(11)?;
+        let narration_column: Option<i64> = row.get(12)?;
+        let amount_scale: i64 = row.get(13)?;
+        let transaction_count: i64 = row.get(14)?;
+        Ok(LedgerImportRecord {
+            ledger_import_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            sheet_name: row.get(6)?,
+            header_row_number: header_row_number.max(0) as u64,
+            amount_column: amount_column.max(0) as u32,
+            date_column: date_column.map(|value| value.max(0) as u32),
+            account_column: account_column.map(|value| value.max(0) as u32),
+            voucher_column: voucher_column.map(|value| value.max(0) as u32),
+            narration_column: narration_column.map(|value| value.max(0) as u32),
+            amount_scale: amount_scale.max(0) as u32,
+            transaction_count: transaction_count.max(0) as u64,
+            imported_at_ms: row.get(15)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn run_high_value_ledger_test(
+    database_path: &Path,
+    ledger_import_id: &str,
+    threshold_minor: i64,
+) -> Result<LedgerTestRunRecord, PersistenceError> {
+    if threshold_minor <= 0 {
+        return Err(PersistenceError::Configuration(
+            "high-value threshold must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let import_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM ledger_imports
+            WHERE ledger_import_id = ?1
+        )",
+        [ledger_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "ledger import {ledger_import_id} does not exist"
+        )));
+    }
+
+    let transaction_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT ledger_transaction_id
+             FROM ledger_transactions
+             WHERE ledger_import_id = ?1
+               AND (amount_minor >= ?2 OR amount_minor <= -?2)
+             ORDER BY source_row_number, ledger_transaction_id",
+        )?;
+        let rows = statement.query_map(params![ledger_import_id, threshold_minor], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    let ledger_test_run_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let parameters_json = json!({
+        "thresholdMinor": threshold_minor
+    })
+    .to_string();
+    transaction.execute(
+        "INSERT INTO ledger_test_runs (
+            ledger_test_run_id,
+            ledger_import_id,
+            test_type,
+            parameters_json,
+            exception_count,
+            ran_at_ms
+         ) VALUES (?1, ?2, 'HIGH_VALUE', ?3, ?4, ?5)",
+        params![
+            &ledger_test_run_id,
+            ledger_import_id,
+            &parameters_json,
+            u64_to_i64(transaction_ids.len() as u64)?,
+            now
+        ],
+    )?;
+
+    for ledger_transaction_id in &transaction_ids {
+        transaction.execute(
+            "INSERT INTO ledger_exceptions (
+                ledger_exception_id,
+                ledger_test_run_id,
+                ledger_transaction_id,
+                exception_code,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, 'HIGH_VALUE', ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                &ledger_test_run_id,
+                ledger_transaction_id,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_TEST_RUN_COMPLETED",
+            entity_type: "LEDGER_TEST_RUN",
+            entity_id: &ledger_test_run_id,
+            related_entity_type: Some("LEDGER_IMPORT"),
+            related_entity_id: Some(ledger_import_id),
+            occurred_at_ms: now,
+            details: json!({
+                "testType": "HIGH_VALUE",
+                "thresholdMinor": threshold_minor,
+                "exceptionCount": transaction_ids.len()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerTestRunRecord {
+        ledger_test_run_id,
+        ledger_import_id: ledger_import_id.to_string(),
+        test_type: "HIGH_VALUE".to_string(),
+        threshold_minor,
+        exception_count: transaction_ids.len() as u64,
+        ran_at_ms: now,
+    })
+}
+
+pub fn list_ledger_exceptions(
+    database_path: &Path,
+    ledger_test_run_id: &str,
+) -> Result<Vec<LedgerExceptionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            e.ledger_exception_id,
+            e.ledger_test_run_id,
+            t.ledger_transaction_id,
+            e.exception_code,
+            t.amount_minor,
+            t.transaction_date_text,
+            t.account_text,
+            t.voucher_text,
+            t.narration_text,
+            i.controlled_evidence_version_id,
+            i.document_id,
+            i.source_content_version_id,
+            i.source_sha256,
+            i.sheet_name,
+            t.source_row_number,
+            t.source_row_hash,
+            e.created_at_ms
+         FROM ledger_exceptions e
+         JOIN ledger_transactions t
+           ON t.ledger_transaction_id = e.ledger_transaction_id
+         JOIN ledger_imports i
+           ON i.ledger_import_id = t.ledger_import_id
+         WHERE e.ledger_test_run_id = ?1
+         ORDER BY t.source_row_number, e.ledger_exception_id",
+    )?;
+    let rows = statement.query_map([ledger_test_run_id], |row| {
+        let source_row_number: i64 = row.get(14)?;
+        Ok(LedgerExceptionRecord {
+            ledger_exception_id: row.get(0)?,
+            ledger_test_run_id: row.get(1)?,
+            ledger_transaction_id: row.get(2)?,
+            exception_code: row.get(3)?,
+            amount_minor: row.get(4)?,
+            transaction_date_text: row.get(5)?,
+            account_text: row.get(6)?,
+            voucher_text: row.get(7)?,
+            narration_text: row.get(8)?,
+            controlled_evidence_version_id: row.get(9)?,
+            document_id: row.get(10)?,
+            source_content_version_id: row.get(11)?,
+            source_sha256: row.get(12)?,
+            sheet_name: row.get(13)?,
+            source_row_number: source_row_number.max(0) as u64,
+            source_row_hash: row.get(15)?,
+            created_at_ms: row.get(16)?,
         })
     })?;
 
@@ -8752,7 +9351,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 11);
+        assert_eq!(migration_count, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -8795,14 +9394,18 @@ mod tests {
                        'engagement_templates',
                        'engagement_template_versions',
                        'firm_library_items',
-                       'firm_library_versions'
+                       'firm_library_versions',
+                       'ledger_imports',
+                       'ledger_transactions',
+                       'ledger_test_runs',
+                       'ledger_exceptions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 37);
+        assert_eq!(table_count, 41);
     }
 
     #[test]
@@ -8838,7 +9441,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -8879,14 +9482,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 11");
+        initialize_database(&database.path).expect("database should upgrade through version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_exists: i64 = connection
             .query_row(
@@ -8928,14 +9531,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 11");
+        initialize_database(&database.path).expect("database should upgrade through version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -8980,14 +9583,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_exists: bool = connection
             .query_row(
@@ -9029,14 +9632,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9086,14 +9689,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9138,14 +9741,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9190,14 +9793,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9242,14 +9845,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9293,14 +9896,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 11");
+        initialize_database(&database.path).expect("database should upgrade to version 12");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9315,6 +9918,337 @@ mod tests {
             )
             .expect("firm library tables should exist");
         assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn twelfth_migration_upgrades_existing_v11_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..11] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 11);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 12");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 12);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'ledger_imports',
+                       'ledger_transactions',
+                       'ledger_test_runs',
+                       'ledger_exceptions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ledger scrutiny tables should exist");
+        assert_eq!(table_count, 4);
+    }
+
+    #[test]
+    fn high_value_ledger_test_is_deterministic_and_source_traceable() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Ledger Client").expect("client");
+        let service = create_service_type(&database.path, "Statutory Audit").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "FY 2026-27 statutory audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+
+        let storage_root_id = Uuid::new_v4().to_string();
+        let document_id = Uuid::new_v4().to_string();
+        let file_instance_id = Uuid::new_v4().to_string();
+        let content_version_id = Uuid::new_v4().to_string();
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_evidence_version_id = Uuid::new_v4().to_string();
+        let source_sha256 = vec![0xAB; 32];
+
+        {
+            let connection =
+                open_configured_connection(&database.path).expect("database should open");
+            connection
+                .execute(
+                    "INSERT INTO storage_roots (
+                        storage_root_id,
+                        kind,
+                        native_locator,
+                        native_locator_encoding,
+                        display_locator,
+                        canonical_native_locator,
+                        canonical_display_locator,
+                        availability_state,
+                        approved_at_ms,
+                        approved_by,
+                        created_at_ms,
+                        updated_at_ms
+                     ) VALUES (?1, 'LOCAL', ?2, 'TEST', '/controlled-test', NULL, NULL, 'AVAILABLE', 1, NULL, 1, 1)",
+                    params![&storage_root_id, vec![0_u8]],
+                )
+                .expect("storage root should insert");
+            connection
+                .execute(
+                    "INSERT INTO documents (
+                        document_id,
+                        storage_state,
+                        display_name,
+                        created_at_ms,
+                        created_by,
+                        archived_at_ms
+                     ) VALUES (?1, 'CONTROLLED_EVIDENCE', 'Ledger.xlsx', 1, NULL, NULL)",
+                    [&document_id],
+                )
+                .expect("document should insert");
+            connection
+                .execute(
+                    "INSERT INTO file_instances (
+                        file_instance_id,
+                        document_id,
+                        storage_root_id,
+                        relative_path_native,
+                        path_native_encoding,
+                        relative_path_display,
+                        relative_path_search,
+                        filesystem_identity,
+                        volume_identity,
+                        creation_time_ms,
+                        last_write_time_ms,
+                        size_bytes,
+                        file_attributes,
+                        reparse_tag,
+                        first_seen_at_ms,
+                        last_seen_at_ms,
+                        first_seen_generation_id,
+                        last_seen_generation_id,
+                        availability_state
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, 'TEST', 'Ledger.xlsx', 'ledger xlsx',
+                        NULL, NULL, NULL, NULL, 128, NULL, NULL, 1, 1, NULL, NULL, 'AVAILABLE'
+                     )",
+                    params![
+                        &file_instance_id,
+                        &document_id,
+                        &storage_root_id,
+                        b"Ledger.xlsx".to_vec()
+                    ],
+                )
+                .expect("file instance should insert");
+            connection
+                .execute(
+                    "INSERT INTO content_versions (
+                        content_version_id,
+                        document_id,
+                        file_instance_id,
+                        observed_at_ms,
+                        size_bytes,
+                        last_write_time_ms,
+                        quick_fingerprint,
+                        sha256,
+                        verification_state,
+                        source_stable_during_read
+                     ) VALUES (?1, ?2, ?3, 1, 128, NULL, NULL, ?4, 'HASH_VERIFIED', 1)",
+                    params![
+                        &content_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &source_sha256
+                    ],
+                )
+                .expect("content version should insert");
+            connection
+                .execute(
+                    "INSERT INTO evidence_capture_jobs (
+                        evidence_capture_job_id,
+                        file_instance_id,
+                        document_id,
+                        status,
+                        requested_at_ms,
+                        started_at_ms,
+                        completed_at_ms,
+                        capture_reason,
+                        capture_policy,
+                        failure_code,
+                        failure_message
+                     ) VALUES (?1, ?2, ?3, 'COMPLETE', 1, 1, 1, 'TEST', 'TEST', NULL, NULL)",
+                    params![&capture_job_id, &file_instance_id, &document_id],
+                )
+                .expect("capture job should insert");
+            let locator = format!("{document_id}/{controlled_evidence_version_id}");
+            connection
+                .execute(
+                    "INSERT INTO controlled_evidence_versions (
+                        controlled_evidence_version_id,
+                        document_id,
+                        source_file_instance_id,
+                        source_content_version_id,
+                        evidence_capture_job_id,
+                        version_number,
+                        controlled_storage_locator,
+                        sha256,
+                        size_bytes,
+                        captured_at_ms,
+                        captured_by,
+                        capture_reason,
+                        capture_policy,
+                        retention_state,
+                        verification_state,
+                        source_stable_during_read
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 128, 1, NULL, 'TEST', 'TEST',
+                        'RETAINED', 'HASH_VERIFIED', 1
+                     )",
+                    params![
+                        &controlled_evidence_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &content_version_id,
+                        &capture_job_id,
+                        &locator,
+                        &source_sha256
+                    ],
+                )
+                .expect("controlled evidence should insert");
+        }
+
+        let ledger_rows = [
+            (2_u64, 10_000_i64),
+            (3_u64, 100_000_i64),
+            (4_u64, -200_000_i64),
+            (5_u64, 99_999_i64),
+        ]
+        .into_iter()
+        .map(|(source_row_number, amount_minor)| {
+            let source_row_json = json!({
+                "rowNumber": source_row_number,
+                "cells": [format!("row-{source_row_number}"), amount_minor]
+            })
+            .to_string();
+            LedgerTransactionInput {
+                source_row_number,
+                source_row_hash: Sha256::digest(source_row_json.as_bytes()).to_vec(),
+                source_row_json,
+                transaction_date_text: Some("2026-03-31".to_string()),
+                account_text: Some("Revenue".to_string()),
+                voucher_text: Some(format!("JV-{source_row_number}")),
+                narration_text: Some("Ledger test row".to_string()),
+                amount_minor,
+            }
+        })
+        .collect::<Vec<_>>();
+
+        let ledger_import = create_ledger_import(
+            &database.path,
+            LedgerImportDefinition {
+                engagement_id: &engagement.engagement_id,
+                controlled_evidence_version_id: &controlled_evidence_version_id,
+                sheet_name: "Ledger",
+                header_row_number: 1,
+                amount_column: 4,
+                date_column: Some(0),
+                account_column: Some(1),
+                voucher_column: Some(2),
+                narration_column: Some(3),
+                amount_scale: 2,
+                transactions: &ledger_rows,
+            },
+        )
+        .expect("ledger import should succeed");
+        assert_eq!(ledger_import.transaction_count, 4);
+        assert_eq!(ledger_import.source_sha256, source_sha256);
+        assert_eq!(
+            ledger_import.controlled_evidence_version_id,
+            controlled_evidence_version_id
+        );
+
+        let imports =
+            list_ledger_imports(&database.path, &engagement.engagement_id).expect("imports");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].ledger_import_id, ledger_import.ledger_import_id);
+
+        let run =
+            run_high_value_ledger_test(&database.path, &ledger_import.ledger_import_id, 100_000)
+                .expect("high-value test should run");
+        assert_eq!(run.test_type, "HIGH_VALUE");
+        assert_eq!(run.threshold_minor, 100_000);
+        assert_eq!(run.exception_count, 2);
+
+        let exceptions =
+            list_ledger_exceptions(&database.path, &run.ledger_test_run_id).expect("exceptions");
+        assert_eq!(exceptions.len(), 2);
+        assert_eq!(
+            exceptions
+                .iter()
+                .map(|exception| exception.source_row_number)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        for exception in &exceptions {
+            assert_eq!(
+                exception.controlled_evidence_version_id,
+                controlled_evidence_version_id
+            );
+            assert_eq!(exception.document_id, document_id);
+            assert_eq!(exception.source_content_version_id, content_version_id);
+            assert_eq!(exception.source_sha256, source_sha256);
+            assert_eq!(exception.sheet_name, "Ledger");
+            assert_eq!(exception.source_row_hash.len(), 32);
+        }
+
+        assert!(
+            run_high_value_ledger_test(&database.path, &ledger_import.ledger_import_id, 0)
+                .expect_err("zero threshold should fail")
+                .to_string()
+                .contains("greater than zero")
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE ledger_transactions
+                 SET amount_minor = amount_minor + 1
+                 WHERE ledger_import_id = ?1",
+                [&ledger_import.ledger_import_id],
+            )
+            .expect_err("imported transactions must be immutable");
+        assert!(mutation_error
+            .to_string()
+            .contains("ledger transactions are immutable"));
     }
 
     #[test]
