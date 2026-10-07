@@ -17,7 +17,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 13;
+const LATEST_SCHEMA_VERSION: i64 = 14;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -91,6 +91,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "narrow_ledger_provenance",
         sql: include_str!("../migrations/0013_narrow_ledger_provenance.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "trial_balance",
+        sql: include_str!("../migrations/0014_trial_balance.sql"),
     },
 ];
 
@@ -397,6 +402,63 @@ pub struct LedgerExceptionRecord {
     pub sheet_name: String,
     pub source_row_number: u64,
     pub source_row_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceImportRecord {
+    pub trial_balance_import_id: String,
+    pub engagement_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: String,
+    pub header_row_number: u64,
+    pub account_name_column: u32,
+    pub account_code_column: Option<u32>,
+    pub opening_balance_column: Option<u32>,
+    pub closing_balance_column: u32,
+    pub amount_scale: u32,
+    pub account_count: u64,
+    pub opening_total_minor: i64,
+    pub closing_total_minor: i64,
+    pub imported_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceAccountInput {
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
+    pub account_code_text: Option<String>,
+    pub account_name_text: String,
+    pub opening_minor: i64,
+    pub closing_minor: i64,
+}
+
+pub struct TrialBalanceImportDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub controlled_evidence_version_id: &'a str,
+    pub sheet_name: &'a str,
+    pub header_row_number: u64,
+    pub account_name_column: u32,
+    pub account_code_column: Option<u32>,
+    pub opening_balance_column: Option<u32>,
+    pub closing_balance_column: u32,
+    pub amount_scale: u32,
+    pub accounts: &'a [TrialBalanceAccountInput],
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceAccountRecord {
+    pub trial_balance_account_id: String,
+    pub trial_balance_import_id: String,
+    pub source_row_number: u64,
+    pub source_row_hash: Vec<u8>,
+    pub account_code_text: Option<String>,
+    pub account_name_text: String,
+    pub opening_minor: i64,
+    pub closing_minor: i64,
     pub created_at_ms: i64,
 }
 
