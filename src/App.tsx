@@ -94,6 +94,27 @@ type EngagementTemplate = {
   createdAtMs: number;
 };
 
+type FirmLibraryItem = {
+  firmLibraryItemId: string;
+  category: string;
+  name: string;
+  description: string | null;
+  serviceTypeId: string | null;
+  latestVersionId: string;
+  latestVersionNumber: number;
+  latestDefinitionHashHex: string;
+  createdAtMs: number;
+};
+
+type FirmLibraryVersion = {
+  firmLibraryVersionId: string;
+  firmLibraryItemId: string;
+  versionNumber: number;
+  definitionJson: string;
+  definitionHashHex: string;
+  createdAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -738,6 +759,35 @@ function stateLabel(availabilityState: string) {
   }
 }
 
+const FIRM_LIBRARY_CATEGORIES = [
+  { key: "CHECKLIST", label: "Checklist" },
+  { key: "AUDIT_QUERY", label: "Audit query" },
+  { key: "RISK_TEMPLATE", label: "Risk template" },
+  { key: "CONTROL_TEMPLATE", label: "Control template" },
+  { key: "LEDGER_SCRUTINY_TEST", label: "Ledger-scrutiny test" },
+  { key: "REPORT_TEMPLATE", label: "Report template" },
+  { key: "MANAGEMENT_LETTER_POINT", label: "Management-letter point" },
+  {
+    key: "STATUTORY_COMPLIANCE_REQUIREMENT",
+    label: "Statutory compliance requirement",
+  },
+] as const;
+
+function firmLibraryCategoryLabel(category: string) {
+  return (
+    FIRM_LIBRARY_CATEGORIES.find((entry) => entry.key === category)?.label ?? category
+  );
+}
+
+function firmLibraryContentFromDefinition(definitionJson: string) {
+  try {
+    const definition = JSON.parse(definitionJson) as { content?: unknown };
+    return typeof definition.content === "string" ? definition.content : "";
+  } catch {
+    return "";
+  }
+}
+
 function sourceUnavailable(availabilityState: string) {
   return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
 }
@@ -766,6 +816,11 @@ export default function App() {
   const [serviceTypes, setServiceTypes] = useState<ServiceType[]>([]);
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [engagementTemplates, setEngagementTemplates] = useState<EngagementTemplate[]>([]);
+  const [firmLibraryItems, setFirmLibraryItems] = useState<FirmLibraryItem[]>([]);
+  const [selectedFirmLibraryItemId, setSelectedFirmLibraryItemId] =
+    useState<string | null>(null);
+  const [firmLibraryVersions, setFirmLibraryVersions] = useState<FirmLibraryVersion[]>([]);
+  const [firmLibraryFilterCategory, setFirmLibraryFilterCategory] = useState("");
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedEngagementId, setSelectedEngagementId] = useState<string | null>(null);
   const [engagementAreas, setEngagementAreas] = useState<EngagementArea[]>([]);
@@ -844,6 +899,12 @@ export default function App() {
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplateDescription, setNewTemplateDescription] = useState("");
   const [templateUpdateId, setTemplateUpdateId] = useState("");
+  const [newFirmLibraryCategory, setNewFirmLibraryCategory] = useState("CHECKLIST");
+  const [newFirmLibraryName, setNewFirmLibraryName] = useState("");
+  const [newFirmLibraryDescription, setNewFirmLibraryDescription] = useState("");
+  const [newFirmLibraryServiceTypeId, setNewFirmLibraryServiceTypeId] = useState("");
+  const [newFirmLibraryContent, setNewFirmLibraryContent] = useState("");
+  const [firmLibraryDraftContent, setFirmLibraryDraftContent] = useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1070,17 +1131,27 @@ export default function App() {
 
   async function refreshProfessionalWorkspace() {
     try {
-      const [clientRecords, serviceTypeRecords, engagementRecords, templateRecords] =
-        await Promise.all([
-          invoke<Client[]>("list_clients"),
-          invoke<ServiceType[]>("list_service_types"),
-          invoke<Engagement[]>("list_engagements", { clientId: null }),
-          invoke<EngagementTemplate[]>("list_engagement_templates"),
-        ]);
+      const [
+        clientRecords,
+        serviceTypeRecords,
+        engagementRecords,
+        templateRecords,
+        firmLibraryRecords,
+      ] = await Promise.all([
+        invoke<Client[]>("list_clients"),
+        invoke<ServiceType[]>("list_service_types"),
+        invoke<Engagement[]>("list_engagements", { clientId: null }),
+        invoke<EngagementTemplate[]>("list_engagement_templates"),
+        invoke<FirmLibraryItem[]>("list_firm_library_items", {
+          category: null,
+          serviceTypeId: null,
+        }),
+      ]);
       setClients(clientRecords);
       setServiceTypes(serviceTypeRecords);
       setEngagements(engagementRecords);
       setEngagementTemplates(templateRecords);
+      setFirmLibraryItems(firmLibraryRecords);
       if (!newEngagementServiceTypeId && serviceTypeRecords.length) {
         setNewEngagementServiceTypeId(serviceTypeRecords[0].serviceTypeId);
       }
@@ -1680,6 +1751,82 @@ export default function App() {
       );
       setNewServiceTypeName("");
       setNewEngagementServiceTypeId(created.serviceTypeId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadFirmLibraryItem(firmLibraryItemId: string) {
+    setWorkspaceBusy(true);
+    setSelectedFirmLibraryItemId(firmLibraryItemId);
+    try {
+      const versions = await invoke<FirmLibraryVersion[]>("list_firm_library_versions", {
+        firmLibraryItemId,
+      });
+      setFirmLibraryVersions(versions);
+      setFirmLibraryDraftContent(
+        versions.length ? firmLibraryContentFromDefinition(versions[0].definitionJson) : "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitFirmLibraryItem(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newFirmLibraryName.trim();
+    const content = newFirmLibraryContent.trim();
+    if (!name || !content) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<FirmLibraryItem>("create_firm_library_item", {
+        category: newFirmLibraryCategory,
+        name,
+        description: newFirmLibraryDescription.trim() || null,
+        serviceTypeId: newFirmLibraryServiceTypeId || null,
+        definitionJson: JSON.stringify({ content }),
+      });
+      setFirmLibraryItems((current) =>
+        [...current, created].sort(
+          (left, right) =>
+            left.category.localeCompare(right.category) ||
+            left.name.localeCompare(right.name),
+        ),
+      );
+      setNewFirmLibraryName("");
+      setNewFirmLibraryDescription("");
+      setNewFirmLibraryContent("");
+      await loadFirmLibraryItem(created.firmLibraryItemId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitFirmLibraryVersion(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedFirmLibraryItemId) return;
+    const content = firmLibraryDraftContent.trim();
+    if (!content) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const published = await invoke<FirmLibraryItem>("publish_firm_library_version", {
+        firmLibraryItemId: selectedFirmLibraryItemId,
+        definitionJson: JSON.stringify({ content }),
+      });
+      setFirmLibraryItems((current) =>
+        current.map((item) =>
+          item.firmLibraryItemId === published.firmLibraryItemId ? published : item,
+        ),
+      );
+      await loadFirmLibraryItem(selectedFirmLibraryItemId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -3114,6 +3261,13 @@ export default function App() {
   );
   const selectedClient =
     clients.find((client) => client.clientId === selectedClientId) ?? null;
+  const selectedFirmLibraryItem =
+    firmLibraryItems.find(
+      (item) => item.firmLibraryItemId === selectedFirmLibraryItemId,
+    ) ?? null;
+  const visibleFirmLibraryItems = firmLibraryFilterCategory
+    ? firmLibraryItems.filter((item) => item.category === firmLibraryFilterCategory)
+    : firmLibraryItems;
   const selectedEngagement =
     engagements.find((engagement) => engagement.engagementId === selectedEngagementId) ??
     null;
@@ -3608,6 +3762,197 @@ export default function App() {
                 </button>
               </form>
             </div>
+
+            <div className="workspace-grid workspace-grid-two">
+              <form className="workspace-card workspace-form" onSubmit={submitFirmLibraryItem}>
+                <div>
+                  <span className="workspace-label">FIRM LIBRARY</span>
+                  <h3>Create reusable methodology item</h3>
+                </div>
+                <div className="workspace-form-pair">
+                  <label>
+                    <span>Category</span>
+                    <select
+                      value={newFirmLibraryCategory}
+                      onChange={(event) => setNewFirmLibraryCategory(event.target.value)}
+                    >
+                      {FIRM_LIBRARY_CATEGORIES.map((category) => (
+                        <option key={category.key} value={category.key}>
+                          {category.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Service scope</span>
+                    <select
+                      value={newFirmLibraryServiceTypeId}
+                      onChange={(event) => setNewFirmLibraryServiceTypeId(event.target.value)}
+                    >
+                      <option value="">Firm-wide</option>
+                      {serviceTypes.map((serviceType) => (
+                        <option key={serviceType.serviceTypeId} value={serviceType.serviceTypeId}>
+                          {serviceType.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <span>Name</span>
+                  <input
+                    value={newFirmLibraryName}
+                    onChange={(event) => setNewFirmLibraryName(event.target.value)}
+                    placeholder="Revenue completion checklist"
+                    maxLength={200}
+                  />
+                </label>
+                <label>
+                  <span>Description</span>
+                  <textarea
+                    value={newFirmLibraryDescription}
+                    onChange={(event) => setNewFirmLibraryDescription(event.target.value)}
+                    rows={2}
+                    maxLength={2000}
+                    placeholder="When and how this firm methodology should be used."
+                  />
+                </label>
+                <label>
+                  <span>Methodology content</span>
+                  <textarea
+                    value={newFirmLibraryContent}
+                    onChange={(event) => setNewFirmLibraryContent(event.target.value)}
+                    rows={5}
+                    maxLength={100000}
+                    placeholder="Write the reusable checklist, query, risk/control guidance, test, report wording, or compliance requirement."
+                  />
+                </label>
+                <p className="evidence-integrity-note">
+                  Creation publishes immutable version 1. Later edits are new exact versions, never
+                  silent rewrites.
+                </p>
+                <button
+                  className="secondary-button"
+                  type="submit"
+                  disabled={
+                    workspaceBusy ||
+                    !newFirmLibraryName.trim() ||
+                    !newFirmLibraryContent.trim()
+                  }
+                >
+                  Publish library version 1
+                </button>
+              </form>
+
+              <div className="workspace-card">
+                <div className="workspace-card-heading">
+                  <div>
+                    <span className="workspace-label">REUSABLE LIBRARY</span>
+                    <h3>{visibleFirmLibraryItems.length} item{visibleFirmLibraryItems.length === 1 ? "" : "s"}</h3>
+                  </div>
+                </div>
+                <label>
+                  <span>Category filter</span>
+                  <select
+                    value={firmLibraryFilterCategory}
+                    onChange={(event) => setFirmLibraryFilterCategory(event.target.value)}
+                  >
+                    <option value="">All categories</option>
+                    {FIRM_LIBRARY_CATEGORIES.map((category) => (
+                      <option key={category.key} value={category.key}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="workspace-list">
+                  {visibleFirmLibraryItems.length ? (
+                    visibleFirmLibraryItems.map((item) => (
+                      <button
+                        className={`workspace-list-row${selectedFirmLibraryItemId === item.firmLibraryItemId ? " workspace-list-row-active" : ""}`}
+                        type="button"
+                        key={item.firmLibraryItemId}
+                        onClick={() => void loadFirmLibraryItem(item.firmLibraryItemId)}
+                      >
+                        <span>
+                          <strong>{item.name}</strong>
+                          <small>
+                            {firmLibraryCategoryLabel(item.category)} · v
+                            {item.latestVersionNumber} ·{" "}
+                            {item.serviceTypeId
+                              ? serviceTypeNameById[item.serviceTypeId] ?? "Service"
+                              : "Firm-wide"}
+                          </small>
+                        </span>
+                        <span className="workspace-row-action">Open →</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="empty-result">
+                      No firm methodology item matches this category.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {selectedFirmLibraryItem ? (
+              <div className="workspace-grid workspace-grid-two">
+                <form className="workspace-card workspace-form" onSubmit={submitFirmLibraryVersion}>
+                  <div>
+                    <span className="workspace-label">CONTROLLED UPDATE</span>
+                    <h3>{selectedFirmLibraryItem.name}</h3>
+                  </div>
+                  <small>
+                    {firmLibraryCategoryLabel(selectedFirmLibraryItem.category)} ·{" "}
+                    {selectedFirmLibraryItem.serviceTypeId
+                      ? serviceTypeNameById[selectedFirmLibraryItem.serviceTypeId] ?? "Service"
+                      : "Firm-wide"}
+                  </small>
+                  <label>
+                    <span>Next methodology content</span>
+                    <textarea
+                      value={firmLibraryDraftContent}
+                      onChange={(event) => setFirmLibraryDraftContent(event.target.value)}
+                      rows={6}
+                      maxLength={100000}
+                    />
+                  </label>
+                  <p className="evidence-integrity-note">
+                    Publishing creates immutable version{" "}
+                    {selectedFirmLibraryItem.latestVersionNumber + 1}. Version{" "}
+                    {selectedFirmLibraryItem.latestVersionNumber} and its hash remain preserved.
+                  </p>
+                  <button
+                    className="secondary-button"
+                    type="submit"
+                    disabled={workspaceBusy || !firmLibraryDraftContent.trim()}
+                  >
+                    Publish version {selectedFirmLibraryItem.latestVersionNumber + 1}
+                  </button>
+                </form>
+
+                <div className="workspace-card">
+                  <div className="workspace-card-heading">
+                    <div>
+                      <span className="workspace-label">VERSION HISTORY</span>
+                      <h3>{firmLibraryVersions.length} exact version{firmLibraryVersions.length === 1 ? "" : "s"}</h3>
+                    </div>
+                  </div>
+                  <div className="workspace-mini-list">
+                    {firmLibraryVersions.map((version) => (
+                      <span key={version.firmLibraryVersionId}>
+                        <strong>Version {version.versionNumber}</strong>
+                        <small>
+                          SHA-256 {version.definitionHashHex.slice(0, 16)}… ·{" "}
+                          {new Date(version.createdAtMs).toLocaleString()}
+                        </small>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div className="workspace-grid workspace-grid-two">
               <form className="workspace-card workspace-form" onSubmit={submitEngagement}>
