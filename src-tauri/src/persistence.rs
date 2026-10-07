@@ -6235,7 +6235,7 @@ pub fn compare_trial_balance_opening_closing(
             "trial balance movement comparison does not reconcile to imported totals".to_string(),
         ));
     }
-    if account_count.max(0) as usize != movements.len() {
+    if account_count.max(0) as u64 != movements.len() as u64 {
         return Err(PersistenceError::Configuration(
             "trial balance account count does not match imported rows".to_string(),
         ));
