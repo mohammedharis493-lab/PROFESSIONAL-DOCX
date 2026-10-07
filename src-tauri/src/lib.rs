@@ -3023,10 +3023,21 @@ pub fn run() {
                 .state::<persistence::DatabaseState>()
                 .path()
                 .to_path_buf();
+            let evidence_state = context
+                .app_handle()
+                .state::<evidence::EvidenceState>()
+                .inner()
+                .clone();
 
             std::thread::spawn(move || {
                 let response = if request.uri().path().starts_with("/image/") {
                     preview::image_preview_response(&database_path, request)
+                } else if request.uri().path().starts_with("/controlled-pdf/") {
+                    preview::controlled_pdf_preview_response(
+                        &database_path,
+                        &evidence_state,
+                        request,
+                    )
                 } else {
                     preview::pdf_preview_response(&database_path, request)
                 };
