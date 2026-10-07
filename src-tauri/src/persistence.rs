@@ -9331,7 +9331,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 11);
+        assert_eq!(migration_count, 12);
 
         let table_count: i64 = connection
             .query_row(
@@ -9374,14 +9374,18 @@ mod tests {
                        'engagement_templates',
                        'engagement_template_versions',
                        'firm_library_items',
-                       'firm_library_versions'
+                       'firm_library_versions',
+                       'ledger_imports',
+                       'ledger_transactions',
+                       'ledger_test_runs',
+                       'ledger_exceptions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 37);
+        assert_eq!(table_count, 41);
     }
 
     #[test]
@@ -9894,6 +9898,327 @@ mod tests {
             )
             .expect("firm library tables should exist");
         assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn twelfth_migration_upgrades_existing_v11_database() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..11] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 11);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 12");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 12);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'ledger_imports',
+                       'ledger_transactions',
+                       'ledger_test_runs',
+                       'ledger_exceptions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ledger scrutiny tables should exist");
+        assert_eq!(table_count, 4);
+    }
+
+    #[test]
+    fn high_value_ledger_test_is_deterministic_and_source_traceable() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Ledger Client").expect("client");
+        let service = create_service_type(&database.path, "Statutory Audit").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "FY 2026-27 statutory audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+
+        let storage_root_id = Uuid::new_v4().to_string();
+        let document_id = Uuid::new_v4().to_string();
+        let file_instance_id = Uuid::new_v4().to_string();
+        let content_version_id = Uuid::new_v4().to_string();
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_evidence_version_id = Uuid::new_v4().to_string();
+        let source_sha256 = vec![0xAB; 32];
+
+        {
+            let connection =
+                open_configured_connection(&database.path).expect("database should open");
+            connection
+                .execute(
+                    "INSERT INTO storage_roots (
+                        storage_root_id,
+                        kind,
+                        native_locator,
+                        native_locator_encoding,
+                        display_locator,
+                        canonical_native_locator,
+                        canonical_display_locator,
+                        availability_state,
+                        approved_at_ms,
+                        approved_by,
+                        created_at_ms,
+                        updated_at_ms
+                     ) VALUES (?1, 'LOCAL', ?2, 'TEST', '/controlled-test', NULL, NULL, 'AVAILABLE', 1, NULL, 1, 1)",
+                    params![&storage_root_id, vec![0_u8]],
+                )
+                .expect("storage root should insert");
+            connection
+                .execute(
+                    "INSERT INTO documents (
+                        document_id,
+                        storage_state,
+                        display_name,
+                        created_at_ms,
+                        created_by,
+                        archived_at_ms
+                     ) VALUES (?1, 'CONTROLLED_EVIDENCE', 'Ledger.xlsx', 1, NULL, NULL)",
+                    [&document_id],
+                )
+                .expect("document should insert");
+            connection
+                .execute(
+                    "INSERT INTO file_instances (
+                        file_instance_id,
+                        document_id,
+                        storage_root_id,
+                        relative_path_native,
+                        path_native_encoding,
+                        relative_path_display,
+                        relative_path_search,
+                        filesystem_identity,
+                        volume_identity,
+                        creation_time_ms,
+                        last_write_time_ms,
+                        size_bytes,
+                        file_attributes,
+                        reparse_tag,
+                        first_seen_at_ms,
+                        last_seen_at_ms,
+                        first_seen_generation_id,
+                        last_seen_generation_id,
+                        availability_state
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, 'TEST', 'Ledger.xlsx', 'ledger xlsx',
+                        NULL, NULL, NULL, NULL, 128, NULL, NULL, 1, 1, NULL, NULL, 'AVAILABLE'
+                     )",
+                    params![&file_instance_id, &document_id, &storage_root_id, b"Ledger.xlsx".to_vec()],
+                )
+                .expect("file instance should insert");
+            connection
+                .execute(
+                    "INSERT INTO content_versions (
+                        content_version_id,
+                        document_id,
+                        file_instance_id,
+                        observed_at_ms,
+                        size_bytes,
+                        last_write_time_ms,
+                        quick_fingerprint,
+                        sha256,
+                        verification_state,
+                        source_stable_during_read
+                     ) VALUES (?1, ?2, ?3, 1, 128, NULL, NULL, ?4, 'HASH_VERIFIED', 1)",
+                    params![&content_version_id, &document_id, &file_instance_id, &source_sha256],
+                )
+                .expect("content version should insert");
+            connection
+                .execute(
+                    "INSERT INTO evidence_capture_jobs (
+                        evidence_capture_job_id,
+                        file_instance_id,
+                        document_id,
+                        status,
+                        requested_at_ms,
+                        started_at_ms,
+                        completed_at_ms,
+                        capture_reason,
+                        capture_policy,
+                        failure_code,
+                        failure_message
+                     ) VALUES (?1, ?2, ?3, 'COMPLETE', 1, 1, 1, 'TEST', 'TEST', NULL, NULL)",
+                    params![&capture_job_id, &file_instance_id, &document_id],
+                )
+                .expect("capture job should insert");
+            let locator = format!("{document_id}/{controlled_evidence_version_id}");
+            connection
+                .execute(
+                    "INSERT INTO controlled_evidence_versions (
+                        controlled_evidence_version_id,
+                        document_id,
+                        source_file_instance_id,
+                        source_content_version_id,
+                        evidence_capture_job_id,
+                        version_number,
+                        controlled_storage_locator,
+                        sha256,
+                        size_bytes,
+                        captured_at_ms,
+                        captured_by,
+                        capture_reason,
+                        capture_policy,
+                        retention_state,
+                        verification_state,
+                        source_stable_during_read
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 128, 1, NULL, 'TEST', 'TEST',
+                        'RETAINED', 'HASH_VERIFIED', 1
+                     )",
+                    params![
+                        &controlled_evidence_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &content_version_id,
+                        &capture_job_id,
+                        &locator,
+                        &source_sha256
+                    ],
+                )
+                .expect("controlled evidence should insert");
+        }
+
+        let ledger_rows = [
+            (2_u64, 10_000_i64),
+            (3_u64, 100_000_i64),
+            (4_u64, -200_000_i64),
+            (5_u64, 99_999_i64),
+        ]
+        .into_iter()
+        .map(|(source_row_number, amount_minor)| {
+            let source_row_json = json!({
+                "rowNumber": source_row_number,
+                "cells": [format!("row-{source_row_number}"), amount_minor]
+            })
+            .to_string();
+            LedgerTransactionInput {
+                source_row_number,
+                source_row_hash: Sha256::digest(source_row_json.as_bytes()).to_vec(),
+                source_row_json,
+                transaction_date_text: Some("2026-03-31".to_string()),
+                account_text: Some("Revenue".to_string()),
+                voucher_text: Some(format!("JV-{source_row_number}")),
+                narration_text: Some("Ledger test row".to_string()),
+                amount_minor,
+            }
+        })
+        .collect::<Vec<_>>();
+
+        let ledger_import = create_ledger_import(
+            &database.path,
+            &engagement.engagement_id,
+            &controlled_evidence_version_id,
+            "Ledger",
+            1,
+            4,
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            2,
+            &ledger_rows,
+        )
+        .expect("ledger import should succeed");
+        assert_eq!(ledger_import.transaction_count, 4);
+        assert_eq!(ledger_import.source_sha256, source_sha256);
+        assert_eq!(
+            ledger_import.controlled_evidence_version_id,
+            controlled_evidence_version_id
+        );
+
+        let imports =
+            list_ledger_imports(&database.path, &engagement.engagement_id).expect("imports");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].ledger_import_id, ledger_import.ledger_import_id);
+
+        let run =
+            run_high_value_ledger_test(&database.path, &ledger_import.ledger_import_id, 100_000)
+                .expect("high-value test should run");
+        assert_eq!(run.test_type, "HIGH_VALUE");
+        assert_eq!(run.threshold_minor, 100_000);
+        assert_eq!(run.exception_count, 2);
+
+        let exceptions =
+            list_ledger_exceptions(&database.path, &run.ledger_test_run_id).expect("exceptions");
+        assert_eq!(exceptions.len(), 2);
+        assert_eq!(
+            exceptions
+                .iter()
+                .map(|exception| exception.source_row_number)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        for exception in &exceptions {
+            assert_eq!(
+                exception.controlled_evidence_version_id,
+                controlled_evidence_version_id
+            );
+            assert_eq!(exception.document_id, document_id);
+            assert_eq!(exception.source_content_version_id, content_version_id);
+            assert_eq!(exception.source_sha256, source_sha256);
+            assert_eq!(exception.sheet_name, "Ledger");
+            assert_eq!(exception.source_row_hash.len(), 32);
+        }
+
+        assert!(run_high_value_ledger_test(
+            &database.path,
+            &ledger_import.ledger_import_id,
+            0
+        )
+        .expect_err("zero threshold should fail")
+        .to_string()
+        .contains("greater than zero"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let mutation_error = connection
+            .execute(
+                "UPDATE ledger_transactions
+                 SET amount_minor = amount_minor + 1
+                 WHERE ledger_import_id = ?1",
+                [&ledger_import.ledger_import_id],
+            )
+            .expect_err("imported transactions must be immutable");
+        assert!(mutation_error
+            .to_string()
+            .contains("ledger transactions are immutable"));
     }
 
     #[test]
