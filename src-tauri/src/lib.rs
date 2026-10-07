@@ -2,6 +2,7 @@ mod evidence;
 mod filesystem;
 mod indexer;
 mod launcher;
+mod ledger;
 mod persistence;
 mod preview;
 mod search;
@@ -435,6 +436,130 @@ impl From<persistence::FirmLibraryVersionRecord> for FirmLibraryVersionDto {
             version_number: value.version_number,
             definition_json: value.definition_json,
             definition_hash_hex: hex_bytes(&value.definition_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerColumnMappingInputDto {
+    amount_column: u32,
+    date_column: Option<u32>,
+    account_column: Option<u32>,
+    voucher_column: Option<u32>,
+    narration_column: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerImportDto {
+    ledger_import_id: String,
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    sheet_name: String,
+    header_row_number: u64,
+    amount_column: u32,
+    date_column: Option<u32>,
+    account_column: Option<u32>,
+    voucher_column: Option<u32>,
+    narration_column: Option<u32>,
+    amount_scale: u32,
+    transaction_count: u64,
+    imported_at_ms: i64,
+}
+
+impl From<persistence::LedgerImportRecord> for LedgerImportDto {
+    fn from(value: persistence::LedgerImportRecord) -> Self {
+        Self {
+            ledger_import_id: value.ledger_import_id,
+            engagement_id: value.engagement_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            sheet_name: value.sheet_name,
+            header_row_number: value.header_row_number,
+            amount_column: value.amount_column,
+            date_column: value.date_column,
+            account_column: value.account_column,
+            voucher_column: value.voucher_column,
+            narration_column: value.narration_column,
+            amount_scale: value.amount_scale,
+            transaction_count: value.transaction_count,
+            imported_at_ms: value.imported_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerTestRunDto {
+    ledger_test_run_id: String,
+    ledger_import_id: String,
+    test_type: String,
+    threshold_minor: i64,
+    exception_count: u64,
+    ran_at_ms: i64,
+}
+
+impl From<persistence::LedgerTestRunRecord> for LedgerTestRunDto {
+    fn from(value: persistence::LedgerTestRunRecord) -> Self {
+        Self {
+            ledger_test_run_id: value.ledger_test_run_id,
+            ledger_import_id: value.ledger_import_id,
+            test_type: value.test_type,
+            threshold_minor: value.threshold_minor,
+            exception_count: value.exception_count,
+            ran_at_ms: value.ran_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerExceptionDto {
+    ledger_exception_id: String,
+    ledger_test_run_id: String,
+    ledger_transaction_id: String,
+    exception_code: String,
+    amount_minor: i64,
+    transaction_date_text: Option<String>,
+    account_text: Option<String>,
+    voucher_text: Option<String>,
+    narration_text: Option<String>,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    sheet_name: String,
+    source_row_number: u64,
+    source_row_hash_hex: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::LedgerExceptionRecord> for LedgerExceptionDto {
+    fn from(value: persistence::LedgerExceptionRecord) -> Self {
+        Self {
+            ledger_exception_id: value.ledger_exception_id,
+            ledger_test_run_id: value.ledger_test_run_id,
+            ledger_transaction_id: value.ledger_transaction_id,
+            exception_code: value.exception_code,
+            amount_minor: value.amount_minor,
+            transaction_date_text: value.transaction_date_text,
+            account_text: value.account_text,
+            voucher_text: value.voucher_text,
+            narration_text: value.narration_text,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            sheet_name: value.sheet_name,
+            source_row_number: value.source_row_number,
+            source_row_hash_hex: hex_bytes(&value.source_row_hash),
             created_at_ms: value.created_at_ms,
         }
     }
@@ -1115,6 +1240,118 @@ fn list_firm_library_versions(
 ) -> Result<Vec<FirmLibraryVersionDto>, String> {
     validate_uuid(&firm_library_item_id, "firm-library-item")?;
     persistence::list_firm_library_versions(database.path(), &firm_library_item_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_ledger_from_controlled_evidence(
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    sheet_name: String,
+    header_row_number: u32,
+    amount_scale: u32,
+    mapping: LedgerColumnMappingInputDto,
+    database: State<'_, persistence::DatabaseState>,
+    evidence_state: State<'_, evidence::EvidenceState>,
+) -> Result<LedgerImportDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+
+    let database_path = database.path().to_path_buf();
+    let evidence_handle = evidence_state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let controlled = evidence::read_controlled_evidence_bytes(
+            &database_path,
+            &evidence_handle,
+            &controlled_evidence_version_id,
+            ledger::MAX_LEDGER_IMPORT_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let ledger_mapping = ledger::LedgerColumnMapping {
+            amount_column: mapping.amount_column,
+            date_column: mapping.date_column,
+            account_column: mapping.account_column,
+            voucher_column: mapping.voucher_column,
+            narration_column: mapping.narration_column,
+        };
+        let parsed = ledger::parse_ledger_workbook(
+            &controlled.bytes,
+            &sheet_name,
+            header_row_number,
+            amount_scale,
+            &ledger_mapping,
+        )?;
+        let transactions = parsed
+            .into_iter()
+            .map(|transaction| persistence::LedgerTransactionInput {
+                source_row_number: transaction.source_row_number,
+                source_row_json: transaction.source_row_json,
+                source_row_hash: transaction.source_row_hash,
+                transaction_date_text: transaction.transaction_date_text,
+                account_text: transaction.account_text,
+                voucher_text: transaction.voucher_text,
+                narration_text: transaction.narration_text,
+                amount_minor: transaction.amount_minor,
+            })
+            .collect::<Vec<_>>();
+
+        persistence::create_ledger_import(
+            &database_path,
+            &engagement_id,
+            &controlled.record.controlled_evidence_version_id,
+            &sheet_name,
+            u64::from(header_row_number),
+            mapping.amount_column,
+            mapping.date_column,
+            mapping.account_column,
+            mapping.voucher_column,
+            mapping.narration_column,
+            amount_scale,
+            &transactions,
+        )
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Ledger import task failed to join: {error}"))?
+}
+
+#[tauri::command]
+fn list_ledger_imports(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<LedgerImportDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_ledger_imports(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_high_value_ledger_test(
+    ledger_import_id: String,
+    threshold_minor: i64,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<LedgerTestRunDto, String> {
+    validate_uuid(&ledger_import_id, "ledger-import")?;
+    persistence::run_high_value_ledger_test(database.path(), &ledger_import_id, threshold_minor)
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_ledger_exceptions(
+    ledger_test_run_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<LedgerExceptionDto>, String> {
+    validate_uuid(&ledger_test_run_id, "ledger-test-run")?;
+    persistence::list_ledger_exceptions(database.path(), &ledger_test_run_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -2227,6 +2464,10 @@ pub fn run() {
             publish_firm_library_version,
             list_firm_library_items,
             list_firm_library_versions,
+            import_ledger_from_controlled_evidence,
+            list_ledger_imports,
+            run_high_value_ledger_test,
+            list_ledger_exceptions,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
