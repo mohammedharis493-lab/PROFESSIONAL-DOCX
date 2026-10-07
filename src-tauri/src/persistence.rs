@@ -233,7 +233,6 @@ pub struct ControlledEvidenceVersionRecord {
 pub struct ControlledEvidenceReadRecord {
     pub controlled_evidence_version_id: String,
     pub document_id: String,
-    pub source_content_version_id: String,
     pub controlled_storage_locator: String,
     pub sha256: Vec<u8>,
     pub size_bytes: u64,
@@ -350,6 +349,20 @@ pub struct LedgerTransactionInput {
     pub voucher_text: Option<String>,
     pub narration_text: Option<String>,
     pub amount_minor: i64,
+}
+
+pub struct LedgerImportDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub controlled_evidence_version_id: &'a str,
+    pub sheet_name: &'a str,
+    pub header_row_number: u64,
+    pub amount_column: u32,
+    pub date_column: Option<u32>,
+    pub account_column: Option<u32>,
+    pub voucher_column: Option<u32>,
+    pub narration_column: Option<u32>,
+    pub amount_scale: u32,
+    pub transactions: &'a [LedgerTransactionInput],
 }
 
 #[derive(Debug, Clone)]
@@ -3223,7 +3236,6 @@ pub fn get_controlled_evidence_read_record(
             "SELECT
                 cev.controlled_evidence_version_id,
                 cev.document_id,
-                cev.source_content_version_id,
                 cev.controlled_storage_locator,
                 cev.sha256,
                 cev.size_bytes,
@@ -3238,12 +3250,11 @@ pub fn get_controlled_evidence_read_record(
                 Ok(ControlledEvidenceReadRecord {
                     controlled_evidence_version_id: row.get(0)?,
                     document_id: row.get(1)?,
-                    source_content_version_id: row.get(2)?,
-                    controlled_storage_locator: row.get(3)?,
-                    sha256: row.get(4)?,
-                    size_bytes: row.get::<_, i64>(5)?.max(0) as u64,
-                    verification_state: row.get(6)?,
-                    retention_state: row.get(7)?,
+                    controlled_storage_locator: row.get(2)?,
+                    sha256: row.get(3)?,
+                    size_bytes: row.get::<_, i64>(4)?.max(0) as u64,
+                    verification_state: row.get(5)?,
+                    retention_state: row.get(6)?,
                 })
             },
         )
@@ -5167,18 +5178,21 @@ pub fn list_firm_library_versions(
 
 pub fn create_ledger_import(
     database_path: &Path,
-    engagement_id: &str,
-    controlled_evidence_version_id: &str,
-    sheet_name: &str,
-    header_row_number: u64,
-    amount_column: u32,
-    date_column: Option<u32>,
-    account_column: Option<u32>,
-    voucher_column: Option<u32>,
-    narration_column: Option<u32>,
-    amount_scale: u32,
-    transactions: &[LedgerTransactionInput],
+    definition: LedgerImportDefinition<'_>,
 ) -> Result<LedgerImportRecord, PersistenceError> {
+    let LedgerImportDefinition {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        amount_column,
+        date_column,
+        account_column,
+        voucher_column,
+        narration_column,
+        amount_scale,
+        transactions,
+    } = definition;
     let sheet_name = sheet_name.trim();
     if sheet_name.is_empty()
         || sheet_name.chars().count() > 255
@@ -10159,17 +10173,19 @@ mod tests {
 
         let ledger_import = create_ledger_import(
             &database.path,
-            &engagement.engagement_id,
-            &controlled_evidence_version_id,
-            "Ledger",
-            1,
-            4,
-            Some(0),
-            Some(1),
-            Some(2),
-            Some(3),
-            2,
-            &ledger_rows,
+            LedgerImportDefinition {
+                engagement_id: &engagement.engagement_id,
+                controlled_evidence_version_id: &controlled_evidence_version_id,
+                sheet_name: "Ledger",
+                header_row_number: 1,
+                amount_column: 4,
+                date_column: Some(0),
+                account_column: Some(1),
+                voucher_column: Some(2),
+                narration_column: Some(3),
+                amount_scale: 2,
+                transactions: &ledger_rows,
+            },
         )
         .expect("ledger import should succeed");
         assert_eq!(ledger_import.transaction_count, 4);
