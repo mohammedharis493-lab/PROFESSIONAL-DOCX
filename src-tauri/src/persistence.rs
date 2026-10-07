@@ -4437,6 +4437,107 @@ fn normalize_review_note_location(
     Ok((Some(kind), Some(normalized_value)))
 }
 
+fn normalize_exact_evidence_worksheet(
+    value: &str,
+    subject: &str,
+) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 255 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(format!(
+            "{subject} worksheet must contain 1 to 255 printable characters"
+        )));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_exact_evidence_workbook_anchor(
+    subject: &str,
+    location_kind: &str,
+    value: &str,
+    expects_range: bool,
+) -> Result<String, PersistenceError> {
+    let (worksheet, address) = value.rsplit_once('!').ok_or_else(|| {
+        let expected_format = if expects_range {
+            "Worksheet!B12:D20"
+        } else {
+            "Worksheet!B12"
+        };
+        PersistenceError::Configuration(format!(
+            "{subject} {location_kind} location must use {expected_format} format"
+        ))
+    })?;
+    let worksheet = normalize_exact_evidence_worksheet(worksheet, subject)?;
+
+    if expects_range {
+        let Some((start, end)) = address.split_once(':') else {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} RANGE location must use Worksheet!B12:D20 format"
+            )));
+        };
+        let start = start.trim();
+        let end = end.trim();
+        if end.contains(':') || !is_a1_cell_reference(start) || !is_a1_cell_reference(end) {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} RANGE location must use Worksheet!B12:D20 format"
+            )));
+        }
+        Ok(format!(
+            "{worksheet}!{}:{}",
+            start.to_ascii_uppercase(),
+            end.to_ascii_uppercase()
+        ))
+    } else {
+        let address = address.trim();
+        if address.contains(':') || !is_a1_cell_reference(address) {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} CELL location must use Worksheet!B12 format"
+            )));
+        }
+        Ok(format!("{worksheet}!{}", address.to_ascii_uppercase()))
+    }
+}
+
+fn normalize_exact_evidence_location(
+    location_kind: &str,
+    location_value: &str,
+    subject: &str,
+) -> Result<(String, String), PersistenceError> {
+    let kind = location_kind.trim().to_ascii_uppercase();
+    let value = location_value.trim();
+    if kind.is_empty() || value.is_empty() {
+        return Err(PersistenceError::Configuration(format!(
+            "{subject} location kind and value are required"
+        )));
+    }
+
+    let normalized_value = match kind.as_str() {
+        "PAGE" => {
+            let page = value.parse::<u32>().map_err(|_| {
+                PersistenceError::Configuration(format!(
+                    "{subject} PAGE location must be a positive page number"
+                ))
+            })?;
+            if page == 0 {
+                return Err(PersistenceError::Configuration(format!(
+                    "{subject} PAGE location must be a positive page number"
+                )));
+            }
+            page.to_string()
+        }
+        "WORKSHEET" => normalize_exact_evidence_worksheet(value, subject)?,
+        "CELL" => normalize_exact_evidence_workbook_anchor(subject, "CELL", value, false)?,
+        "RANGE" => normalize_exact_evidence_workbook_anchor(subject, "RANGE", value, true)?,
+        _ => {
+            return Err(PersistenceError::Configuration(format!(
+                "{subject} location kind must be PAGE, WORKSHEET, CELL, or RANGE"
+            )))
+        }
+    };
+
+    Ok((kind, normalized_value))
+}
+
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -7137,6 +7238,283 @@ pub fn compare_trial_balance_opening_closing(
         account_count: movements.len() as u64,
         movements,
     })
+}
+
+pub fn create_financial_statement_schedule_link(
+    database_path: &Path,
+    financial_statement_schedule_id: &str,
+    controlled_evidence_version_id: &str,
+    location_kind: &str,
+    location_value: &str,
+) -> Result<FinancialStatementScheduleLinkRecord, PersistenceError> {
+    let (location_kind, location_value) = normalize_exact_evidence_location(
+        location_kind,
+        location_value,
+        "financial statement schedule",
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let schedule: Option<(String, String, String)> = transaction
+        .query_row(
+            "SELECT engagement_id, reference, name
+             FROM financial_statement_schedules
+             WHERE financial_statement_schedule_id = ?1",
+            [financial_statement_schedule_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((engagement_id, schedule_reference, schedule_name)) = schedule else {
+        return Err(PersistenceError::Configuration(format!(
+            "financial statement schedule {financial_statement_schedule_id} does not exist"
+        )));
+    };
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                cev.document_id,
+                cev.source_content_version_id,
+                cev.sha256,
+                cev.verification_state,
+                cev.retention_state
+             FROM controlled_evidence_versions cev
+             JOIN documents d ON d.document_id = cev.document_id
+             WHERE cev.controlled_evidence_version_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "financial statement schedule links require retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled financial statement evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let latest_link: Option<(String, String, String, String, i64)> = transaction
+        .query_row(
+            "SELECT
+                financial_statement_schedule_link_id,
+                controlled_evidence_version_id,
+                location_kind,
+                location_value,
+                version_number
+             FROM financial_statement_schedule_links
+             WHERE financial_statement_schedule_id = ?1
+             ORDER BY version_number DESC
+             LIMIT 1",
+            [financial_statement_schedule_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    if latest_link.as_ref().is_some_and(
+        |(_, evidence_id, latest_kind, latest_value, _)| {
+            evidence_id == controlled_evidence_version_id
+                && latest_kind == &location_kind
+                && latest_value == &location_value
+        },
+    ) {
+        return Err(PersistenceError::Configuration(
+            "financial statement schedule is already linked to the selected exact evidence location"
+                .to_string(),
+        ));
+    }
+
+    let (supersedes_link_id, version_number) = match latest_link {
+        Some((link_id, _, _, _, version_number)) => (
+            Some(link_id),
+            version_number.checked_add(1).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "financial statement schedule link version exceeds supported range".to_string(),
+                )
+            })?,
+        ),
+        None => (None, 1),
+    };
+    let version_number_u64 = version_number.max(0) as u64;
+    let financial_statement_schedule_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO financial_statement_schedule_links (
+            financial_statement_schedule_link_id,
+            financial_statement_schedule_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            location_kind,
+            location_value,
+            version_number,
+            supersedes_link_id,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &financial_statement_schedule_link_id,
+            financial_statement_schedule_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            &location_kind,
+            &location_value,
+            version_number,
+            supersedes_link_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "FINANCIAL_STATEMENT_SCHEDULE_LINK_CREATED",
+            entity_type: "FINANCIAL_STATEMENT_SCHEDULE_LINK",
+            entity_id: &financial_statement_schedule_link_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(&engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "financialStatementScheduleId": financial_statement_schedule_id,
+                "scheduleReference": schedule_reference,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "locationKind": location_kind,
+                "locationValue": location_value,
+                "versionNumber": version_number_u64,
+                "supersedesLinkId": supersedes_link_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(FinancialStatementScheduleLinkRecord {
+        financial_statement_schedule_link_id,
+        financial_statement_schedule_id: financial_statement_schedule_id.to_string(),
+        schedule_reference,
+        schedule_name,
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        location_kind,
+        location_value,
+        version_number: version_number_u64,
+        supersedes_link_id,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_current_financial_statement_schedule_links(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<FinancialStatementScheduleLinkRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let engagement_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            l.financial_statement_schedule_link_id,
+            l.financial_statement_schedule_id,
+            s.reference,
+            s.name,
+            l.controlled_evidence_version_id,
+            l.document_id,
+            l.source_content_version_id,
+            l.source_sha256,
+            l.location_kind,
+            l.location_value,
+            l.version_number,
+            l.supersedes_link_id,
+            l.linked_at_ms
+         FROM financial_statement_schedule_links l
+         JOIN financial_statement_schedules s
+           ON s.financial_statement_schedule_id = l.financial_statement_schedule_id
+         WHERE s.engagement_id = ?1
+           AND NOT EXISTS (
+               SELECT 1
+               FROM financial_statement_schedule_links newer
+               WHERE newer.financial_statement_schedule_id =
+                     l.financial_statement_schedule_id
+                 AND newer.version_number > l.version_number
+           )
+         ORDER BY s.normalized_reference, l.financial_statement_schedule_link_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let version_number: i64 = row.get(10)?;
+        Ok(FinancialStatementScheduleLinkRecord {
+            financial_statement_schedule_link_id: row.get(0)?,
+            financial_statement_schedule_id: row.get(1)?,
+            schedule_reference: row.get(2)?,
+            schedule_name: row.get(3)?,
+            controlled_evidence_version_id: row.get(4)?,
+            document_id: row.get(5)?,
+            source_content_version_id: row.get(6)?,
+            source_sha256: row.get(7)?,
+            location_kind: row.get(8)?,
+            location_value: row.get(9)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_link_id: row.get(11)?,
+            linked_at_ms: row.get(12)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
 }
 
 pub fn create_engagement_from_template(
