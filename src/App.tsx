@@ -1025,6 +1025,7 @@ export default function App() {
   const [ledgerNarrationColumn, setLedgerNarrationColumn] = useState("D");
   const [ledgerAmountColumn, setLedgerAmountColumn] = useState("E");
   const [ledgerHighValueThreshold, setLedgerHighValueThreshold] = useState("100000.00");
+  const [ledgerTestRuns, setLedgerTestRuns] = useState<LedgerTestRun[]>([]);
   const [ledgerTestRun, setLedgerTestRun] = useState<LedgerTestRun | null>(null);
   const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
   const [newAreaName, setNewAreaName] = useState("");
@@ -1311,6 +1312,7 @@ export default function App() {
     setSelectedLedgerEvidenceDocument(null);
     setLedgerEvidenceVersionHistory([]);
     setSelectedLedgerControlledVersionId("");
+    setLedgerTestRuns([]);
     setLedgerTestRun(null);
     setLedgerExceptions([]);
     try {
@@ -1327,7 +1329,22 @@ export default function App() {
       setWorkpapers(workpaperRecords);
       setPbcRequests(requestRecords);
       setLedgerImports(ledgerImportRecords);
-      setSelectedLedgerImportId(ledgerImportRecords[0]?.ledgerImportId ?? null);
+      const firstLedgerImportId = ledgerImportRecords[0]?.ledgerImportId ?? null;
+      setSelectedLedgerImportId(firstLedgerImportId);
+      if (firstLedgerImportId) {
+        const runRecords = await invoke<LedgerTestRun[]>("list_ledger_test_runs", {
+          ledgerImportId: firstLedgerImportId,
+        });
+        setLedgerTestRuns(runRecords);
+        const latestRun = runRecords[0] ?? null;
+        setLedgerTestRun(latestRun);
+        if (latestRun) {
+          const exceptions = await invoke<LedgerException[]>("list_ledger_exceptions", {
+            ledgerTestRunId: latestRun.ledgerTestRunId,
+          });
+          setLedgerExceptions(exceptions);
+        }
+      }
       setSelectedPbcRequestId(null);
       setPbcRequestEvents([]);
       setPbcEvidenceLinks([]);
@@ -2171,8 +2188,59 @@ export default function App() {
         ...current.filter((item) => item.ledgerImportId !== created.ledgerImportId),
       ]);
       setSelectedLedgerImportId(created.ledgerImportId);
+      setLedgerTestRuns([]);
       setLedgerTestRun(null);
       setLedgerExceptions([]);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectLedgerImportForTesting(ledgerImportId: string | null) {
+    setSelectedLedgerImportId(ledgerImportId);
+    setLedgerTestRuns([]);
+    setLedgerTestRun(null);
+    setLedgerExceptions([]);
+    if (!ledgerImportId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const runs = await invoke<LedgerTestRun[]>("list_ledger_test_runs", {
+        ledgerImportId,
+      });
+      setLedgerTestRuns(runs);
+      const latestRun = runs[0] ?? null;
+      setLedgerTestRun(latestRun);
+      if (latestRun) {
+        const exceptions = await invoke<LedgerException[]>("list_ledger_exceptions", {
+          ledgerTestRunId: latestRun.ledgerTestRunId,
+        });
+        setLedgerExceptions(exceptions);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function openLedgerTestRun(ledgerTestRunId: string) {
+    const run = ledgerTestRuns.find((item) => item.ledgerTestRunId === ledgerTestRunId);
+    if (!run) {
+      setLedgerTestRun(null);
+      setLedgerExceptions([]);
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const exceptions = await invoke<LedgerException[]>("list_ledger_exceptions", {
+        ledgerTestRunId,
+      });
+      setLedgerTestRun(run);
+      setLedgerExceptions(exceptions);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -2205,6 +2273,10 @@ export default function App() {
       const exceptions = await invoke<LedgerException[]>("list_ledger_exceptions", {
         ledgerTestRunId: run.ledgerTestRunId,
       });
+      setLedgerTestRuns((current) => [
+        run,
+        ...current.filter((item) => item.ledgerTestRunId !== run.ledgerTestRunId),
+      ]);
       setLedgerTestRun(run);
       setLedgerExceptions(exceptions);
     } catch (workspaceError) {
@@ -4718,11 +4790,9 @@ export default function App() {
                         <span>Imported ledger</span>
                         <select
                           value={selectedLedgerImportId ?? ""}
-                          onChange={(event) => {
-                            setSelectedLedgerImportId(event.target.value || null);
-                            setLedgerTestRun(null);
-                            setLedgerExceptions([]);
-                          }}
+                          onChange={(event) =>
+                            void selectLedgerImportForTesting(event.target.value || null)
+                          }
                         >
                           <option value="">Select immutable import</option>
                           {ledgerImports.map((ledgerImport) => (
@@ -4765,6 +4835,30 @@ export default function App() {
                       >
                         Run high-value test
                       </button>
+                      {ledgerTestRuns.length ? (
+                        <label>
+                          <span>Completed runs</span>
+                          <select
+                            value={ledgerTestRun?.ledgerTestRunId ?? ""}
+                            onChange={(event) => void openLedgerTestRun(event.target.value)}
+                            disabled={workspaceBusy}
+                          >
+                            <option value="">Select completed run</option>
+                            {ledgerTestRuns.map((run) => (
+                              <option key={run.ledgerTestRunId} value={run.ledgerTestRunId}>
+                                {formatTimestamp(run.ranAtMs)} · {run.exceptionCount} exception(s) ·{" "}
+                                threshold{" "}
+                                {selectedLedgerImport
+                                  ? formatMinorUnitAmount(
+                                      run.thresholdMinor,
+                                      selectedLedgerImport.amountScale,
+                                    )
+                                  : run.thresholdMinor}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                     </form>
 
                     {ledgerTestRun ? (

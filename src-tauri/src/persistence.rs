@@ -5469,6 +5469,56 @@ pub fn list_ledger_imports(
     Ok(result)
 }
 
+pub fn list_ledger_test_runs(
+    database_path: &Path,
+    ledger_import_id: &str,
+) -> Result<Vec<LedgerTestRunRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let import_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM ledger_imports
+            WHERE ledger_import_id = ?1
+        )",
+        [ledger_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "ledger import {ledger_import_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            ledger_test_run_id,
+            ledger_import_id,
+            test_type,
+            CAST(json_extract(parameters_json, '$.thresholdMinor') AS INTEGER),
+            exception_count,
+            ran_at_ms
+         FROM ledger_test_runs
+         WHERE ledger_import_id = ?1
+         ORDER BY ran_at_ms DESC, ledger_test_run_id DESC",
+    )?;
+    let rows = statement.query_map([ledger_import_id], |row| {
+        let exception_count: i64 = row.get(4)?;
+        Ok(LedgerTestRunRecord {
+            ledger_test_run_id: row.get(0)?,
+            ledger_import_id: row.get(1)?,
+            test_type: row.get(2)?,
+            threshold_minor: row.get(3)?,
+            exception_count: exception_count.max(0) as u64,
+            ran_at_ms: row.get(5)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn run_high_value_ledger_test(
     database_path: &Path,
     ledger_import_id: &str,
@@ -10276,6 +10326,15 @@ mod tests {
         assert_eq!(run.test_type, "HIGH_VALUE");
         assert_eq!(run.threshold_minor, 100_000);
         assert_eq!(run.exception_count, 2);
+
+        let runs = list_ledger_test_runs(&database.path, &ledger_import.ledger_import_id)
+            .expect("test run history");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].ledger_test_run_id, run.ledger_test_run_id);
+        assert_eq!(runs[0].ledger_import_id, ledger_import.ledger_import_id);
+        assert_eq!(runs[0].test_type, "HIGH_VALUE");
+        assert_eq!(runs[0].threshold_minor, 100_000);
+        assert_eq!(runs[0].exception_count, 2);
 
         let exceptions =
             list_ledger_exceptions(&database.path, &run.ledger_test_run_id).expect("exceptions");
