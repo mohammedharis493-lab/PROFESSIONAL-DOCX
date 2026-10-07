@@ -127,7 +127,7 @@ pub fn read_controlled_evidence_bytes(
             "controlled evidence stored hash is invalid".to_string(),
         ));
     }
-    if record.size_bytes > max_bytes as u64 {
+    if record.size_bytes > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
         return Err(EvidenceError::Configuration(format!(
             "controlled evidence exceeds the {} byte read limit",
             max_bytes
@@ -180,7 +180,7 @@ pub fn read_controlled_evidence_bytes(
         )));
     }
     let digest = Sha256::digest(&bytes);
-    if digest.as_slice() != record.sha256.as_slice() {
+    if digest[..] != record.sha256[..] {
         return Err(EvidenceError::Integrity(
             "controlled evidence bytes no longer match the captured SHA-256".to_string(),
         ));
