@@ -306,6 +306,54 @@ type DocumentVersionHistoryEntry = {
   capturePolicy: string | null;
 };
 
+type LedgerImport = {
+  ledgerImportId: string;
+  engagementId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  sheetName: string;
+  headerRowNumber: number;
+  amountColumn: number;
+  dateColumn: number | null;
+  accountColumn: number | null;
+  voucherColumn: number | null;
+  narrationColumn: number | null;
+  amountScale: number;
+  transactionCount: number;
+  importedAtMs: number;
+};
+
+type LedgerTestRun = {
+  ledgerTestRunId: string;
+  ledgerImportId: string;
+  testType: string;
+  thresholdMinor: number;
+  exceptionCount: number;
+  ranAtMs: number;
+};
+
+type LedgerException = {
+  ledgerExceptionId: string;
+  ledgerTestRunId: string;
+  ledgerTransactionId: string;
+  exceptionCode: string;
+  amountMinor: number;
+  transactionDateText: string | null;
+  accountText: string | null;
+  voucherText: string | null;
+  narrationText: string | null;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  sheetName: string;
+  sourceRowNumber: number;
+  sourceRowHashHex: string;
+  createdAtMs: number;
+};
+
 type ActiveDocumentVersionHistory = {
   file: IndexedFile;
   entries: DocumentVersionHistoryEntry[];
@@ -788,6 +836,58 @@ function firmLibraryContentFromDefinition(definitionJson: string) {
   }
 }
 
+function parseLedgerColumnIndex(value: string) {
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) return null;
+
+  if (/^\d+$/.test(normalized)) {
+    const oneBased = Number.parseInt(normalized, 10);
+    return oneBased >= 1 && oneBased <= 16_384 ? oneBased - 1 : null;
+  }
+
+  if (!/^[A-Z]{1,3}$/.test(normalized)) return null;
+  let oneBased = 0;
+  for (const character of normalized) {
+    oneBased = oneBased * 26 + character.charCodeAt(0) - 64;
+  }
+  return oneBased >= 1 && oneBased <= 16_384 ? oneBased - 1 : null;
+}
+
+function parseMinorUnitAmount(value: string, scale: number) {
+  const normalized = value.trim().replaceAll(",", "");
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(normalized);
+  if (!match || (!match[2] && !match[3]) || scale < 0 || scale > 6) return null;
+
+  const sign = match[1] === "-" ? -1n : 1n;
+  const integerText = match[2] || "0";
+  const fractionText = match[3] || "";
+  const extraFraction = fractionText.slice(scale);
+  if ([...extraFraction].some((character) => character !== "0")) return null;
+
+  const normalizedFraction = fractionText.slice(0, scale).padEnd(scale, "0");
+  const factor = 10n ** BigInt(scale);
+  const magnitude =
+    BigInt(integerText) * factor + BigInt(normalizedFraction || "0");
+  const signed = sign * magnitude;
+  if (
+    signed > BigInt(Number.MAX_SAFE_INTEGER) ||
+    signed < BigInt(Number.MIN_SAFE_INTEGER)
+  ) {
+    return null;
+  }
+  return Number(signed);
+}
+
+function formatMinorUnitAmount(value: number, scale: number) {
+  const sign = value < 0 ? "-" : "";
+  const magnitude = Math.abs(value);
+  if (scale === 0) return `${sign}${magnitude.toLocaleString()}`;
+  const factor = 10 ** scale;
+  const integer = Math.floor(magnitude / factor);
+  const fraction = String(magnitude % factor).padStart(scale, "0");
+  return `${sign}${integer.toLocaleString()}.${fraction}`;
+}
+
 function sourceUnavailable(availabilityState: string) {
   return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
 }
@@ -905,6 +1005,28 @@ export default function App() {
   const [newFirmLibraryServiceTypeId, setNewFirmLibraryServiceTypeId] = useState("");
   const [newFirmLibraryContent, setNewFirmLibraryContent] = useState("");
   const [firmLibraryDraftContent, setFirmLibraryDraftContent] = useState("");
+  const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
+  const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
+  const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
+  const [ledgerEvidenceSearchResults, setLedgerEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedLedgerEvidenceDocument, setSelectedLedgerEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [ledgerEvidenceVersionHistory, setLedgerEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedLedgerControlledVersionId, setSelectedLedgerControlledVersionId] =
+    useState("");
+  const [ledgerEvidenceSearchBusy, setLedgerEvidenceSearchBusy] = useState(false);
+  const [ledgerSheetName, setLedgerSheetName] = useState("Ledger");
+  const [ledgerHeaderRowNumber, setLedgerHeaderRowNumber] = useState("1");
+  const [ledgerAmountScale, setLedgerAmountScale] = useState("2");
+  const [ledgerDateColumn, setLedgerDateColumn] = useState("A");
+  const [ledgerAccountColumn, setLedgerAccountColumn] = useState("B");
+  const [ledgerVoucherColumn, setLedgerVoucherColumn] = useState("C");
+  const [ledgerNarrationColumn, setLedgerNarrationColumn] = useState("D");
+  const [ledgerAmountColumn, setLedgerAmountColumn] = useState("E");
+  const [ledgerHighValueThreshold, setLedgerHighValueThreshold] = useState("100000.00");
+  const [ledgerTestRun, setLedgerTestRun] = useState<LedgerTestRun | null>(null);
+  const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1183,18 +1305,29 @@ export default function App() {
     setSelectedEvidenceDocument(null);
     setEvidenceVersionHistory([]);
     setSelectedEvidenceVersionKey("");
+    setLedgerImports([]);
+    setSelectedLedgerImportId(null);
+    setLedgerEvidenceSearchResults([]);
+    setSelectedLedgerEvidenceDocument(null);
+    setLedgerEvidenceVersionHistory([]);
+    setSelectedLedgerControlledVersionId("");
+    setLedgerTestRun(null);
+    setLedgerExceptions([]);
     try {
-      const [areas, procedureRecords, workpaperRecords, requestRecords] =
+      const [areas, procedureRecords, workpaperRecords, requestRecords, ledgerImportRecords] =
         await Promise.all([
           invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
           invoke<Procedure[]>("list_procedures", { engagementId }),
           invoke<Workpaper[]>("list_workpapers", { engagementId }),
           invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
+          invoke<LedgerImport[]>("list_ledger_imports", { engagementId }),
         ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
       setWorkpapers(workpaperRecords);
       setPbcRequests(requestRecords);
+      setLedgerImports(ledgerImportRecords);
+      setSelectedLedgerImportId(ledgerImportRecords[0]?.ledgerImportId ?? null);
       setSelectedPbcRequestId(null);
       setPbcRequestEvents([]);
       setPbcEvidenceLinks([]);
@@ -1908,6 +2041,172 @@ export default function App() {
       setTemplateUpdateId("");
       setNewEngagementTemplateVersionId(published.latestVersionId);
       setNewEngagementServiceTypeId(published.serviceTypeId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchLedgerEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const searchText = ledgerEvidenceSearchQuery.trim();
+    if (!searchText) return;
+
+    setLedgerEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setLedgerEvidenceSearchResults(
+        results.filter((result) =>
+          new Set(["xlsx", "xls", "xlsm", "xlsb", "ods"]).has(
+            result.extension.toLowerCase().replace(/^\./, ""),
+          ),
+        ),
+      );
+      setSelectedLedgerEvidenceDocument(null);
+      setLedgerEvidenceVersionHistory([]);
+      setSelectedLedgerControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setLedgerEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectLedgerEvidenceDocument(document: SearchResult) {
+    setLedgerEvidenceSearchBusy(true);
+    setSelectedLedgerEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setLedgerEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedLedgerControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setLedgerEvidenceVersionHistory([]);
+      setSelectedLedgerControlledVersionId("");
+    } finally {
+      setLedgerEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitLedgerImport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId || !selectedLedgerControlledVersionId) return;
+
+    const headerRowNumber = Number.parseInt(ledgerHeaderRowNumber, 10);
+    const amountScale = Number.parseInt(ledgerAmountScale, 10);
+    const amountColumn = parseLedgerColumnIndex(ledgerAmountColumn);
+    const optionalColumns = [
+      ["date", ledgerDateColumn],
+      ["account", ledgerAccountColumn],
+      ["voucher", ledgerVoucherColumn],
+      ["narration", ledgerNarrationColumn],
+    ] as const;
+
+    if (
+      !Number.isInteger(headerRowNumber) ||
+      headerRowNumber < 1 ||
+      !Number.isInteger(amountScale) ||
+      amountScale < 0 ||
+      amountScale > 6 ||
+      amountColumn === null
+    ) {
+      setError("Ledger sheet, header row, scale, and amount column mapping are invalid.");
+      return;
+    }
+
+    const parsedOptionalColumns = optionalColumns.map(([label, value]) => {
+      if (!value.trim()) return [label, null] as const;
+      return [label, parseLedgerColumnIndex(value)] as const;
+    });
+    const invalidOptional = parsedOptionalColumns.find(
+      ([, value], index) => optionalColumns[index][1].trim() && value === null,
+    );
+    if (invalidOptional) {
+      setError(`Ledger ${invalidOptional[0]} column is invalid. Use Excel letters such as A or AA, or a 1-based column number.`);
+      return;
+    }
+
+    const optionalByLabel = Object.fromEntries(parsedOptionalColumns) as Record<
+      string,
+      number | null
+    >;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<LedgerImport>(
+        "import_ledger_from_controlled_evidence",
+        {
+          input: {
+            engagementId: selectedEngagementId,
+            controlledEvidenceVersionId: selectedLedgerControlledVersionId,
+            sheetName: ledgerSheetName.trim(),
+            headerRowNumber,
+            amountScale,
+            mapping: {
+              amountColumn,
+              dateColumn: optionalByLabel.date,
+              accountColumn: optionalByLabel.account,
+              voucherColumn: optionalByLabel.voucher,
+              narrationColumn: optionalByLabel.narration,
+            },
+          },
+        },
+      );
+      setLedgerImports((current) => [
+        created,
+        ...current.filter((item) => item.ledgerImportId !== created.ledgerImportId),
+      ]);
+      setSelectedLedgerImportId(created.ledgerImportId);
+      setLedgerTestRun(null);
+      setLedgerExceptions([]);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitHighValueLedgerTest(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selectedImport = ledgerImports.find(
+      (item) => item.ledgerImportId === selectedLedgerImportId,
+    );
+    if (!selectedImport) return;
+
+    const thresholdMinor = parseMinorUnitAmount(
+      ledgerHighValueThreshold,
+      selectedImport.amountScale,
+    );
+    if (thresholdMinor === null || thresholdMinor <= 0) {
+      setError("High-value threshold must be a positive amount within the supported range.");
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const run = await invoke<LedgerTestRun>("run_high_value_ledger_test", {
+        ledgerImportId: selectedImport.ledgerImportId,
+        thresholdMinor,
+      });
+      const exceptions = await invoke<LedgerException[]>("list_ledger_exceptions", {
+        ledgerTestRunId: run.ledgerTestRunId,
+      });
+      setLedgerTestRun(run);
+      setLedgerExceptions(exceptions);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -3280,6 +3579,13 @@ export default function App() {
         (template) => template.serviceTypeId === selectedEngagement.serviceTypeId,
       )
     : [];
+  const selectedLedgerImport =
+    ledgerImports.find((item) => item.ledgerImportId === selectedLedgerImportId) ?? null;
+  const ledgerControlledEvidenceVersions = ledgerEvidenceVersionHistory.filter(
+    (entry) =>
+      entry.controlledEvidenceVersionId &&
+      entry.controlledVerificationState === "HASH_VERIFIED",
+  );
   const selectedWorkpaper =
     workpapers.find((workpaper) => workpaper.workpaperId === selectedWorkpaperId) ??
     null;
@@ -4223,6 +4529,294 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">LEDGER SCRUTINY</span>
+                        <h3>Import exact controlled workbook</h3>
+                      </div>
+                    </div>
+
+                    <form className="workspace-form compact" onSubmit={searchLedgerEvidence}>
+                      <label>
+                        <span>Find workbook evidence</span>
+                        <input
+                          value={ledgerEvidenceSearchQuery}
+                          onChange={(event) => setLedgerEvidenceSearchQuery(event.target.value)}
+                          placeholder="Search indexed ledger workbook"
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={ledgerEvidenceSearchBusy || !ledgerEvidenceSearchQuery.trim()}
+                      >
+                        {ledgerEvidenceSearchBusy ? "Searching…" : "Search workbooks"}
+                      </button>
+                    </form>
+
+                    {ledgerEvidenceSearchResults.length ? (
+                      <div className="workspace-mini-list">
+                        {ledgerEvidenceSearchResults.map((result) => (
+                          <button
+                            className={`workspace-list-row${selectedLedgerEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                            type="button"
+                            key={result.documentId}
+                            onClick={() => void selectLedgerEvidenceDocument(result)}
+                          >
+                            <span>
+                              <strong>{result.name}</strong>
+                              <small>{result.path}</small>
+                            </span>
+                            <span className="workspace-row-action">Select →</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {selectedLedgerEvidenceDocument ? (
+                      <form className="workspace-form compact" onSubmit={submitLedgerImport}>
+                        <div className="evidence-integrity-note">
+                          <strong>{selectedLedgerEvidenceDocument.name}</strong>
+                          <br />
+                          Ledger imports only use retained, hash-verified controlled evidence. The
+                          original linked workbook path is never sent to the ledger parser.
+                        </div>
+                        <label>
+                          <span>Exact controlled version</span>
+                          <select
+                            value={selectedLedgerControlledVersionId}
+                            onChange={(event) =>
+                              setSelectedLedgerControlledVersionId(event.target.value)
+                            }
+                          >
+                            <option value="">Select controlled evidence</option>
+                            {ledgerControlledEvidenceVersions.map((entry) => (
+                              <option
+                                key={entry.controlledEvidenceVersionId ?? entry.contentVersionId}
+                                value={entry.controlledEvidenceVersionId ?? ""}
+                              >
+                                v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                {formatTimestamp(entry.capturedAtMs)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {!ledgerControlledEvidenceVersions.length ? (
+                          <p className="evidence-integrity-note">
+                            This workbook has no hash-verified controlled evidence version yet.
+                            Capture it as controlled evidence before ledger import.
+                          </p>
+                        ) : null}
+                        <label>
+                          <span>Worksheet</span>
+                          <input
+                            value={ledgerSheetName}
+                            onChange={(event) => setLedgerSheetName(event.target.value)}
+                            placeholder="Ledger"
+                            maxLength={255}
+                          />
+                        </label>
+                        <div className="workspace-grid workspace-grid-two">
+                          <label>
+                            <span>Header row</span>
+                            <input
+                              value={ledgerHeaderRowNumber}
+                              onChange={(event) => setLedgerHeaderRowNumber(event.target.value)}
+                              inputMode="numeric"
+                              placeholder="1"
+                            />
+                          </label>
+                          <label>
+                            <span>Amount decimals</span>
+                            <input
+                              value={ledgerAmountScale}
+                              onChange={(event) => setLedgerAmountScale(event.target.value)}
+                              inputMode="numeric"
+                              placeholder="2"
+                            />
+                          </label>
+                        </div>
+                        <div className="workspace-grid workspace-grid-two">
+                          <label>
+                            <span>Date column</span>
+                            <input
+                              value={ledgerDateColumn}
+                              onChange={(event) => setLedgerDateColumn(event.target.value)}
+                              placeholder="A"
+                            />
+                          </label>
+                          <label>
+                            <span>Account column</span>
+                            <input
+                              value={ledgerAccountColumn}
+                              onChange={(event) => setLedgerAccountColumn(event.target.value)}
+                              placeholder="B"
+                            />
+                          </label>
+                          <label>
+                            <span>Voucher column</span>
+                            <input
+                              value={ledgerVoucherColumn}
+                              onChange={(event) => setLedgerVoucherColumn(event.target.value)}
+                              placeholder="C"
+                            />
+                          </label>
+                          <label>
+                            <span>Narration column</span>
+                            <input
+                              value={ledgerNarrationColumn}
+                              onChange={(event) => setLedgerNarrationColumn(event.target.value)}
+                              placeholder="D"
+                            />
+                          </label>
+                          <label>
+                            <span>Amount column</span>
+                            <input
+                              value={ledgerAmountColumn}
+                              onChange={(event) => setLedgerAmountColumn(event.target.value)}
+                              placeholder="E"
+                              required
+                            />
+                          </label>
+                        </div>
+                        <p className="evidence-integrity-note">
+                          Column mapping accepts Excel letters (A, AA) or 1-based numbers. Imported
+                          transactions become immutable and retain worksheet, source-row, row-hash,
+                          controlled-version, and source-SHA provenance.
+                        </p>
+                        <button
+                          className="secondary-button"
+                          type="submit"
+                          disabled={
+                            workspaceBusy ||
+                            !selectedLedgerControlledVersionId ||
+                            !ledgerSheetName.trim() ||
+                            !ledgerAmountColumn.trim()
+                          }
+                        >
+                          Import immutable ledger
+                        </button>
+                      </form>
+                    ) : null}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">DETERMINISTIC TEST</span>
+                        <h3>High-value transactions</h3>
+                      </div>
+                    </div>
+
+                    <form className="workspace-form compact" onSubmit={submitHighValueLedgerTest}>
+                      <label>
+                        <span>Imported ledger</span>
+                        <select
+                          value={selectedLedgerImportId ?? ""}
+                          onChange={(event) => {
+                            setSelectedLedgerImportId(event.target.value || null);
+                            setLedgerTestRun(null);
+                            setLedgerExceptions([]);
+                          }}
+                        >
+                          <option value="">Select immutable import</option>
+                          {ledgerImports.map((ledgerImport) => (
+                            <option key={ledgerImport.ledgerImportId} value={ledgerImport.ledgerImportId}>
+                              {ledgerImport.sheetName} · {ledgerImport.transactionCount.toLocaleString()} rows ·{" "}
+                              {formatTimestamp(ledgerImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedLedgerImport ? (
+                        <div className="evidence-integrity-note">
+                          Source SHA {selectedLedgerImport.sourceSha256Hex.slice(0, 20)}… ·
+                          controlled ID{" "}
+                          {selectedLedgerImport.controlledEvidenceVersionId.slice(0, 18)}… · sheet{" "}
+                          {selectedLedgerImport.sheetName}
+                        </div>
+                      ) : null}
+                      <label>
+                        <span>High-value threshold</span>
+                        <input
+                          value={ledgerHighValueThreshold}
+                          onChange={(event) => setLedgerHighValueThreshold(event.target.value)}
+                          inputMode="decimal"
+                          placeholder="100000.00"
+                        />
+                      </label>
+                      <p className="evidence-integrity-note">
+                        The test is inclusive and deterministic: amounts greater than or equal to
+                        the threshold, including equally large negative amounts, are exceptions.
+                      </p>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !selectedLedgerImport ||
+                          !ledgerHighValueThreshold.trim()
+                        }
+                      >
+                        Run high-value test
+                      </button>
+                    </form>
+
+                    {ledgerTestRun ? (
+                      <div className="workspace-mini-list">
+                        <span>
+                          <strong>{ledgerTestRun.exceptionCount} exception(s)</strong>
+                          <small>
+                            Threshold{" "}
+                            {selectedLedgerImport
+                              ? formatMinorUnitAmount(
+                                  ledgerTestRun.thresholdMinor,
+                                  selectedLedgerImport.amountScale,
+                                )
+                              : ledgerTestRun.thresholdMinor}{" "}
+                            · {formatTimestamp(ledgerTestRun.ranAtMs)}
+                          </small>
+                        </span>
+                        {ledgerExceptions.map((exception) => (
+                          <span key={exception.ledgerExceptionId}>
+                            <strong>
+                              Row {exception.sourceRowNumber} ·{" "}
+                              {selectedLedgerImport
+                                ? formatMinorUnitAmount(
+                                    exception.amountMinor,
+                                    selectedLedgerImport.amountScale,
+                                  )
+                                : exception.amountMinor}
+                            </strong>
+                            <small>
+                              {exception.transactionDateText ?? "No date"} ·{" "}
+                              {exception.accountText ?? "No account"} ·{" "}
+                              {exception.voucherText ?? "No voucher"}
+                            </small>
+                            <small>{exception.narrationText ?? "No narration"}</small>
+                            <small>
+                              {exception.sheetName}!row {exception.sourceRowNumber} · row SHA{" "}
+                              {exception.sourceRowHashHex.slice(0, 16)}… · source SHA{" "}
+                              {exception.sourceSha256Hex.slice(0, 16)}…
+                            </small>
+                          </span>
+                        ))}
+                      </div>
+                    ) : ledgerImports.length ? (
+                      <p className="evidence-integrity-note">
+                        Select an immutable import and run the deterministic test to inspect
+                        transaction-level exceptions.
+                      </p>
+                    ) : (
+                      <div className="empty-result">
+                        Import a controlled ledger workbook to begin deterministic scrutiny.
+                      </div>
+                    )}
                   </div>
                 </div>
 
