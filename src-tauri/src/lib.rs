@@ -701,6 +701,44 @@ impl From<persistence::TrialBalanceScheduleMappingRecord> for TrialBalanceSchedu
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinancialStatementScheduleLinkDto {
+    financial_statement_schedule_link_id: String,
+    financial_statement_schedule_id: String,
+    schedule_reference: String,
+    schedule_name: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    location_kind: String,
+    location_value: String,
+    version_number: u64,
+    supersedes_link_id: Option<String>,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::FinancialStatementScheduleLinkRecord> for FinancialStatementScheduleLinkDto {
+    fn from(value: persistence::FinancialStatementScheduleLinkRecord) -> Self {
+        Self {
+            financial_statement_schedule_link_id: value.financial_statement_schedule_link_id,
+            financial_statement_schedule_id: value.financial_statement_schedule_id,
+            schedule_reference: value.schedule_reference,
+            schedule_name: value.schedule_name,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            location_kind: value.location_kind,
+            location_value: value.location_value,
+            version_number: value.version_number,
+            supersedes_link_id: value.supersedes_link_id,
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrialBalanceColumnMappingInputDto {
@@ -1733,6 +1771,47 @@ fn list_current_trial_balance_schedule_mappings(
     persistence::list_current_trial_balance_schedule_mappings(
         database.path(),
         &trial_balance_import_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_financial_statement_schedule_link(
+    financial_statement_schedule_id: String,
+    controlled_evidence_version_id: String,
+    location_kind: String,
+    location_value: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<FinancialStatementScheduleLinkDto, String> {
+    validate_uuid(
+        &financial_statement_schedule_id,
+        "financial-statement-schedule",
+    )?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+    persistence::create_financial_statement_schedule_link(
+        database.path(),
+        &financial_statement_schedule_id,
+        &controlled_evidence_version_id,
+        &location_kind,
+        &location_value,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_current_financial_statement_schedule_links(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<FinancialStatementScheduleLinkDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_current_financial_statement_schedule_links(
+        database.path(),
+        &engagement_id,
     )
     .map(|records| records.into_iter().map(Into::into).collect())
     .map_err(|error| error.to_string())
@@ -3002,6 +3081,8 @@ pub fn run() {
             list_financial_statement_schedules,
             create_trial_balance_schedule_mapping,
             list_current_trial_balance_schedule_mappings,
+            create_financial_statement_schedule_link,
+            list_current_financial_statement_schedule_links,
             list_ledger_test_runs,
             run_high_value_ledger_test,
             list_ledger_exceptions,
