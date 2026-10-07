@@ -374,16 +374,24 @@ type TrialBalanceImport = {
   importedAtMs: number;
 };
 
-type TrialBalanceAccount = {
+type TrialBalanceMovement = {
   trialBalanceAccountId: string;
-  trialBalanceImportId: string;
   sourceRowNumber: number;
   sourceRowHashHex: string;
   accountCodeText: string | null;
   accountNameText: string;
   openingMinor: number;
   closingMinor: number;
-  createdAtMs: number;
+  movementMinor: number;
+};
+
+type TrialBalanceComparison = {
+  trialBalanceImportId: string;
+  openingTotalMinor: number;
+  closingTotalMinor: number;
+  netMovementMinor: number;
+  accountCount: number;
+  movements: TrialBalanceMovement[];
 };
 
 type ActiveDocumentVersionHistory = {
@@ -1062,7 +1070,8 @@ export default function App() {
   const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
   const [trialBalanceImports, setTrialBalanceImports] = useState<TrialBalanceImport[]>([]);
   const [selectedTrialBalanceImportId, setSelectedTrialBalanceImportId] = useState<string | null>(null);
-  const [trialBalanceAccounts, setTrialBalanceAccounts] = useState<TrialBalanceAccount[]>([]);
+  const [trialBalanceComparison, setTrialBalanceComparison] =
+    useState<TrialBalanceComparison | null>(null);
   const [trialBalanceEvidenceSearchQuery, setTrialBalanceEvidenceSearchQuery] = useState("");
   const [trialBalanceEvidenceSearchResults, setTrialBalanceEvidenceSearchResults] = useState<SearchResult[]>([]);
   const [selectedTrialBalanceEvidenceDocument, setSelectedTrialBalanceEvidenceDocument] =
@@ -1368,7 +1377,7 @@ export default function App() {
     setLedgerExceptions([]);
     setTrialBalanceImports([]);
     setSelectedTrialBalanceImportId(null);
-    setTrialBalanceAccounts([]);
+    setTrialBalanceComparison(null);
     setTrialBalanceEvidenceSearchResults([]);
     setSelectedTrialBalanceEvidenceDocument(null);
     setTrialBalanceEvidenceVersionHistory([]);
@@ -1399,10 +1408,11 @@ export default function App() {
         trialBalanceImportRecords[0]?.trialBalanceImportId ?? null;
       setSelectedTrialBalanceImportId(firstTrialBalanceImportId);
       if (firstTrialBalanceImportId) {
-        const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
-          trialBalanceImportId: firstTrialBalanceImportId,
-        });
-        setTrialBalanceAccounts(accounts);
+        const comparison = await invoke<TrialBalanceComparison>(
+          "compare_trial_balance_opening_closing",
+          { trialBalanceImportId: firstTrialBalanceImportId },
+        );
+        setTrialBalanceComparison(comparison);
       }
       const firstLedgerImportId = ledgerImportRecords[0]?.ledgerImportId ?? null;
       setSelectedLedgerImportId(firstLedgerImportId);
@@ -2196,15 +2206,16 @@ export default function App() {
 
   async function selectTrialBalanceImport(trialBalanceImportId: string | null) {
     setSelectedTrialBalanceImportId(trialBalanceImportId);
-    setTrialBalanceAccounts([]);
+    setTrialBalanceComparison(null);
     if (!trialBalanceImportId) return;
 
     setWorkspaceBusy(true);
     try {
-      const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
-        trialBalanceImportId,
-      });
-      setTrialBalanceAccounts(accounts);
+      const comparison = await invoke<TrialBalanceComparison>(
+        "compare_trial_balance_opening_closing",
+        { trialBalanceImportId },
+      );
+      setTrialBalanceComparison(comparison);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -2264,9 +2275,10 @@ export default function App() {
           },
         },
       );
-      const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
-        trialBalanceImportId: created.trialBalanceImportId,
-      });
+      const comparison = await invoke<TrialBalanceComparison>(
+        "compare_trial_balance_opening_closing",
+        { trialBalanceImportId: created.trialBalanceImportId },
+      );
       setTrialBalanceImports((current) => [
         created,
         ...current.filter(
@@ -2274,7 +2286,7 @@ export default function App() {
         ),
       ]);
       setSelectedTrialBalanceImportId(created.trialBalanceImportId);
-      setTrialBalanceAccounts(accounts);
+      setTrialBalanceComparison(comparison);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -5348,14 +5360,23 @@ export default function App() {
                             <small>
                               Opening{" "}
                               {formatMinorUnitAmount(
-                                selectedTrialBalanceImport.openingTotalMinor,
+                                trialBalanceComparison?.openingTotalMinor ??
+                                  selectedTrialBalanceImport.openingTotalMinor,
                                 selectedTrialBalanceImport.amountScale,
                               )}{" "}
                               · Closing{" "}
                               {formatMinorUnitAmount(
-                                selectedTrialBalanceImport.closingTotalMinor,
+                                trialBalanceComparison?.closingTotalMinor ??
+                                  selectedTrialBalanceImport.closingTotalMinor,
                                 selectedTrialBalanceImport.amountScale,
-                              )}
+                              )}{" "}
+                              · Net movement{" "}
+                              {trialBalanceComparison
+                                ? formatMinorUnitAmount(
+                                    trialBalanceComparison.netMovementMinor,
+                                    selectedTrialBalanceImport.amountScale,
+                                  )
+                                : "Loading…"}
                             </small>
                             <small>
                               {selectedTrialBalanceImport.sheetName} · source SHA{" "}
@@ -5364,14 +5385,19 @@ export default function App() {
                               {selectedTrialBalanceImport.controlledEvidenceVersionId.slice(0, 18)}…
                             </small>
                           </span>
-                          {trialBalanceAccounts.slice(0, 100).map((account) => (
+                          {trialBalanceComparison?.movements.slice(0, 100).map((account) => (
                             <span key={account.trialBalanceAccountId}>
                               <strong>
                                 {account.accountCodeText ? `${account.accountCodeText} · ` : ""}
                                 {account.accountNameText}
                               </strong>
                               <small>
-                                Opening{" "}
+                                Movement{" "}
+                                {formatMinorUnitAmount(
+                                  account.movementMinor,
+                                  selectedTrialBalanceImport.amountScale,
+                                )}{" "}
+                                · Opening{" "}
                                 {formatMinorUnitAmount(
                                   account.openingMinor,
                                   selectedTrialBalanceImport.amountScale,
@@ -5390,11 +5416,17 @@ export default function App() {
                             </span>
                           ))}
                         </div>
-                        {trialBalanceAccounts.length > 100 ? (
+                        {trialBalanceComparison && trialBalanceComparison.movements.length > 100 ? (
                           <p className="evidence-integrity-note">
-                            Showing the first 100 of{" "}
-                            {trialBalanceAccounts.length.toLocaleString()} imported accounts in this
-                            review pane.
+                            Showing the 100 largest absolute movements of{" "}
+                            {trialBalanceComparison.movements.length.toLocaleString()} imported
+                            accounts. The backend verifies that account movements reconcile to the
+                            immutable opening and closing totals.
+                          </p>
+                        ) : trialBalanceComparison ? (
+                          <p className="evidence-integrity-note">
+                            Movements are sorted by absolute size and reconcile to the immutable
+                            opening and closing totals in Rust.
                           </p>
                         ) : null}
                       </>
