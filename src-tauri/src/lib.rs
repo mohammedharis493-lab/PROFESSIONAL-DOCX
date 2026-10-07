@@ -641,6 +641,66 @@ impl From<persistence::LedgerTbMappingRecord> for LedgerTbMappingDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinancialStatementScheduleDto {
+    financial_statement_schedule_id: String,
+    engagement_id: String,
+    reference: String,
+    name: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::FinancialStatementScheduleRecord> for FinancialStatementScheduleDto {
+    fn from(value: persistence::FinancialStatementScheduleRecord) -> Self {
+        Self {
+            financial_statement_schedule_id: value.financial_statement_schedule_id,
+            engagement_id: value.engagement_id,
+            reference: value.reference,
+            name: value.name,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceScheduleMappingDto {
+    trial_balance_schedule_mapping_id: String,
+    trial_balance_import_id: String,
+    trial_balance_account_id: String,
+    trial_balance_account_code_text: Option<String>,
+    trial_balance_account_name_text: String,
+    trial_balance_source_row_number: u64,
+    trial_balance_source_row_hash_hex: String,
+    financial_statement_schedule_id: String,
+    schedule_reference: String,
+    schedule_name: String,
+    version_number: u64,
+    supersedes_mapping_id: Option<String>,
+    mapped_at_ms: i64,
+}
+
+impl From<persistence::TrialBalanceScheduleMappingRecord> for TrialBalanceScheduleMappingDto {
+    fn from(value: persistence::TrialBalanceScheduleMappingRecord) -> Self {
+        Self {
+            trial_balance_schedule_mapping_id: value.trial_balance_schedule_mapping_id,
+            trial_balance_import_id: value.trial_balance_import_id,
+            trial_balance_account_id: value.trial_balance_account_id,
+            trial_balance_account_code_text: value.trial_balance_account_code_text,
+            trial_balance_account_name_text: value.trial_balance_account_name_text,
+            trial_balance_source_row_number: value.trial_balance_source_row_number,
+            trial_balance_source_row_hash_hex: hex_bytes(&value.trial_balance_source_row_hash),
+            financial_statement_schedule_id: value.financial_statement_schedule_id,
+            schedule_reference: value.schedule_reference,
+            schedule_name: value.schedule_name,
+            version_number: value.version_number,
+            supersedes_mapping_id: value.supersedes_mapping_id,
+            mapped_at_ms: value.mapped_at_ms,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrialBalanceColumnMappingInputDto {
@@ -1606,6 +1666,72 @@ fn list_current_ledger_tb_mappings(
     persistence::list_current_ledger_tb_mappings(
         database.path(),
         &ledger_import_id,
+        &trial_balance_import_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_financial_statement_schedule(
+    engagement_id: String,
+    reference: String,
+    name: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<FinancialStatementScheduleDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::create_financial_statement_schedule(
+        database.path(),
+        &engagement_id,
+        &reference,
+        &name,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_financial_statement_schedules(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<FinancialStatementScheduleDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_financial_statement_schedules(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_trial_balance_schedule_mapping(
+    trial_balance_import_id: String,
+    trial_balance_account_id: String,
+    financial_statement_schedule_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<TrialBalanceScheduleMappingDto, String> {
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    validate_uuid(&trial_balance_account_id, "trial-balance-account")?;
+    validate_uuid(
+        &financial_statement_schedule_id,
+        "financial-statement-schedule",
+    )?;
+    persistence::create_trial_balance_schedule_mapping(
+        database.path(),
+        &trial_balance_import_id,
+        &trial_balance_account_id,
+        &financial_statement_schedule_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_current_trial_balance_schedule_mappings(
+    trial_balance_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<TrialBalanceScheduleMappingDto>, String> {
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    persistence::list_current_trial_balance_schedule_mappings(
+        database.path(),
         &trial_balance_import_id,
     )
     .map(|records| records.into_iter().map(Into::into).collect())
@@ -2872,6 +2998,10 @@ pub fn run() {
             list_ledger_account_summaries,
             create_ledger_tb_mapping,
             list_current_ledger_tb_mappings,
+            create_financial_statement_schedule,
+            list_financial_statement_schedules,
+            create_trial_balance_schedule_mapping,
+            list_current_trial_balance_schedule_mappings,
             list_ledger_test_runs,
             run_high_value_ledger_test,
             list_ledger_exceptions,
