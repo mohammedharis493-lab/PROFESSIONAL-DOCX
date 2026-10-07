@@ -1809,12 +1809,9 @@ fn list_current_financial_statement_schedule_links(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<Vec<FinancialStatementScheduleLinkDto>, String> {
     validate_uuid(&engagement_id, "engagement")?;
-    persistence::list_current_financial_statement_schedule_links(
-        database.path(),
-        &engagement_id,
-    )
-    .map(|records| records.into_iter().map(Into::into).collect())
-    .map_err(|error| error.to_string())
+    persistence::list_current_financial_statement_schedule_links(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
