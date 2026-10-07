@@ -451,6 +451,17 @@ struct LedgerColumnMappingInputDto {
     narration_column: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerImportInputDto {
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    sheet_name: String,
+    header_row_number: u32,
+    amount_scale: u32,
+    mapping: LedgerColumnMappingInputDto,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LedgerImportDto {
@@ -1246,15 +1257,19 @@ fn list_firm_library_versions(
 
 #[tauri::command]
 async fn import_ledger_from_controlled_evidence(
-    engagement_id: String,
-    controlled_evidence_version_id: String,
-    sheet_name: String,
-    header_row_number: u32,
-    amount_scale: u32,
-    mapping: LedgerColumnMappingInputDto,
+    input: LedgerImportInputDto,
     database: State<'_, persistence::DatabaseState>,
     evidence_state: State<'_, evidence::EvidenceState>,
 ) -> Result<LedgerImportDto, String> {
+    let LedgerImportInputDto {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        amount_scale,
+        mapping,
+    } = input;
+
     validate_uuid(&engagement_id, "engagement")?;
     validate_uuid(
         &controlled_evidence_version_id,
@@ -1303,17 +1318,19 @@ async fn import_ledger_from_controlled_evidence(
 
         persistence::create_ledger_import(
             &database_path,
-            &engagement_id,
-            &controlled.record.controlled_evidence_version_id,
-            &sheet_name,
-            u64::from(header_row_number),
-            mapping.amount_column,
-            mapping.date_column,
-            mapping.account_column,
-            mapping.voucher_column,
-            mapping.narration_column,
-            amount_scale,
-            &transactions,
+            persistence::LedgerImportDefinition {
+                engagement_id: &engagement_id,
+                controlled_evidence_version_id: &controlled.record.controlled_evidence_version_id,
+                sheet_name: &sheet_name,
+                header_row_number: u64::from(header_row_number),
+                amount_column: mapping.amount_column,
+                date_column: mapping.date_column,
+                account_column: mapping.account_column,
+                voucher_column: mapping.voucher_column,
+                narration_column: mapping.narration_column,
+                amount_scale,
+                transactions: &transactions,
+            },
         )
         .map(Into::into)
         .map_err(|error| error.to_string())
