@@ -7,6 +7,7 @@ mod persistence;
 mod preview;
 mod search;
 mod spreadsheet;
+mod trial_balance;
 mod word;
 
 use serde::{Deserialize, Serialize};
@@ -571,6 +572,102 @@ impl From<persistence::LedgerExceptionRecord> for LedgerExceptionDto {
             sheet_name: value.sheet_name,
             source_row_number: value.source_row_number,
             source_row_hash_hex: hex_bytes(&value.source_row_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceColumnMappingInputDto {
+    account_name_column: u32,
+    account_code_column: Option<u32>,
+    opening_balance_column: Option<u32>,
+    closing_balance_column: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceImportInputDto {
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    sheet_name: String,
+    header_row_number: u32,
+    amount_scale: u32,
+    mapping: TrialBalanceColumnMappingInputDto,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceImportDto {
+    trial_balance_import_id: String,
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    sheet_name: String,
+    header_row_number: u64,
+    account_name_column: u32,
+    account_code_column: Option<u32>,
+    opening_balance_column: Option<u32>,
+    closing_balance_column: u32,
+    amount_scale: u32,
+    account_count: u64,
+    opening_total_minor: i64,
+    closing_total_minor: i64,
+    imported_at_ms: i64,
+}
+
+impl From<persistence::TrialBalanceImportRecord> for TrialBalanceImportDto {
+    fn from(value: persistence::TrialBalanceImportRecord) -> Self {
+        Self {
+            trial_balance_import_id: value.trial_balance_import_id,
+            engagement_id: value.engagement_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            sheet_name: value.sheet_name,
+            header_row_number: value.header_row_number,
+            account_name_column: value.account_name_column,
+            account_code_column: value.account_code_column,
+            opening_balance_column: value.opening_balance_column,
+            closing_balance_column: value.closing_balance_column,
+            amount_scale: value.amount_scale,
+            account_count: value.account_count,
+            opening_total_minor: value.opening_total_minor,
+            closing_total_minor: value.closing_total_minor,
+            imported_at_ms: value.imported_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceAccountDto {
+    trial_balance_account_id: String,
+    trial_balance_import_id: String,
+    source_row_number: u64,
+    source_row_hash_hex: String,
+    account_code_text: Option<String>,
+    account_name_text: String,
+    opening_minor: i64,
+    closing_minor: i64,
+    created_at_ms: i64,
+}
+
+impl From<persistence::TrialBalanceAccountRecord> for TrialBalanceAccountDto {
+    fn from(value: persistence::TrialBalanceAccountRecord) -> Self {
+        Self {
+            trial_balance_account_id: value.trial_balance_account_id,
+            trial_balance_import_id: value.trial_balance_import_id,
+            source_row_number: value.source_row_number,
+            source_row_hash_hex: hex_bytes(&value.source_row_hash),
+            account_code_text: value.account_code_text,
+            account_name_text: value.account_name_text,
+            opening_minor: value.opening_minor,
+            closing_minor: value.closing_minor,
             created_at_ms: value.created_at_ms,
         }
     }
@@ -1379,6 +1476,108 @@ fn list_ledger_exceptions(
 ) -> Result<Vec<LedgerExceptionDto>, String> {
     validate_uuid(&ledger_test_run_id, "ledger-test-run")?;
     persistence::list_ledger_exceptions(database.path(), &ledger_test_run_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_trial_balance_from_controlled_evidence(
+    input: TrialBalanceImportInputDto,
+    database: State<'_, persistence::DatabaseState>,
+    evidence_state: State<'_, evidence::EvidenceState>,
+) -> Result<TrialBalanceImportDto, String> {
+    let TrialBalanceImportInputDto {
+        engagement_id,
+        controlled_evidence_version_id,
+        sheet_name,
+        header_row_number,
+        amount_scale,
+        mapping,
+    } = input;
+
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+
+    let database_path = database.path().to_path_buf();
+    let evidence_handle = evidence_state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let controlled = evidence::read_controlled_evidence_bytes(
+            &database_path,
+            &evidence_handle,
+            &controlled_evidence_version_id,
+            trial_balance::MAX_TRIAL_BALANCE_IMPORT_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let trial_balance_mapping = trial_balance::TrialBalanceColumnMapping {
+            account_name_column: mapping.account_name_column,
+            account_code_column: mapping.account_code_column,
+            opening_balance_column: mapping.opening_balance_column,
+            closing_balance_column: mapping.closing_balance_column,
+        };
+        let parsed = trial_balance::parse_trial_balance_workbook(
+            &controlled.bytes,
+            &sheet_name,
+            header_row_number,
+            amount_scale,
+            &trial_balance_mapping,
+        )?;
+        let accounts = parsed
+            .into_iter()
+            .map(|account| persistence::TrialBalanceAccountInput {
+                source_row_number: account.source_row_number,
+                source_row_hash: account.source_row_hash,
+                account_code_text: account.account_code_text,
+                account_name_text: account.account_name_text,
+                opening_minor: account.opening_minor,
+                closing_minor: account.closing_minor,
+            })
+            .collect::<Vec<_>>();
+
+        persistence::create_trial_balance_import(
+            &database_path,
+            persistence::TrialBalanceImportDefinition {
+                engagement_id: &engagement_id,
+                controlled_evidence_version_id: &controlled.record.controlled_evidence_version_id,
+                sheet_name: &sheet_name,
+                header_row_number: u64::from(header_row_number),
+                account_name_column: mapping.account_name_column,
+                account_code_column: mapping.account_code_column,
+                opening_balance_column: mapping.opening_balance_column,
+                closing_balance_column: mapping.closing_balance_column,
+                amount_scale,
+                accounts: &accounts,
+            },
+        )
+        .map(Into::into)
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Trial balance import task failed to join: {error}"))?
+}
+
+#[tauri::command]
+fn list_trial_balance_imports(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<TrialBalanceImportDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_trial_balance_imports(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_trial_balance_accounts(
+    trial_balance_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<TrialBalanceAccountDto>, String> {
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    persistence::list_trial_balance_accounts(database.path(), &trial_balance_import_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
@@ -2496,6 +2695,9 @@ pub fn run() {
             list_ledger_test_runs,
             run_high_value_ledger_test,
             list_ledger_exceptions,
+            import_trial_balance_from_controlled_evidence,
+            list_trial_balance_imports,
+            list_trial_balance_accounts,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
