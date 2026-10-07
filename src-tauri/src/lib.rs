@@ -675,6 +675,58 @@ impl From<persistence::TrialBalanceAccountRecord> for TrialBalanceAccountDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TrialBalanceMovementDto {
+    trial_balance_account_id: String,
+    source_row_number: u64,
+    source_row_hash_hex: String,
+    account_code_text: Option<String>,
+    account_name_text: String,
+    opening_minor: i64,
+    closing_minor: i64,
+    movement_minor: i64,
+}
+
+impl From<persistence::TrialBalanceMovementRecord> for TrialBalanceMovementDto {
+    fn from(value: persistence::TrialBalanceMovementRecord) -> Self {
+        Self {
+            trial_balance_account_id: value.trial_balance_account_id,
+            source_row_number: value.source_row_number,
+            source_row_hash_hex: hex_bytes(&value.source_row_hash),
+            account_code_text: value.account_code_text,
+            account_name_text: value.account_name_text,
+            opening_minor: value.opening_minor,
+            closing_minor: value.closing_minor,
+            movement_minor: value.movement_minor,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalanceComparisonDto {
+    trial_balance_import_id: String,
+    opening_total_minor: i64,
+    closing_total_minor: i64,
+    net_movement_minor: i64,
+    account_count: u64,
+    movements: Vec<TrialBalanceMovementDto>,
+}
+
+impl From<persistence::TrialBalanceComparisonRecord> for TrialBalanceComparisonDto {
+    fn from(value: persistence::TrialBalanceComparisonRecord) -> Self {
+        Self {
+            trial_balance_import_id: value.trial_balance_import_id,
+            opening_total_minor: value.opening_total_minor,
+            closing_total_minor: value.closing_total_minor,
+            net_movement_minor: value.net_movement_minor,
+            account_count: value.account_count,
+            movements: value.movements.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EngagementAreaDto {
     engagement_area_id: String,
     engagement_id: String,
@@ -1579,6 +1631,17 @@ fn list_trial_balance_accounts(
     validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
     persistence::list_trial_balance_accounts(database.path(), &trial_balance_import_id)
         .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn compare_trial_balance_opening_closing(
+    trial_balance_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<TrialBalanceComparisonDto, String> {
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    persistence::compare_trial_balance_opening_closing(database.path(), &trial_balance_import_id)
+        .map(Into::into)
         .map_err(|error| error.to_string())
 }
 
@@ -2698,6 +2761,7 @@ pub fn run() {
             import_trial_balance_from_controlled_evidence,
             list_trial_balance_imports,
             list_trial_balance_accounts,
+            compare_trial_balance_opening_closing,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,
