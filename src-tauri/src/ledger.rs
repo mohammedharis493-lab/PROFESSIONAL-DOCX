@@ -1,5 +1,4 @@
 use calamine::{open_workbook_auto_from_rs, Data, Reader, SheetType};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
@@ -18,7 +17,6 @@ pub struct LedgerColumnMapping {
 #[derive(Debug, Clone)]
 pub struct ParsedLedgerTransaction {
     pub source_row_number: u64,
-    pub source_row_json: String,
     pub source_row_hash: Vec<u8>,
     pub transaction_date_text: Option<String>,
     pub account_text: Option<String>,
@@ -147,26 +145,10 @@ pub fn parse_ledger_workbook(
             )
         })?;
 
-        let cells = (start_column..=end_column)
-            .map(|column| {
-                range
-                    .get_value((row, column))
-                    .filter(|value| !matches!(value, Data::Empty))
-                    .map(ToString::to_string)
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>();
-        let source_row_json = serde_json::to_string(&json!({
-            "rowNumber": u64::from(row) + 1,
-            "startColumn": start_column,
-            "cells": cells
-        }))
-        .map_err(|error| format!("Unable to serialize ledger source row: {error}"))?;
-        let source_row_hash = Sha256::digest(source_row_json.as_bytes()).to_vec();
+        let source_row_hash = hash_source_row(&range, row, start_column, end_column);
 
         transactions.push(ParsedLedgerTransaction {
             source_row_number: u64::from(row) + 1,
-            source_row_json,
             source_row_hash,
             transaction_date_text,
             account_text,
@@ -177,6 +159,32 @@ pub fn parse_ledger_workbook(
     }
 
     Ok(transactions)
+}
+
+fn hash_source_row(
+    range: &calamine::Range<Data>,
+    row: u32,
+    start_column: u32,
+    end_column: u32,
+) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"PROFESSIONAL-DOCX-LEDGER-ROW-V1");
+    hasher.update(row.to_be_bytes());
+    hasher.update(start_column.to_be_bytes());
+    hasher.update(end_column.to_be_bytes());
+
+    for column in start_column..=end_column {
+        let value = range
+            .get_value((row, column))
+            .filter(|value| !matches!(value, Data::Empty))
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        hasher.update(column.to_be_bytes());
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    hasher.finalize().to_vec()
 }
 
 fn mapped_columns(mapping: &LedgerColumnMapping) -> Vec<u32> {
