@@ -3213,6 +3213,44 @@ pub fn begin_evidence_capture(
     })
 }
 
+pub fn get_controlled_evidence_read_record(
+    database_path: &Path,
+    controlled_evidence_version_id: &str,
+) -> Result<Option<ControlledEvidenceReadRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    connection
+        .query_row(
+            "SELECT
+                cev.controlled_evidence_version_id,
+                cev.document_id,
+                cev.source_content_version_id,
+                cev.controlled_storage_locator,
+                cev.sha256,
+                cev.size_bytes,
+                cev.verification_state,
+                cev.retention_state
+             FROM controlled_evidence_versions cev
+             JOIN documents d ON d.document_id = cev.document_id
+             WHERE cev.controlled_evidence_version_id = ?1
+               AND d.archived_at_ms IS NULL",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok(ControlledEvidenceReadRecord {
+                    controlled_evidence_version_id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    source_content_version_id: row.get(2)?,
+                    controlled_storage_locator: row.get(3)?,
+                    sha256: row.get(4)?,
+                    size_bytes: row.get::<_, i64>(5)?.max(0) as u64,
+                    verification_state: row.get(6)?,
+                    retention_state: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
 pub fn list_document_version_history(
     database_path: &Path,
     document_id: &str,
@@ -5117,6 +5155,467 @@ pub fn list_firm_library_versions(
             definition_json: row.get(3)?,
             definition_hash: row.get(4)?,
             created_at_ms: row.get(5)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_ledger_import(
+    database_path: &Path,
+    engagement_id: &str,
+    controlled_evidence_version_id: &str,
+    sheet_name: &str,
+    header_row_number: u64,
+    amount_column: u32,
+    date_column: Option<u32>,
+    account_column: Option<u32>,
+    voucher_column: Option<u32>,
+    narration_column: Option<u32>,
+    amount_scale: u32,
+    transactions: &[LedgerTransactionInput],
+) -> Result<LedgerImportRecord, PersistenceError> {
+    let sheet_name = sheet_name.trim();
+    if sheet_name.is_empty()
+        || sheet_name.chars().count() > 255
+        || sheet_name.chars().any(|character| character.is_control())
+    {
+        return Err(PersistenceError::Configuration(
+            "ledger worksheet name must contain 1 to 255 printable characters".to_string(),
+        ));
+    }
+    if header_row_number == 0 {
+        return Err(PersistenceError::Configuration(
+            "ledger header row number must be at least 1".to_string(),
+        ));
+    }
+    if amount_scale > 6 {
+        return Err(PersistenceError::Configuration(
+            "ledger amount scale must be between 0 and 6".to_string(),
+        ));
+    }
+
+    for transaction in transactions {
+        if transaction.source_row_number == 0 {
+            return Err(PersistenceError::Configuration(
+                "ledger transaction source row must be at least 1".to_string(),
+            ));
+        }
+        if transaction.source_row_json.trim().is_empty() || transaction.source_row_hash.len() != 32 {
+            return Err(PersistenceError::Configuration(
+                "ledger transaction provenance is incomplete".to_string(),
+            ));
+        }
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((document_id, source_content_version_id, source_sha256, verification_state, retention_state)) =
+        evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "ledger imports require retained hash-verified controlled evidence".to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled ledger evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let ledger_import_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO ledger_imports (
+            ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            amount_column,
+            date_column,
+            account_column,
+            voucher_column,
+            narration_column,
+            amount_scale,
+            transaction_count,
+            imported_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+         )",
+        params![
+            &ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            sheet_name,
+            u64_to_i64(header_row_number)?,
+            i64::from(amount_column),
+            date_column.map(i64::from),
+            account_column.map(i64::from),
+            voucher_column.map(i64::from),
+            narration_column.map(i64::from),
+            i64::from(amount_scale),
+            u64_to_i64(transactions.len() as u64)?,
+            now
+        ],
+    )?;
+
+    for ledger_transaction in transactions {
+        transaction.execute(
+            "INSERT INTO ledger_transactions (
+                ledger_transaction_id,
+                ledger_import_id,
+                source_row_number,
+                source_row_json,
+                source_row_hash,
+                transaction_date_text,
+                account_text,
+                voucher_text,
+                narration_text,
+                amount_minor,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                Uuid::new_v4().to_string(),
+                &ledger_import_id,
+                u64_to_i64(ledger_transaction.source_row_number)?,
+                &ledger_transaction.source_row_json,
+                &ledger_transaction.source_row_hash,
+                ledger_transaction.transaction_date_text.as_deref(),
+                ledger_transaction.account_text.as_deref(),
+                ledger_transaction.voucher_text.as_deref(),
+                ledger_transaction.narration_text.as_deref(),
+                ledger_transaction.amount_minor,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_IMPORTED",
+            entity_type: "LEDGER_IMPORT",
+            entity_id: &ledger_import_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256),
+                "sheetName": sheet_name,
+                "transactionCount": transactions.len(),
+                "amountScale": amount_scale
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerImportRecord {
+        ledger_import_id,
+        engagement_id: engagement_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        sheet_name: sheet_name.to_string(),
+        header_row_number,
+        amount_column,
+        date_column,
+        account_column,
+        voucher_column,
+        narration_column,
+        amount_scale,
+        transaction_count: transactions.len() as u64,
+        imported_at_ms: now,
+    })
+}
+
+pub fn list_ledger_imports(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<LedgerImportRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            ledger_import_id,
+            engagement_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            sheet_name,
+            header_row_number,
+            amount_column,
+            date_column,
+            account_column,
+            voucher_column,
+            narration_column,
+            amount_scale,
+            transaction_count,
+            imported_at_ms
+         FROM ledger_imports
+         WHERE engagement_id = ?1
+         ORDER BY imported_at_ms DESC, ledger_import_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let header_row_number: i64 = row.get(7)?;
+        let amount_column: i64 = row.get(8)?;
+        let date_column: Option<i64> = row.get(9)?;
+        let account_column: Option<i64> = row.get(10)?;
+        let voucher_column: Option<i64> = row.get(11)?;
+        let narration_column: Option<i64> = row.get(12)?;
+        let amount_scale: i64 = row.get(13)?;
+        let transaction_count: i64 = row.get(14)?;
+        Ok(LedgerImportRecord {
+            ledger_import_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            sheet_name: row.get(6)?,
+            header_row_number: header_row_number.max(0) as u64,
+            amount_column: amount_column.max(0) as u32,
+            date_column: date_column.map(|value| value.max(0) as u32),
+            account_column: account_column.map(|value| value.max(0) as u32),
+            voucher_column: voucher_column.map(|value| value.max(0) as u32),
+            narration_column: narration_column.map(|value| value.max(0) as u32),
+            amount_scale: amount_scale.max(0) as u32,
+            transaction_count: transaction_count.max(0) as u64,
+            imported_at_ms: row.get(15)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn run_high_value_ledger_test(
+    database_path: &Path,
+    ledger_import_id: &str,
+    threshold_minor: i64,
+) -> Result<LedgerTestRunRecord, PersistenceError> {
+    if threshold_minor <= 0 {
+        return Err(PersistenceError::Configuration(
+            "high-value threshold must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let import_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM ledger_imports
+            WHERE ledger_import_id = ?1
+        )",
+        [ledger_import_id],
+        |row| row.get(0),
+    )?;
+    if !import_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "ledger import {ledger_import_id} does not exist"
+        )));
+    }
+
+    let transaction_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT ledger_transaction_id
+             FROM ledger_transactions
+             WHERE ledger_import_id = ?1
+               AND (amount_minor >= ?2 OR amount_minor <= -?2)
+             ORDER BY source_row_number, ledger_transaction_id",
+        )?;
+        let rows = statement.query_map(params![ledger_import_id, threshold_minor], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    let ledger_test_run_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let parameters_json = json!({
+        "thresholdMinor": threshold_minor
+    })
+    .to_string();
+    transaction.execute(
+        "INSERT INTO ledger_test_runs (
+            ledger_test_run_id,
+            ledger_import_id,
+            test_type,
+            parameters_json,
+            exception_count,
+            ran_at_ms
+         ) VALUES (?1, ?2, 'HIGH_VALUE', ?3, ?4, ?5)",
+        params![
+            &ledger_test_run_id,
+            ledger_import_id,
+            &parameters_json,
+            u64_to_i64(transaction_ids.len() as u64)?,
+            now
+        ],
+    )?;
+
+    for ledger_transaction_id in &transaction_ids {
+        transaction.execute(
+            "INSERT INTO ledger_exceptions (
+                ledger_exception_id,
+                ledger_test_run_id,
+                ledger_transaction_id,
+                exception_code,
+                created_at_ms
+             ) VALUES (?1, ?2, ?3, 'HIGH_VALUE', ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                &ledger_test_run_id,
+                ledger_transaction_id,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "LEDGER_TEST_RUN_COMPLETED",
+            entity_type: "LEDGER_TEST_RUN",
+            entity_id: &ledger_test_run_id,
+            related_entity_type: Some("LEDGER_IMPORT"),
+            related_entity_id: Some(ledger_import_id),
+            occurred_at_ms: now,
+            details: json!({
+                "testType": "HIGH_VALUE",
+                "thresholdMinor": threshold_minor,
+                "exceptionCount": transaction_ids.len()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(LedgerTestRunRecord {
+        ledger_test_run_id,
+        ledger_import_id: ledger_import_id.to_string(),
+        test_type: "HIGH_VALUE".to_string(),
+        threshold_minor,
+        exception_count: transaction_ids.len() as u64,
+        ran_at_ms: now,
+    })
+}
+
+pub fn list_ledger_exceptions(
+    database_path: &Path,
+    ledger_test_run_id: &str,
+) -> Result<Vec<LedgerExceptionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            e.ledger_exception_id,
+            e.ledger_test_run_id,
+            t.ledger_transaction_id,
+            e.exception_code,
+            t.amount_minor,
+            t.transaction_date_text,
+            t.account_text,
+            t.voucher_text,
+            t.narration_text,
+            i.controlled_evidence_version_id,
+            i.document_id,
+            i.source_content_version_id,
+            i.source_sha256,
+            i.sheet_name,
+            t.source_row_number,
+            t.source_row_hash,
+            e.created_at_ms
+         FROM ledger_exceptions e
+         JOIN ledger_transactions t
+           ON t.ledger_transaction_id = e.ledger_transaction_id
+         JOIN ledger_imports i
+           ON i.ledger_import_id = t.ledger_import_id
+         WHERE e.ledger_test_run_id = ?1
+         ORDER BY t.source_row_number, e.ledger_exception_id",
+    )?;
+    let rows = statement.query_map([ledger_test_run_id], |row| {
+        let source_row_number: i64 = row.get(14)?;
+        Ok(LedgerExceptionRecord {
+            ledger_exception_id: row.get(0)?,
+            ledger_test_run_id: row.get(1)?,
+            ledger_transaction_id: row.get(2)?,
+            exception_code: row.get(3)?,
+            amount_minor: row.get(4)?,
+            transaction_date_text: row.get(5)?,
+            account_text: row.get(6)?,
+            voucher_text: row.get(7)?,
+            narration_text: row.get(8)?,
+            controlled_evidence_version_id: row.get(9)?,
+            document_id: row.get(10)?,
+            source_content_version_id: row.get(11)?,
+            source_sha256: row.get(12)?,
+            sheet_name: row.get(13)?,
+            source_row_number: source_row_number.max(0) as u64,
+            source_row_hash: row.get(15)?,
+            created_at_ms: row.get(16)?,
         })
     })?;
 
