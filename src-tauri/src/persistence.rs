@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 15;
+const LATEST_SCHEMA_VERSION: i64 = 16;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 
 struct Migration {
@@ -102,6 +102,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         name: "ledger_tb_mappings",
         sql: include_str!("../migrations/0015_ledger_tb_mappings.sql"),
+    },
+    Migration {
+        version: 16,
+        name: "tb_schedule_mappings",
+        sql: include_str!("../migrations/0016_tb_schedule_mappings.sql"),
     },
 ];
 
@@ -513,6 +518,32 @@ pub struct LedgerTbMappingRecord {
     pub trial_balance_account_name_text: String,
     pub trial_balance_source_row_number: u64,
     pub trial_balance_source_row_hash: Vec<u8>,
+    pub version_number: u64,
+    pub supersedes_mapping_id: Option<String>,
+    pub mapped_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinancialStatementScheduleRecord {
+    pub financial_statement_schedule_id: String,
+    pub engagement_id: String,
+    pub reference: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrialBalanceScheduleMappingRecord {
+    pub trial_balance_schedule_mapping_id: String,
+    pub trial_balance_import_id: String,
+    pub trial_balance_account_id: String,
+    pub trial_balance_account_code_text: Option<String>,
+    pub trial_balance_account_name_text: String,
+    pub trial_balance_source_row_number: u64,
+    pub trial_balance_source_row_hash: Vec<u8>,
+    pub financial_statement_schedule_id: String,
+    pub schedule_reference: String,
+    pub schedule_name: String,
     pub version_number: u64,
     pub supersedes_mapping_id: Option<String>,
     pub mapped_at_ms: i64,
