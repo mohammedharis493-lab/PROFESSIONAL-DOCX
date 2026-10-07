@@ -380,6 +380,30 @@ type LedgerTbMapping = {
   mappedAtMs: number;
 };
 
+type FinancialStatementSchedule = {
+  financialStatementScheduleId: string;
+  engagementId: string;
+  reference: string;
+  name: string;
+  createdAtMs: number;
+};
+
+type TrialBalanceScheduleMapping = {
+  trialBalanceScheduleMappingId: string;
+  trialBalanceImportId: string;
+  trialBalanceAccountId: string;
+  trialBalanceAccountCodeText: string | null;
+  trialBalanceAccountNameText: string;
+  trialBalanceSourceRowNumber: number;
+  trialBalanceSourceRowHashHex: string;
+  financialStatementScheduleId: string;
+  scheduleReference: string;
+  scheduleName: string;
+  versionNumber: number;
+  supersedesMappingId: string | null;
+  mappedAtMs: number;
+};
+
 type TrialBalanceImport = {
   trialBalanceImportId: string;
   engagementId: string;
@@ -1137,6 +1161,21 @@ export default function App() {
   const [selectedMappingLedgerAccountKey, setSelectedMappingLedgerAccountKey] = useState("");
   const [selectedMappingTrialBalanceAccountId, setSelectedMappingTrialBalanceAccountId] =
     useState("");
+  const [financialStatementSchedules, setFinancialStatementSchedules] =
+    useState<FinancialStatementSchedule[]>([]);
+  const [newFinancialStatementScheduleReference, setNewFinancialStatementScheduleReference] =
+    useState("");
+  const [newFinancialStatementScheduleName, setNewFinancialStatementScheduleName] = useState("");
+  const [scheduleMappingTrialBalanceImportId, setScheduleMappingTrialBalanceImportId] =
+    useState<string | null>(null);
+  const [scheduleMappingTrialBalanceAccounts, setScheduleMappingTrialBalanceAccounts] =
+    useState<TrialBalanceAccount[]>([]);
+  const [trialBalanceScheduleMappings, setTrialBalanceScheduleMappings] =
+    useState<TrialBalanceScheduleMapping[]>([]);
+  const [selectedScheduleMappingTrialBalanceAccountId, setSelectedScheduleMappingTrialBalanceAccountId] =
+    useState("");
+  const [selectedFinancialStatementScheduleId, setSelectedFinancialStatementScheduleId] =
+    useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1438,6 +1477,12 @@ export default function App() {
     setLedgerTbMappings([]);
     setSelectedMappingLedgerAccountKey("");
     setSelectedMappingTrialBalanceAccountId("");
+    setFinancialStatementSchedules([]);
+    setScheduleMappingTrialBalanceImportId(null);
+    setScheduleMappingTrialBalanceAccounts([]);
+    setTrialBalanceScheduleMappings([]);
+    setSelectedScheduleMappingTrialBalanceAccountId("");
+    setSelectedFinancialStatementScheduleId("");
     try {
       const [
         areas,
@@ -1446,6 +1491,7 @@ export default function App() {
         requestRecords,
         ledgerImportRecords,
         trialBalanceImportRecords,
+        scheduleRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1453,6 +1499,9 @@ export default function App() {
         invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
         invoke<LedgerImport[]>("list_ledger_imports", { engagementId }),
         invoke<TrialBalanceImport[]>("list_trial_balance_imports", { engagementId }),
+        invoke<FinancialStatementSchedule[]>("list_financial_statement_schedules", {
+          engagementId,
+        }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1460,15 +1509,40 @@ export default function App() {
       setPbcRequests(requestRecords);
       setLedgerImports(ledgerImportRecords);
       setTrialBalanceImports(trialBalanceImportRecords);
+      setFinancialStatementSchedules(scheduleRecords);
+      setSelectedFinancialStatementScheduleId(
+        scheduleRecords[0]?.financialStatementScheduleId ?? "",
+      );
       const firstTrialBalanceImportId =
         trialBalanceImportRecords[0]?.trialBalanceImportId ?? null;
       setSelectedTrialBalanceImportId(firstTrialBalanceImportId);
+      setScheduleMappingTrialBalanceImportId(firstTrialBalanceImportId);
       if (firstTrialBalanceImportId) {
-        const comparison = await invoke<TrialBalanceComparison>(
-          "compare_trial_balance_opening_closing",
-          { trialBalanceImportId: firstTrialBalanceImportId },
-        );
+        const [comparison, scheduleAccounts, scheduleMappings] = await Promise.all([
+          invoke<TrialBalanceComparison>("compare_trial_balance_opening_closing", {
+            trialBalanceImportId: firstTrialBalanceImportId,
+          }),
+          invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+            trialBalanceImportId: firstTrialBalanceImportId,
+          }),
+          invoke<TrialBalanceScheduleMapping[]>(
+            "list_current_trial_balance_schedule_mappings",
+            { trialBalanceImportId: firstTrialBalanceImportId },
+          ),
+        ]);
         setTrialBalanceComparison(comparison);
+        setScheduleMappingTrialBalanceAccounts(scheduleAccounts);
+        setTrialBalanceScheduleMappings(scheduleMappings);
+        const firstScheduleAccountId = scheduleAccounts[0]?.trialBalanceAccountId ?? "";
+        setSelectedScheduleMappingTrialBalanceAccountId(firstScheduleAccountId);
+        const currentScheduleTarget = scheduleMappings.find(
+          (mapping) => mapping.trialBalanceAccountId === firstScheduleAccountId,
+        );
+        setSelectedFinancialStatementScheduleId(
+          currentScheduleTarget?.financialStatementScheduleId ??
+            scheduleRecords[0]?.financialStatementScheduleId ??
+            "",
+        );
       }
       const firstLedgerImport = ledgerImportRecords[0] ?? null;
       const firstLedgerImportId = firstLedgerImport?.ledgerImportId ?? null;
@@ -2623,6 +2697,131 @@ export default function App() {
         trialBalanceImportId: mappingTrialBalanceImportId,
       });
       setLedgerTbMappings(mappings);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitFinancialStatementSchedule(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedEngagementId) return;
+    const reference = newFinancialStatementScheduleReference.trim();
+    const name = newFinancialStatementScheduleName.trim();
+    if (!reference || !name) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<FinancialStatementSchedule>(
+        "create_financial_statement_schedule",
+        {
+          engagementId: selectedEngagementId,
+          reference,
+          name,
+        },
+      );
+      setFinancialStatementSchedules((current) =>
+        [...current, created].sort((left, right) =>
+          left.reference.localeCompare(right.reference),
+        ),
+      );
+      setSelectedFinancialStatementScheduleId(created.financialStatementScheduleId);
+      setNewFinancialStatementScheduleReference("");
+      setNewFinancialStatementScheduleName("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadTrialBalanceScheduleMapping(
+    trialBalanceImportId: string | null,
+  ) {
+    setScheduleMappingTrialBalanceAccounts([]);
+    setTrialBalanceScheduleMappings([]);
+    setSelectedScheduleMappingTrialBalanceAccountId("");
+    if (!trialBalanceImportId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const [accounts, mappings] = await Promise.all([
+        invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+          trialBalanceImportId,
+        }),
+        invoke<TrialBalanceScheduleMapping[]>(
+          "list_current_trial_balance_schedule_mappings",
+          { trialBalanceImportId },
+        ),
+      ]);
+      setScheduleMappingTrialBalanceAccounts(accounts);
+      setTrialBalanceScheduleMappings(mappings);
+      const firstAccountId = accounts[0]?.trialBalanceAccountId ?? "";
+      setSelectedScheduleMappingTrialBalanceAccountId(firstAccountId);
+      const currentTarget = mappings.find(
+        (mapping) => mapping.trialBalanceAccountId === firstAccountId,
+      );
+      setSelectedFinancialStatementScheduleId(
+        currentTarget?.financialStatementScheduleId ??
+          financialStatementSchedules[0]?.financialStatementScheduleId ??
+          "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectScheduleMappingTrialBalanceImport(
+    trialBalanceImportId: string | null,
+  ) {
+    setScheduleMappingTrialBalanceImportId(trialBalanceImportId);
+    await loadTrialBalanceScheduleMapping(trialBalanceImportId);
+  }
+
+  function selectScheduleMappingTrialBalanceAccount(trialBalanceAccountId: string) {
+    setSelectedScheduleMappingTrialBalanceAccountId(trialBalanceAccountId);
+    const currentTarget = trialBalanceScheduleMappings.find(
+      (mapping) => mapping.trialBalanceAccountId === trialBalanceAccountId,
+    );
+    setSelectedFinancialStatementScheduleId(
+      currentTarget?.financialStatementScheduleId ??
+        financialStatementSchedules[0]?.financialStatementScheduleId ??
+        "",
+    );
+  }
+
+  async function submitTrialBalanceScheduleMapping(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      !scheduleMappingTrialBalanceImportId ||
+      !selectedScheduleMappingTrialBalanceAccountId ||
+      !selectedFinancialStatementScheduleId
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<TrialBalanceScheduleMapping>(
+        "create_trial_balance_schedule_mapping",
+        {
+          trialBalanceImportId: scheduleMappingTrialBalanceImportId,
+          trialBalanceAccountId: selectedScheduleMappingTrialBalanceAccountId,
+          financialStatementScheduleId: selectedFinancialStatementScheduleId,
+        },
+      );
+      const mappings = await invoke<TrialBalanceScheduleMapping[]>(
+        "list_current_trial_balance_schedule_mappings",
+        { trialBalanceImportId: scheduleMappingTrialBalanceImportId },
+      );
+      setTrialBalanceScheduleMappings(mappings);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -4112,6 +4311,20 @@ export default function App() {
   const currentMappingForSelectedAccount =
     ledgerTbMappings.find(
       (item) => item.ledgerAccountKey === selectedMappingLedgerAccountKey,
+    ) ?? null;
+  const selectedScheduleMappingTrialBalanceImport =
+    trialBalanceImports.find(
+      (item) => item.trialBalanceImportId === scheduleMappingTrialBalanceImportId,
+    ) ?? null;
+  const selectedScheduleMappingTrialBalanceAccount =
+    scheduleMappingTrialBalanceAccounts.find(
+      (item) =>
+        item.trialBalanceAccountId === selectedScheduleMappingTrialBalanceAccountId,
+    ) ?? null;
+  const currentScheduleMappingForSelectedAccount =
+    trialBalanceScheduleMappings.find(
+      (item) =>
+        item.trialBalanceAccountId === selectedScheduleMappingTrialBalanceAccountId,
     ) ?? null;
   const trialBalanceControlledEvidenceVersions = trialBalanceEvidenceVersionHistory.filter(
     (entry) =>
@@ -5858,6 +6071,222 @@ export default function App() {
                         {selectedMappingTrialBalanceImport.controlledEvidenceVersionId.slice(0, 18)}…
                       </p>
                     ) : null}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">FS SCHEDULES</span>
+                        <h3>{financialStatementSchedules.length} immutable schedule(s)</h3>
+                      </div>
+                    </div>
+                    <form
+                      className="workspace-form compact"
+                      onSubmit={submitFinancialStatementSchedule}
+                    >
+                      <label>
+                        <span>Schedule reference</span>
+                        <input
+                          value={newFinancialStatementScheduleReference}
+                          onChange={(event) =>
+                            setNewFinancialStatementScheduleReference(event.target.value)
+                          }
+                          placeholder="SCH-REV"
+                          maxLength={80}
+                        />
+                      </label>
+                      <label>
+                        <span>Schedule name</span>
+                        <input
+                          value={newFinancialStatementScheduleName}
+                          onChange={(event) =>
+                            setNewFinancialStatementScheduleName(event.target.value)
+                          }
+                          placeholder="Revenue"
+                          maxLength={240}
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !newFinancialStatementScheduleReference.trim() ||
+                          !newFinancialStatementScheduleName.trim()
+                        }
+                      >
+                        Add immutable schedule
+                      </button>
+                    </form>
+                    <div className="workspace-mini-list">
+                      {financialStatementSchedules.length ? (
+                        financialStatementSchedules.map((schedule) => (
+                          <span key={schedule.financialStatementScheduleId}>
+                            <strong>
+                              {schedule.reference} · {schedule.name}
+                            </strong>
+                            <small>{formatTimestamp(schedule.createdAtMs)}</small>
+                          </span>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          Create the first engagement-level financial statement schedule.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">SCHEDULE MAPPING</span>
+                        <h3>Trial Balance → schedule</h3>
+                      </div>
+                    </div>
+                    <form
+                      className="workspace-form compact"
+                      onSubmit={submitTrialBalanceScheduleMapping}
+                    >
+                      <label>
+                        <span>Immutable Trial Balance import</span>
+                        <select
+                          value={scheduleMappingTrialBalanceImportId ?? ""}
+                          onChange={(event) =>
+                            void selectScheduleMappingTrialBalanceImport(
+                              event.target.value || null,
+                            )
+                          }
+                        >
+                          <option value="">Select Trial Balance import</option>
+                          {trialBalanceImports.map((trialBalanceImport) => (
+                            <option
+                              key={trialBalanceImport.trialBalanceImportId}
+                              value={trialBalanceImport.trialBalanceImportId}
+                            >
+                              {trialBalanceImport.sheetName} ·{" "}
+                              {trialBalanceImport.accountCount.toLocaleString()} accounts ·{" "}
+                              {formatTimestamp(trialBalanceImport.importedAtMs)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Trial Balance account</span>
+                        <select
+                          value={selectedScheduleMappingTrialBalanceAccountId}
+                          onChange={(event) =>
+                            selectScheduleMappingTrialBalanceAccount(event.target.value)
+                          }
+                          disabled={!scheduleMappingTrialBalanceImportId}
+                        >
+                          <option value="">Select TB account</option>
+                          {scheduleMappingTrialBalanceAccounts.map((account) => (
+                            <option
+                              key={account.trialBalanceAccountId}
+                              value={account.trialBalanceAccountId}
+                            >
+                              {account.accountCodeText ? account.accountCodeText + " · " : ""}
+                              {account.accountNameText}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Financial statement schedule</span>
+                        <select
+                          value={selectedFinancialStatementScheduleId}
+                          onChange={(event) =>
+                            setSelectedFinancialStatementScheduleId(event.target.value)
+                          }
+                          disabled={!financialStatementSchedules.length}
+                        >
+                          <option value="">Select schedule</option>
+                          {financialStatementSchedules.map((schedule) => (
+                            <option
+                              key={schedule.financialStatementScheduleId}
+                              value={schedule.financialStatementScheduleId}
+                            >
+                              {schedule.reference} · {schedule.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedScheduleMappingTrialBalanceAccount &&
+                      selectedScheduleMappingTrialBalanceImport ? (
+                        <p className="evidence-integrity-note">
+                          {selectedScheduleMappingTrialBalanceImport.sheetName}!row{" "}
+                          {selectedScheduleMappingTrialBalanceAccount.sourceRowNumber} · row SHA{" "}
+                          {selectedScheduleMappingTrialBalanceAccount.sourceRowHashHex.slice(0, 16)}…
+                          {currentScheduleMappingForSelectedAccount
+                            ? " Current schedule mapping v" +
+                              currentScheduleMappingForSelectedAccount.versionNumber +
+                              ": " +
+                              currentScheduleMappingForSelectedAccount.scheduleReference +
+                              " · " +
+                              currentScheduleMappingForSelectedAccount.scheduleName +
+                              "."
+                            : " Not yet mapped."}
+                        </p>
+                      ) : null}
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !scheduleMappingTrialBalanceImportId ||
+                          !selectedScheduleMappingTrialBalanceAccountId ||
+                          !selectedFinancialStatementScheduleId ||
+                          currentScheduleMappingForSelectedAccount?.financialStatementScheduleId ===
+                            selectedFinancialStatementScheduleId
+                        }
+                      >
+                        {currentScheduleMappingForSelectedAccount?.financialStatementScheduleId ===
+                        selectedFinancialStatementScheduleId
+                          ? "Mapped"
+                          : currentScheduleMappingForSelectedAccount
+                            ? "Remap schedule"
+                            : "Map to schedule"}
+                      </button>
+                    </form>
+
+                    <div className="workspace-mini-list">
+                      {trialBalanceScheduleMappings.length ? (
+                        trialBalanceScheduleMappings.map((mapping) => (
+                          <span key={mapping.trialBalanceScheduleMappingId}>
+                            <strong>
+                              {mapping.trialBalanceAccountCodeText
+                                ? mapping.trialBalanceAccountCodeText + " · "
+                                : ""}
+                              {mapping.trialBalanceAccountNameText} →{" "}
+                              {mapping.scheduleReference} · {mapping.scheduleName}
+                            </strong>
+                            <small>
+                              Mapping v{mapping.versionNumber} · TB row{" "}
+                              {mapping.trialBalanceSourceRowNumber} · row SHA{" "}
+                              {mapping.trialBalanceSourceRowHashHex.slice(0, 16)}…
+                            </small>
+                            <small>
+                              {mapping.supersedesMappingId
+                                ? "Supersedes " +
+                                  mapping.supersedesMappingId.slice(0, 18) +
+                                  "… · "
+                                : ""}
+                              {formatTimestamp(mapping.mappedAtMs)}
+                            </small>
+                          </span>
+                        ))
+                      ) : scheduleMappingTrialBalanceImportId ? (
+                        <div className="empty-result">
+                          No Trial Balance accounts are mapped to financial statement schedules yet.
+                        </div>
+                      ) : (
+                        <div className="empty-result">
+                          Select an immutable Trial Balance import to map accounts to schedules.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
