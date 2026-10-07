@@ -577,6 +577,70 @@ impl From<persistence::LedgerExceptionRecord> for LedgerExceptionDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerAccountSummaryDto {
+    ledger_import_id: String,
+    account_key: String,
+    account_text: String,
+    transaction_count: u64,
+    total_minor: i64,
+    first_source_row_number: u64,
+    last_source_row_number: u64,
+}
+
+impl From<persistence::LedgerAccountSummaryRecord> for LedgerAccountSummaryDto {
+    fn from(value: persistence::LedgerAccountSummaryRecord) -> Self {
+        Self {
+            ledger_import_id: value.ledger_import_id,
+            account_key: value.account_key,
+            account_text: value.account_text,
+            transaction_count: value.transaction_count,
+            total_minor: value.total_minor,
+            first_source_row_number: value.first_source_row_number,
+            last_source_row_number: value.last_source_row_number,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerTbMappingDto {
+    ledger_tb_mapping_id: String,
+    ledger_import_id: String,
+    trial_balance_import_id: String,
+    ledger_account_key: String,
+    ledger_account_text: String,
+    trial_balance_account_id: String,
+    trial_balance_account_code_text: Option<String>,
+    trial_balance_account_name_text: String,
+    trial_balance_source_row_number: u64,
+    trial_balance_source_row_hash_hex: String,
+    version_number: u64,
+    supersedes_mapping_id: Option<String>,
+    mapped_at_ms: i64,
+}
+
+impl From<persistence::LedgerTbMappingRecord> for LedgerTbMappingDto {
+    fn from(value: persistence::LedgerTbMappingRecord) -> Self {
+        Self {
+            ledger_tb_mapping_id: value.ledger_tb_mapping_id,
+            ledger_import_id: value.ledger_import_id,
+            trial_balance_import_id: value.trial_balance_import_id,
+            ledger_account_key: value.ledger_account_key,
+            ledger_account_text: value.ledger_account_text,
+            trial_balance_account_id: value.trial_balance_account_id,
+            trial_balance_account_code_text: value.trial_balance_account_code_text,
+            trial_balance_account_name_text: value.trial_balance_account_name_text,
+            trial_balance_source_row_number: value.trial_balance_source_row_number,
+            trial_balance_source_row_hash_hex: hex_bytes(&value.trial_balance_source_row_hash),
+            version_number: value.version_number,
+            supersedes_mapping_id: value.supersedes_mapping_id,
+            mapped_at_ms: value.mapped_at_ms,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrialBalanceColumnMappingInputDto {
@@ -1496,6 +1560,56 @@ fn list_ledger_imports(
     persistence::list_ledger_imports(database.path(), &engagement_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_ledger_account_summaries(
+    ledger_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<LedgerAccountSummaryDto>, String> {
+    validate_uuid(&ledger_import_id, "ledger-import")?;
+    persistence::list_ledger_account_summaries(database.path(), &ledger_import_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_ledger_tb_mapping(
+    ledger_import_id: String,
+    trial_balance_import_id: String,
+    ledger_account_key: String,
+    trial_balance_account_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<LedgerTbMappingDto, String> {
+    validate_uuid(&ledger_import_id, "ledger-import")?;
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    validate_uuid(&trial_balance_account_id, "trial-balance-account")?;
+    persistence::create_ledger_tb_mapping(
+        database.path(),
+        &ledger_import_id,
+        &trial_balance_import_id,
+        &ledger_account_key,
+        &trial_balance_account_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_current_ledger_tb_mappings(
+    ledger_import_id: String,
+    trial_balance_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<LedgerTbMappingDto>, String> {
+    validate_uuid(&ledger_import_id, "ledger-import")?;
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    persistence::list_current_ledger_tb_mappings(
+        database.path(),
+        &ledger_import_id,
+        &trial_balance_import_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2755,6 +2869,9 @@ pub fn run() {
             list_firm_library_versions,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
+            list_ledger_account_summaries,
+            create_ledger_tb_mapping,
+            list_current_ledger_tb_mappings,
             list_ledger_test_runs,
             run_high_value_ledger_test,
             list_ledger_exceptions,
