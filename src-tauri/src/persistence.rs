@@ -6247,7 +6247,10 @@ pub fn compare_trial_balance_opening_closing(
             .unsigned_abs()
             .cmp(&left.movement_minor.unsigned_abs())
             .then_with(|| left.source_row_number.cmp(&right.source_row_number))
-            .then_with(|| left.trial_balance_account_id.cmp(&right.trial_balance_account_id))
+            .then_with(|| {
+                left.trial_balance_account_id
+                    .cmp(&right.trial_balance_account_id)
+            })
     });
 
     Ok(TrialBalanceComparisonRecord {
