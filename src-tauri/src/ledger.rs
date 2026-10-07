@@ -141,7 +141,10 @@ pub fn parse_ledger_workbook(
             ));
         }
         let amount_minor = amount_to_minor_units(amount_value, amount_scale).map_err(|error| {
-            format!("Ledger row {} amount is invalid: {error}", u64::from(row) + 1)
+            format!(
+                "Ledger row {} amount is invalid: {error}",
+                u64::from(row) + 1
+            )
         })?;
 
         let cells = (start_column..=end_column)
@@ -194,11 +197,7 @@ fn mapped_columns(mapping: &LedgerColumnMapping) -> Vec<u32> {
     columns
 }
 
-fn mapped_text(
-    range: &calamine::Range<Data>,
-    row: u32,
-    column: Option<u32>,
-) -> Option<String> {
+fn mapped_text(range: &calamine::Range<Data>, row: u32, column: Option<u32>) -> Option<String> {
     let column = column?;
     range
         .get_value((row, column))
@@ -291,10 +290,7 @@ fn parse_decimal_text(value: &str, scale: u32) -> Result<i128, String> {
     let factor = 10_i128
         .checked_pow(scale)
         .ok_or_else(|| "amount scale overflowed".to_string())?;
-    let mut fraction_text = fraction
-        .chars()
-        .take(scale_usize)
-        .collect::<String>();
+    let mut fraction_text = fraction.chars().take(scale_usize).collect::<String>();
     while fraction_text.len() < scale_usize {
         fraction_text.push('0');
     }
