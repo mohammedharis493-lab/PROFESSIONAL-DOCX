@@ -6014,7 +6014,8 @@ pub fn create_financial_statement_schedule(
     reference: &str,
     name: &str,
 ) -> Result<FinancialStatementScheduleRecord, PersistenceError> {
-    let reference = normalize_domain_label(reference, "financial statement schedule reference", 80)?;
+    let reference =
+        normalize_domain_label(reference, "financial statement schedule reference", 80)?;
     let normalized_reference = normalize_search_text(&reference);
     if normalized_reference.is_empty() {
         return Err(PersistenceError::Configuration(
@@ -12147,7 +12148,10 @@ mod tests {
         );
         assert_eq!(first_schedule_mapping.supersedes_mapping_id, None);
         assert_eq!(first_schedule_mapping.trial_balance_source_row_number, 3);
-        assert_eq!(first_schedule_mapping.trial_balance_source_row_hash.len(), 32);
+        assert_eq!(
+            first_schedule_mapping.trial_balance_source_row_hash.len(),
+            32
+        );
 
         let duplicate_schedule_mapping_error = create_trial_balance_schedule_mapping(
             &database.path,
