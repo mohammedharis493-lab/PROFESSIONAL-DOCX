@@ -518,6 +518,14 @@ pub struct LedgerTbMappingRecord {
     pub mapped_at_ms: i64,
 }
 
+struct TrialBalanceMappingTarget {
+    trial_balance_import_id: String,
+    account_code_text: Option<String>,
+    account_name_text: String,
+    source_row_number: i64,
+    source_row_hash: Vec<u8>,
+}
+
 struct FirmLibraryItemIdentity {
     category: String,
     name: String,
@@ -5762,7 +5770,7 @@ pub fn create_ledger_tb_mapping(
             )
         })?;
 
-    let trial_balance_account: Option<(String, Option<String>, String, i64, Vec<u8>)> = transaction
+    let trial_balance_account: Option<TrialBalanceMappingTarget> = transaction
         .query_row(
             "SELECT
                 trial_balance_import_id,
@@ -5774,29 +5782,22 @@ pub fn create_ledger_tb_mapping(
              WHERE trial_balance_account_id = ?1",
             [trial_balance_account_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
+                Ok(TrialBalanceMappingTarget {
+                    trial_balance_import_id: row.get(0)?,
+                    account_code_text: row.get(1)?,
+                    account_name_text: row.get(2)?,
+                    source_row_number: row.get(3)?,
+                    source_row_hash: row.get(4)?,
+                })
             },
         )
         .optional()?;
-    let Some((
-        account_trial_balance_import_id,
-        trial_balance_account_code_text,
-        trial_balance_account_name_text,
-        trial_balance_source_row_number,
-        trial_balance_source_row_hash,
-    )) = trial_balance_account
-    else {
+    let Some(trial_balance_account) = trial_balance_account else {
         return Err(PersistenceError::Configuration(format!(
             "Trial Balance account {trial_balance_account_id} does not exist"
         )));
     };
-    if account_trial_balance_import_id != trial_balance_import_id {
+    if trial_balance_account.trial_balance_import_id != trial_balance_import_id {
         return Err(PersistenceError::Configuration(
             "selected Trial Balance account does not belong to the selected immutable import"
                 .to_string(),
@@ -5845,7 +5846,7 @@ pub fn create_ledger_tb_mapping(
         None => (None, 1),
     };
     let version_number_u64 = version_number.max(0) as u64;
-    let trial_balance_source_row_number = trial_balance_source_row_number.max(0) as u64;
+    let trial_balance_source_row_number = trial_balance_account.source_row_number.max(0) as u64;
     let ledger_tb_mapping_id = Uuid::new_v4().to_string();
     let now = now_unix_ms()?;
 
@@ -5903,10 +5904,10 @@ pub fn create_ledger_tb_mapping(
         ledger_account_key,
         ledger_account_text: ledger_summary.account_text,
         trial_balance_account_id: trial_balance_account_id.to_string(),
-        trial_balance_account_code_text,
-        trial_balance_account_name_text,
+        trial_balance_account_code_text: trial_balance_account.account_code_text,
+        trial_balance_account_name_text: trial_balance_account.account_name_text,
         trial_balance_source_row_number,
-        trial_balance_source_row_hash,
+        trial_balance_source_row_hash: trial_balance_account.source_row_hash,
         version_number: version_number_u64,
         supersedes_mapping_id,
         mapped_at_ms: now,
