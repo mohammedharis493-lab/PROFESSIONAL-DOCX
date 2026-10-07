@@ -128,18 +128,20 @@ pub fn parse_trial_balance_workbook(
                 u64::from(row) + 1
             )
         })?;
-        let opening_minor = optional_amount_to_minor(opening_value, amount_scale).map_err(|error| {
-            format!(
-                "Trial balance row {} opening balance is invalid: {error}",
-                u64::from(row) + 1
-            )
-        })?;
-        let closing_minor = optional_amount_to_minor(closing_value, amount_scale).map_err(|error| {
-            format!(
-                "Trial balance row {} closing balance is invalid: {error}",
-                u64::from(row) + 1
-            )
-        })?;
+        let opening_minor =
+            optional_amount_to_minor(opening_value, amount_scale).map_err(|error| {
+                format!(
+                    "Trial balance row {} opening balance is invalid: {error}",
+                    u64::from(row) + 1
+                )
+            })?;
+        let closing_minor =
+            optional_amount_to_minor(closing_value, amount_scale).map_err(|error| {
+                format!(
+                    "Trial balance row {} closing balance is invalid: {error}",
+                    u64::from(row) + 1
+                )
+            })?;
 
         accounts.push(ParsedTrialBalanceAccount {
             source_row_number: u64::from(row) + 1,
