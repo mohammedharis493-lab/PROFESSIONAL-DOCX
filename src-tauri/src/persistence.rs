@@ -10821,7 +10821,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 15);
+        assert_eq!(migration_count, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -10871,14 +10871,16 @@ mod tests {
                        'ledger_exceptions',
                        'trial_balance_imports',
                        'trial_balance_accounts',
-                       'ledger_tb_mappings'
+                       'ledger_tb_mappings',
+                       'financial_statement_schedules',
+                       'trial_balance_schedule_mappings'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 44);
+        assert_eq!(table_count, 46);
     }
 
     #[test]
@@ -10914,7 +10916,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -10955,14 +10957,14 @@ mod tests {
             assert_eq!(user_version, 2);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 15");
+        initialize_database(&database.path).expect("database should upgrade through version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_exists: i64 = connection
             .query_row(
@@ -11004,14 +11006,14 @@ mod tests {
             assert_eq!(user_version, 3);
         }
 
-        initialize_database(&database.path).expect("database should upgrade through version 15");
+        initialize_database(&database.path).expect("database should upgrade through version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11056,14 +11058,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_exists: bool = connection
             .query_row(
@@ -11105,14 +11107,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11162,14 +11164,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11214,14 +11216,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11266,14 +11268,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11318,14 +11320,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11369,14 +11371,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11420,14 +11422,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11484,14 +11486,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -11543,14 +11545,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_count: i64 = connection
             .query_row(
@@ -11594,14 +11596,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 15");
+        initialize_database(&database.path).expect("database should upgrade to version 16");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
 
         let table_exists: bool = connection
             .query_row(
@@ -11614,6 +11616,57 @@ mod tests {
             )
             .expect("ledger to Trial Balance mapping table should exist");
         assert!(table_exists);
+    }
+
+    #[test]
+    fn sixteenth_migration_adds_immutable_trial_balance_schedule_mappings() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..15] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 15);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 16");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 16);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'financial_statement_schedules',
+                       'trial_balance_schedule_mappings'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schedule mapping tables should exist");
+        assert_eq!(table_count, 2);
     }
 
     #[test]
@@ -12057,6 +12110,110 @@ mod tests {
         assert!(mapping_mutation_error
             .to_string()
             .contains("ledger to trial balance mappings are immutable"));
+
+        let revenue_schedule = create_financial_statement_schedule(
+            &database.path,
+            &engagement.engagement_id,
+            "SCH-REV",
+            "Revenue",
+        )
+        .expect("financial statement schedule should be created");
+        let cash_schedule = create_financial_statement_schedule(
+            &database.path,
+            &engagement.engagement_id,
+            "SCH-CASH",
+            "Cash and bank balances",
+        )
+        .expect("second financial statement schedule should be created");
+        let schedules =
+            list_financial_statement_schedules(&database.path, &engagement.engagement_id)
+                .expect("financial statement schedules");
+        assert_eq!(schedules.len(), 2);
+        assert_eq!(schedules[0].reference, "SCH-CASH");
+        assert_eq!(schedules[1].reference, "SCH-REV");
+
+        let first_schedule_mapping = create_trial_balance_schedule_mapping(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+            &trial_balance_accounts[1].trial_balance_account_id,
+            &revenue_schedule.financial_statement_schedule_id,
+        )
+        .expect("initial Trial Balance schedule mapping");
+        assert_eq!(first_schedule_mapping.version_number, 1);
+        assert_eq!(first_schedule_mapping.schedule_reference, "SCH-REV");
+        assert_eq!(
+            first_schedule_mapping.trial_balance_account_name_text,
+            "Revenue"
+        );
+        assert_eq!(first_schedule_mapping.supersedes_mapping_id, None);
+        assert_eq!(first_schedule_mapping.trial_balance_source_row_number, 3);
+        assert_eq!(first_schedule_mapping.trial_balance_source_row_hash.len(), 32);
+
+        let duplicate_schedule_mapping_error = create_trial_balance_schedule_mapping(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+            &trial_balance_accounts[1].trial_balance_account_id,
+            &revenue_schedule.financial_statement_schedule_id,
+        )
+        .expect_err("duplicate current schedule mapping should be rejected");
+        assert!(duplicate_schedule_mapping_error
+            .to_string()
+            .contains("already mapped"));
+
+        let second_schedule_mapping = create_trial_balance_schedule_mapping(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+            &trial_balance_accounts[1].trial_balance_account_id,
+            &cash_schedule.financial_statement_schedule_id,
+        )
+        .expect("Trial Balance schedule remap should append a version");
+        assert_eq!(second_schedule_mapping.version_number, 2);
+        assert_eq!(
+            second_schedule_mapping.supersedes_mapping_id.as_deref(),
+            Some(
+                first_schedule_mapping
+                    .trial_balance_schedule_mapping_id
+                    .as_str()
+            )
+        );
+        assert_eq!(second_schedule_mapping.schedule_reference, "SCH-CASH");
+
+        let current_schedule_mappings = list_current_trial_balance_schedule_mappings(
+            &database.path,
+            &trial_balance_import.trial_balance_import_id,
+        )
+        .expect("current Trial Balance schedule mappings");
+        assert_eq!(current_schedule_mappings.len(), 1);
+        assert_eq!(
+            current_schedule_mappings[0].trial_balance_schedule_mapping_id,
+            second_schedule_mapping.trial_balance_schedule_mapping_id
+        );
+        assert_eq!(current_schedule_mappings[0].version_number, 2);
+        assert_eq!(current_schedule_mappings[0].schedule_reference, "SCH-CASH");
+
+        let schedule_mutation_error = connection
+            .execute(
+                "UPDATE financial_statement_schedules
+                 SET name = 'Changed'
+                 WHERE financial_statement_schedule_id = ?1",
+                [&revenue_schedule.financial_statement_schedule_id],
+            )
+            .expect_err("financial statement schedules must be immutable");
+        assert!(schedule_mutation_error
+            .to_string()
+            .contains("financial statement schedules are immutable"));
+
+        let schedule_mapping_mutation_error = connection
+            .execute(
+                "UPDATE trial_balance_schedule_mappings
+                 SET version_number = version_number + 1
+                 WHERE trial_balance_schedule_mapping_id = ?1",
+                [&first_schedule_mapping.trial_balance_schedule_mapping_id],
+            )
+            .expect_err("Trial Balance schedule mapping history must be immutable");
+        assert!(schedule_mapping_mutation_error
+            .to_string()
+            .contains("trial balance schedule mappings are immutable"));
 
         let trial_balance_mutation_error = connection
             .execute(
