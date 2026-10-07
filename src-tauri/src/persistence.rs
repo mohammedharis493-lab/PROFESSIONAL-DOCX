@@ -1225,7 +1225,7 @@ pub fn persist_index_batch(
                 os_error_code,
                 message,
                 observed_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 Uuid::new_v4().to_string(),
                 index_job_id,
