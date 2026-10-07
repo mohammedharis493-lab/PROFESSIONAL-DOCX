@@ -5791,10 +5791,17 @@ export default function App() {
                           !mappingLedgerImportId ||
                           !mappingTrialBalanceImportId ||
                           !selectedMappingLedgerAccountKey ||
-                          !selectedMappingTrialBalanceAccountId
+                          !selectedMappingTrialBalanceAccountId ||
+                          currentMappingForSelectedAccount?.trialBalanceAccountId ===
+                            selectedMappingTrialBalanceAccountId
                         }
                       >
-                        {currentMappingForSelectedAccount ? "Remap account" : "Map account"}
+                        {currentMappingForSelectedAccount?.trialBalanceAccountId ===
+                        selectedMappingTrialBalanceAccountId
+                          ? "Mapped"
+                          : currentMappingForSelectedAccount
+                            ? "Remap account"
+                            : "Map account"}
                       </button>
                     </form>
                   </div>
