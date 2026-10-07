@@ -354,6 +354,32 @@ type LedgerException = {
   createdAtMs: number;
 };
 
+type LedgerAccountSummary = {
+  ledgerImportId: string;
+  accountKey: string;
+  accountText: string;
+  transactionCount: number;
+  totalMinor: number;
+  firstSourceRowNumber: number;
+  lastSourceRowNumber: number;
+};
+
+type LedgerTbMapping = {
+  ledgerTbMappingId: string;
+  ledgerImportId: string;
+  trialBalanceImportId: string;
+  ledgerAccountKey: string;
+  ledgerAccountText: string;
+  trialBalanceAccountId: string;
+  trialBalanceAccountCodeText: string | null;
+  trialBalanceAccountNameText: string;
+  trialBalanceSourceRowNumber: number;
+  trialBalanceSourceRowHashHex: string;
+  versionNumber: number;
+  supersedesMappingId: string | null;
+  mappedAtMs: number;
+};
+
 type TrialBalanceImport = {
   trialBalanceImportId: string;
   engagementId: string;
@@ -372,6 +398,18 @@ type TrialBalanceImport = {
   openingTotalMinor: number;
   closingTotalMinor: number;
   importedAtMs: number;
+};
+
+type TrialBalanceAccount = {
+  trialBalanceAccountId: string;
+  trialBalanceImportId: string;
+  sourceRowNumber: number;
+  sourceRowHashHex: string;
+  accountCodeText: string | null;
+  accountNameText: string;
+  openingMinor: number;
+  closingMinor: number;
+  createdAtMs: number;
 };
 
 type TrialBalanceMovement = {
@@ -1088,6 +1126,17 @@ export default function App() {
   const [trialBalanceAccountNameColumn, setTrialBalanceAccountNameColumn] = useState("B");
   const [trialBalanceOpeningColumn, setTrialBalanceOpeningColumn] = useState("C");
   const [trialBalanceClosingColumn, setTrialBalanceClosingColumn] = useState("D");
+  const [mappingLedgerImportId, setMappingLedgerImportId] = useState<string | null>(null);
+  const [mappingTrialBalanceImportId, setMappingTrialBalanceImportId] =
+    useState<string | null>(null);
+  const [ledgerAccountSummaries, setLedgerAccountSummaries] =
+    useState<LedgerAccountSummary[]>([]);
+  const [mappingTrialBalanceAccounts, setMappingTrialBalanceAccounts] =
+    useState<TrialBalanceAccount[]>([]);
+  const [ledgerTbMappings, setLedgerTbMappings] = useState<LedgerTbMapping[]>([]);
+  const [selectedMappingLedgerAccountKey, setSelectedMappingLedgerAccountKey] = useState("");
+  const [selectedMappingTrialBalanceAccountId, setSelectedMappingTrialBalanceAccountId] =
+    useState("");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1382,6 +1431,13 @@ export default function App() {
     setSelectedTrialBalanceEvidenceDocument(null);
     setTrialBalanceEvidenceVersionHistory([]);
     setSelectedTrialBalanceControlledVersionId("");
+    setMappingLedgerImportId(null);
+    setMappingTrialBalanceImportId(null);
+    setLedgerAccountSummaries([]);
+    setMappingTrialBalanceAccounts([]);
+    setLedgerTbMappings([]);
+    setSelectedMappingLedgerAccountKey("");
+    setSelectedMappingTrialBalanceAccountId("");
     try {
       const [
         areas,
@@ -1414,8 +1470,48 @@ export default function App() {
         );
         setTrialBalanceComparison(comparison);
       }
-      const firstLedgerImportId = ledgerImportRecords[0]?.ledgerImportId ?? null;
+      const firstLedgerImport = ledgerImportRecords[0] ?? null;
+      const firstLedgerImportId = firstLedgerImport?.ledgerImportId ?? null;
       setSelectedLedgerImportId(firstLedgerImportId);
+      if (firstLedgerImport) {
+        setMappingLedgerImportId(firstLedgerImport.ledgerImportId);
+        const compatibleTrialBalanceImport =
+          trialBalanceImportRecords.find(
+            (item) => item.amountScale === firstLedgerImport.amountScale,
+          ) ?? null;
+        setMappingTrialBalanceImportId(
+          compatibleTrialBalanceImport?.trialBalanceImportId ?? null,
+        );
+
+        const summaries = await invoke<LedgerAccountSummary[]>(
+          "list_ledger_account_summaries",
+          { ledgerImportId: firstLedgerImport.ledgerImportId },
+        );
+        setLedgerAccountSummaries(summaries);
+        setSelectedMappingLedgerAccountKey(summaries[0]?.accountKey ?? "");
+
+        if (compatibleTrialBalanceImport) {
+          const [mappingAccounts, mappings] = await Promise.all([
+            invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+              trialBalanceImportId: compatibleTrialBalanceImport.trialBalanceImportId,
+            }),
+            invoke<LedgerTbMapping[]>("list_current_ledger_tb_mappings", {
+              ledgerImportId: firstLedgerImport.ledgerImportId,
+              trialBalanceImportId: compatibleTrialBalanceImport.trialBalanceImportId,
+            }),
+          ]);
+          setMappingTrialBalanceAccounts(mappingAccounts);
+          setLedgerTbMappings(mappings);
+          const existingTarget = mappings.find(
+            (mapping) => mapping.ledgerAccountKey === summaries[0]?.accountKey,
+          );
+          setSelectedMappingTrialBalanceAccountId(
+            existingTarget?.trialBalanceAccountId ??
+              mappingAccounts[0]?.trialBalanceAccountId ??
+              "",
+          );
+        }
+      }
       if (firstLedgerImportId) {
         const runRecords = await invoke<LedgerTestRun[]>("list_ledger_test_runs", {
           ledgerImportId: firstLedgerImportId,
