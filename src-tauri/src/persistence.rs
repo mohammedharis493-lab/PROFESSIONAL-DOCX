@@ -5349,7 +5349,7 @@ pub fn create_ledger_import(
                 narration_text,
                 amount_minor,
                 created_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 Uuid::new_v4().to_string(),
                 &ledger_import_id,
