@@ -1306,7 +1306,6 @@ async fn import_ledger_from_controlled_evidence(
             .into_iter()
             .map(|transaction| persistence::LedgerTransactionInput {
                 source_row_number: transaction.source_row_number,
-                source_row_json: transaction.source_row_json,
                 source_row_hash: transaction.source_row_hash,
                 transaction_date_text: transaction.transaction_date_text,
                 account_text: transaction.account_text,
