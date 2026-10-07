@@ -354,6 +354,38 @@ type LedgerException = {
   createdAtMs: number;
 };
 
+type TrialBalanceImport = {
+  trialBalanceImportId: string;
+  engagementId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  sheetName: string;
+  headerRowNumber: number;
+  accountNameColumn: number;
+  accountCodeColumn: number | null;
+  openingBalanceColumn: number | null;
+  closingBalanceColumn: number;
+  amountScale: number;
+  accountCount: number;
+  openingTotalMinor: number;
+  closingTotalMinor: number;
+  importedAtMs: number;
+};
+
+type TrialBalanceAccount = {
+  trialBalanceAccountId: string;
+  trialBalanceImportId: string;
+  sourceRowNumber: number;
+  sourceRowHashHex: string;
+  accountCodeText: string | null;
+  accountNameText: string;
+  openingMinor: number;
+  closingMinor: number;
+  createdAtMs: number;
+};
+
 type ActiveDocumentVersionHistory = {
   file: IndexedFile;
   entries: DocumentVersionHistoryEntry[];
@@ -1028,6 +1060,25 @@ export default function App() {
   const [ledgerTestRuns, setLedgerTestRuns] = useState<LedgerTestRun[]>([]);
   const [ledgerTestRun, setLedgerTestRun] = useState<LedgerTestRun | null>(null);
   const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
+  const [trialBalanceImports, setTrialBalanceImports] = useState<TrialBalanceImport[]>([]);
+  const [selectedTrialBalanceImportId, setSelectedTrialBalanceImportId] = useState<string | null>(null);
+  const [trialBalanceAccounts, setTrialBalanceAccounts] = useState<TrialBalanceAccount[]>([]);
+  const [trialBalanceEvidenceSearchQuery, setTrialBalanceEvidenceSearchQuery] = useState("");
+  const [trialBalanceEvidenceSearchResults, setTrialBalanceEvidenceSearchResults] = useState<SearchResult[]>([]);
+  const [selectedTrialBalanceEvidenceDocument, setSelectedTrialBalanceEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [trialBalanceEvidenceVersionHistory, setTrialBalanceEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedTrialBalanceControlledVersionId, setSelectedTrialBalanceControlledVersionId] =
+    useState("");
+  const [trialBalanceEvidenceSearchBusy, setTrialBalanceEvidenceSearchBusy] = useState(false);
+  const [trialBalanceSheetName, setTrialBalanceSheetName] = useState("Trial Balance");
+  const [trialBalanceHeaderRowNumber, setTrialBalanceHeaderRowNumber] = useState("1");
+  const [trialBalanceAmountScale, setTrialBalanceAmountScale] = useState("2");
+  const [trialBalanceAccountCodeColumn, setTrialBalanceAccountCodeColumn] = useState("A");
+  const [trialBalanceAccountNameColumn, setTrialBalanceAccountNameColumn] = useState("B");
+  const [trialBalanceOpeningColumn, setTrialBalanceOpeningColumn] = useState("C");
+  const [trialBalanceClosingColumn, setTrialBalanceClosingColumn] = useState("D");
   const [newAreaName, setNewAreaName] = useState("");
   const [newAreaParentId, setNewAreaParentId] = useState("");
   const [newProcedureTitle, setNewProcedureTitle] = useState("");
@@ -1315,20 +1366,44 @@ export default function App() {
     setLedgerTestRuns([]);
     setLedgerTestRun(null);
     setLedgerExceptions([]);
+    setTrialBalanceImports([]);
+    setSelectedTrialBalanceImportId(null);
+    setTrialBalanceAccounts([]);
+    setTrialBalanceEvidenceSearchResults([]);
+    setSelectedTrialBalanceEvidenceDocument(null);
+    setTrialBalanceEvidenceVersionHistory([]);
+    setSelectedTrialBalanceControlledVersionId("");
     try {
-      const [areas, procedureRecords, workpaperRecords, requestRecords, ledgerImportRecords] =
-        await Promise.all([
-          invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
-          invoke<Procedure[]>("list_procedures", { engagementId }),
-          invoke<Workpaper[]>("list_workpapers", { engagementId }),
-          invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
-          invoke<LedgerImport[]>("list_ledger_imports", { engagementId }),
-        ]);
+      const [
+        areas,
+        procedureRecords,
+        workpaperRecords,
+        requestRecords,
+        ledgerImportRecords,
+        trialBalanceImportRecords,
+      ] = await Promise.all([
+        invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
+        invoke<Procedure[]>("list_procedures", { engagementId }),
+        invoke<Workpaper[]>("list_workpapers", { engagementId }),
+        invoke<PbcRequest[]>("list_pbc_requests", { engagementId }),
+        invoke<LedgerImport[]>("list_ledger_imports", { engagementId }),
+        invoke<TrialBalanceImport[]>("list_trial_balance_imports", { engagementId }),
+      ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
       setWorkpapers(workpaperRecords);
       setPbcRequests(requestRecords);
       setLedgerImports(ledgerImportRecords);
+      setTrialBalanceImports(trialBalanceImportRecords);
+      const firstTrialBalanceImportId =
+        trialBalanceImportRecords[0]?.trialBalanceImportId ?? null;
+      setSelectedTrialBalanceImportId(firstTrialBalanceImportId);
+      if (firstTrialBalanceImportId) {
+        const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+          trialBalanceImportId: firstTrialBalanceImportId,
+        });
+        setTrialBalanceAccounts(accounts);
+      }
       const firstLedgerImportId = ledgerImportRecords[0]?.ledgerImportId ?? null;
       setSelectedLedgerImportId(firstLedgerImportId);
       if (firstLedgerImportId) {
@@ -2058,6 +2133,148 @@ export default function App() {
       setTemplateUpdateId("");
       setNewEngagementTemplateVersionId(published.latestVersionId);
       setNewEngagementServiceTypeId(published.serviceTypeId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchTrialBalanceEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const searchText = trialBalanceEvidenceSearchQuery.trim();
+    if (!searchText) return;
+
+    setTrialBalanceEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: searchText,
+        limit: 12,
+      });
+      setTrialBalanceEvidenceSearchResults(
+        results.filter((result) =>
+          new Set(["xlsx", "xls", "xlsm", "xlsb", "ods"]).has(
+            result.extension.toLowerCase().replace(/^\./, ""),
+          ),
+        ),
+      );
+      setSelectedTrialBalanceEvidenceDocument(null);
+      setTrialBalanceEvidenceVersionHistory([]);
+      setSelectedTrialBalanceControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setTrialBalanceEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectTrialBalanceEvidenceDocument(document: SearchResult) {
+    setTrialBalanceEvidenceSearchBusy(true);
+    setSelectedTrialBalanceEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setTrialBalanceEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedTrialBalanceControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setTrialBalanceEvidenceVersionHistory([]);
+      setSelectedTrialBalanceControlledVersionId("");
+    } finally {
+      setTrialBalanceEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectTrialBalanceImport(trialBalanceImportId: string | null) {
+    setSelectedTrialBalanceImportId(trialBalanceImportId);
+    setTrialBalanceAccounts([]);
+    if (!trialBalanceImportId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+        trialBalanceImportId,
+      });
+      setTrialBalanceAccounts(accounts);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitTrialBalanceImport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId || !selectedTrialBalanceControlledVersionId) return;
+
+    const headerRowNumber = Number.parseInt(trialBalanceHeaderRowNumber, 10);
+    const amountScale = Number.parseInt(trialBalanceAmountScale, 10);
+    const accountNameColumn = parseLedgerColumnIndex(trialBalanceAccountNameColumn);
+    const closingBalanceColumn = parseLedgerColumnIndex(trialBalanceClosingColumn);
+    const accountCodeColumn = trialBalanceAccountCodeColumn.trim()
+      ? parseLedgerColumnIndex(trialBalanceAccountCodeColumn)
+      : null;
+    const openingBalanceColumn = trialBalanceOpeningColumn.trim()
+      ? parseLedgerColumnIndex(trialBalanceOpeningColumn)
+      : null;
+
+    if (
+      !Number.isInteger(headerRowNumber) ||
+      headerRowNumber < 1 ||
+      !Number.isInteger(amountScale) ||
+      amountScale < 0 ||
+      amountScale > 6 ||
+      accountNameColumn === null ||
+      closingBalanceColumn === null ||
+      (trialBalanceAccountCodeColumn.trim() && accountCodeColumn === null) ||
+      (trialBalanceOpeningColumn.trim() && openingBalanceColumn === null)
+    ) {
+      setError(
+        "Trial Balance sheet, header row, scale, and column mapping are invalid. Use Excel letters or 1-based column numbers.",
+      );
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<TrialBalanceImport>(
+        "import_trial_balance_from_controlled_evidence",
+        {
+          input: {
+            engagementId: selectedEngagementId,
+            controlledEvidenceVersionId: selectedTrialBalanceControlledVersionId,
+            sheetName: trialBalanceSheetName.trim(),
+            headerRowNumber,
+            amountScale,
+            mapping: {
+              accountNameColumn,
+              accountCodeColumn,
+              openingBalanceColumn,
+              closingBalanceColumn,
+            },
+          },
+        },
+      );
+      const accounts = await invoke<TrialBalanceAccount[]>("list_trial_balance_accounts", {
+        trialBalanceImportId: created.trialBalanceImportId,
+      });
+      setTrialBalanceImports((current) => [
+        created,
+        ...current.filter(
+          (item) => item.trialBalanceImportId !== created.trialBalanceImportId,
+        ),
+      ]);
+      setSelectedTrialBalanceImportId(created.trialBalanceImportId);
+      setTrialBalanceAccounts(accounts);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -3658,6 +3875,15 @@ export default function App() {
       entry.controlledEvidenceVersionId &&
       entry.controlledVerificationState === "HASH_VERIFIED",
   );
+  const selectedTrialBalanceImport =
+    trialBalanceImports.find(
+      (item) => item.trialBalanceImportId === selectedTrialBalanceImportId,
+    ) ?? null;
+  const trialBalanceControlledEvidenceVersions = trialBalanceEvidenceVersionHistory.filter(
+    (entry) =>
+      entry.controlledEvidenceVersionId &&
+      entry.controlledVerificationState === "HASH_VERIFIED",
+  );
   const selectedWorkpaper =
     workpapers.find((workpaper) => workpaper.workpaperId === selectedWorkpaperId) ??
     null;
@@ -4909,6 +5135,277 @@ export default function App() {
                     ) : (
                       <div className="empty-result">
                         Import a controlled ledger workbook to begin deterministic scrutiny.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">TRIAL BALANCE</span>
+                        <h3>Import exact controlled workbook</h3>
+                      </div>
+                    </div>
+
+                    <form className="workspace-form compact" onSubmit={searchTrialBalanceEvidence}>
+                      <label>
+                        <span>Find TB workbook evidence</span>
+                        <input
+                          value={trialBalanceEvidenceSearchQuery}
+                          onChange={(event) => setTrialBalanceEvidenceSearchQuery(event.target.value)}
+                          placeholder="Search indexed Trial Balance workbook"
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          trialBalanceEvidenceSearchBusy ||
+                          !trialBalanceEvidenceSearchQuery.trim()
+                        }
+                      >
+                        {trialBalanceEvidenceSearchBusy ? "Searching…" : "Search workbooks"}
+                      </button>
+                    </form>
+
+                    {trialBalanceEvidenceSearchResults.length ? (
+                      <div className="workspace-mini-list">
+                        {trialBalanceEvidenceSearchResults.map((result) => (
+                          <button
+                            className={`workspace-list-row${selectedTrialBalanceEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                            type="button"
+                            key={result.documentId}
+                            onClick={() => void selectTrialBalanceEvidenceDocument(result)}
+                          >
+                            <span>
+                              <strong>{result.name}</strong>
+                              <small>{result.path}</small>
+                            </span>
+                            <span className="workspace-row-action">Select →</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {selectedTrialBalanceEvidenceDocument ? (
+                      <form className="workspace-form compact" onSubmit={submitTrialBalanceImport}>
+                        <div className="evidence-integrity-note">
+                          <strong>{selectedTrialBalanceEvidenceDocument.name}</strong>
+                          <br />
+                          Trial Balance imports read only retained, hash-verified controlled
+                          evidence. Opening/closing totals are computed in Rust from immutable
+                          imported account rows.
+                        </div>
+                        <label>
+                          <span>Exact controlled version</span>
+                          <select
+                            value={selectedTrialBalanceControlledVersionId}
+                            onChange={(event) =>
+                              setSelectedTrialBalanceControlledVersionId(event.target.value)
+                            }
+                          >
+                            <option value="">Select controlled evidence</option>
+                            {trialBalanceControlledEvidenceVersions.map((entry) => (
+                              <option
+                                key={entry.controlledEvidenceVersionId ?? entry.contentVersionId}
+                                value={entry.controlledEvidenceVersionId ?? ""}
+                              >
+                                v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                {formatTimestamp(entry.capturedAtMs)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {!trialBalanceControlledEvidenceVersions.length ? (
+                          <p className="evidence-integrity-note">
+                            This workbook has no hash-verified controlled evidence version yet.
+                            Capture it as controlled evidence before TB import.
+                          </p>
+                        ) : null}
+                        <label>
+                          <span>Worksheet</span>
+                          <input
+                            value={trialBalanceSheetName}
+                            onChange={(event) => setTrialBalanceSheetName(event.target.value)}
+                            placeholder="Trial Balance"
+                            maxLength={255}
+                          />
+                        </label>
+                        <div className="workspace-grid workspace-grid-two">
+                          <label>
+                            <span>Header row</span>
+                            <input
+                              value={trialBalanceHeaderRowNumber}
+                              onChange={(event) => setTrialBalanceHeaderRowNumber(event.target.value)}
+                              inputMode="numeric"
+                              placeholder="1"
+                            />
+                          </label>
+                          <label>
+                            <span>Amount decimals</span>
+                            <input
+                              value={trialBalanceAmountScale}
+                              onChange={(event) => setTrialBalanceAmountScale(event.target.value)}
+                              inputMode="numeric"
+                              placeholder="2"
+                            />
+                          </label>
+                          <label>
+                            <span>Account code column</span>
+                            <input
+                              value={trialBalanceAccountCodeColumn}
+                              onChange={(event) => setTrialBalanceAccountCodeColumn(event.target.value)}
+                              placeholder="A (optional)"
+                            />
+                          </label>
+                          <label>
+                            <span>Account name column</span>
+                            <input
+                              value={trialBalanceAccountNameColumn}
+                              onChange={(event) => setTrialBalanceAccountNameColumn(event.target.value)}
+                              placeholder="B"
+                              required
+                            />
+                          </label>
+                          <label>
+                            <span>Opening balance column</span>
+                            <input
+                              value={trialBalanceOpeningColumn}
+                              onChange={(event) => setTrialBalanceOpeningColumn(event.target.value)}
+                              placeholder="C (optional)"
+                            />
+                          </label>
+                          <label>
+                            <span>Closing balance column</span>
+                            <input
+                              value={trialBalanceClosingColumn}
+                              onChange={(event) => setTrialBalanceClosingColumn(event.target.value)}
+                              placeholder="D"
+                              required
+                            />
+                          </label>
+                        </div>
+                        <p className="evidence-integrity-note">
+                          Balances are signed fixed minor units. Blank opening/closing cells become
+                          zero; account rows retain worksheet, source-row and row-hash provenance.
+                        </p>
+                        <button
+                          className="secondary-button"
+                          type="submit"
+                          disabled={
+                            workspaceBusy ||
+                            !selectedTrialBalanceControlledVersionId ||
+                            !trialBalanceSheetName.trim() ||
+                            !trialBalanceAccountNameColumn.trim() ||
+                            !trialBalanceClosingColumn.trim()
+                          }
+                        >
+                          Import immutable Trial Balance
+                        </button>
+                      </form>
+                    ) : null}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">TB REVIEW</span>
+                        <h3>Imported balances & provenance</h3>
+                      </div>
+                    </div>
+
+                    <label className="workspace-form compact">
+                      <span>Imported Trial Balance</span>
+                      <select
+                        value={selectedTrialBalanceImportId ?? ""}
+                        onChange={(event) =>
+                          void selectTrialBalanceImport(event.target.value || null)
+                        }
+                      >
+                        <option value="">Select immutable import</option>
+                        {trialBalanceImports.map((trialBalanceImport) => (
+                          <option
+                            key={trialBalanceImport.trialBalanceImportId}
+                            value={trialBalanceImport.trialBalanceImportId}
+                          >
+                            {trialBalanceImport.sheetName} ·{" "}
+                            {trialBalanceImport.accountCount.toLocaleString()} accounts ·{" "}
+                            {formatTimestamp(trialBalanceImport.importedAtMs)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {selectedTrialBalanceImport ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              {selectedTrialBalanceImport.accountCount.toLocaleString()} accounts
+                            </strong>
+                            <small>
+                              Opening{" "}
+                              {formatMinorUnitAmount(
+                                selectedTrialBalanceImport.openingTotalMinor,
+                                selectedTrialBalanceImport.amountScale,
+                              )}{" "}
+                              · Closing{" "}
+                              {formatMinorUnitAmount(
+                                selectedTrialBalanceImport.closingTotalMinor,
+                                selectedTrialBalanceImport.amountScale,
+                              )}
+                            </small>
+                            <small>
+                              {selectedTrialBalanceImport.sheetName} · source SHA{" "}
+                              {selectedTrialBalanceImport.sourceSha256Hex.slice(0, 16)}… ·
+                              controlled ID{" "}
+                              {selectedTrialBalanceImport.controlledEvidenceVersionId.slice(0, 18)}…
+                            </small>
+                          </span>
+                          {trialBalanceAccounts.slice(0, 100).map((account) => (
+                            <span key={account.trialBalanceAccountId}>
+                              <strong>
+                                {account.accountCodeText ? `${account.accountCodeText} · ` : ""}
+                                {account.accountNameText}
+                              </strong>
+                              <small>
+                                Opening{" "}
+                                {formatMinorUnitAmount(
+                                  account.openingMinor,
+                                  selectedTrialBalanceImport.amountScale,
+                                )}{" "}
+                                · Closing{" "}
+                                {formatMinorUnitAmount(
+                                  account.closingMinor,
+                                  selectedTrialBalanceImport.amountScale,
+                                )}
+                              </small>
+                              <small>
+                                {selectedTrialBalanceImport.sheetName}!row{" "}
+                                {account.sourceRowNumber} · row SHA{" "}
+                                {account.sourceRowHashHex.slice(0, 16)}…
+                              </small>
+                            </span>
+                          ))}
+                        </div>
+                        {trialBalanceAccounts.length > 100 ? (
+                          <p className="evidence-integrity-note">
+                            Showing the first 100 of{" "}
+                            {trialBalanceAccounts.length.toLocaleString()} imported accounts in this
+                            review pane.
+                          </p>
+                        ) : null}
+                      </>
+                    ) : trialBalanceImports.length ? (
+                      <p className="evidence-integrity-note">
+                        Select an immutable Trial Balance import to inspect backend-computed totals
+                        and source-row provenance.
+                      </p>
+                    ) : (
+                      <div className="empty-result">
+                        Import a controlled Trial Balance workbook to establish accounting linkage.
                       </div>
                     )}
                   </div>
