@@ -3311,6 +3311,251 @@ export default function App() {
     }
   }
 
+  async function selectStatutoryComplianceRequirement(
+    statutoryComplianceRequirementId: string | null,
+  ) {
+    setSelectedStatutoryComplianceRequirementId(statutoryComplianceRequirementId);
+    setStatutoryComplianceAssessments([]);
+    setSelectedStatutoryComplianceAssessmentId(null);
+    setStatutoryComplianceEvidence([]);
+    setComplianceEvidenceVersionIds([]);
+    setComplianceStatus("PENDING");
+    setComplianceDueDate("");
+    setComplianceActualDate("");
+    setComplianceExceptionText("");
+    setComplianceConclusion("");
+    if (!statutoryComplianceRequirementId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const assessments = await invoke<StatutoryComplianceAssessment[]>(
+        "list_statutory_compliance_assessments",
+        { statutoryComplianceRequirementId },
+      );
+      setStatutoryComplianceAssessments(assessments);
+      const latest = assessments[0] ?? null;
+      setSelectedStatutoryComplianceAssessmentId(
+        latest?.statutoryComplianceAssessmentId ?? null,
+      );
+      if (latest) {
+        const evidence = await invoke<StatutoryComplianceEvidence[]>(
+          "list_statutory_compliance_evidence",
+          { statutoryComplianceAssessmentId: latest.statutoryComplianceAssessmentId },
+        );
+        setStatutoryComplianceEvidence(evidence);
+        setComplianceEvidenceVersionIds(
+          evidence.map((item) => item.controlledEvidenceVersionId),
+        );
+        if (latest.status === "UNASSESSED") {
+          setComplianceStatus("PENDING");
+          setComplianceDueDate("");
+          setComplianceActualDate("");
+          setComplianceExceptionText("");
+          setComplianceConclusion("");
+        } else {
+          setComplianceStatus(latest.status);
+          setComplianceDueDate(latest.dueDate ?? "");
+          setComplianceActualDate(latest.actualComplianceDate ?? "");
+          setComplianceExceptionText(latest.exceptionText ?? "");
+          setComplianceConclusion(latest.conclusion ?? "");
+        }
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function openStatutoryComplianceAssessment(
+    statutoryComplianceAssessmentId: string,
+  ) {
+    setSelectedStatutoryComplianceAssessmentId(
+      statutoryComplianceAssessmentId || null,
+    );
+    setStatutoryComplianceEvidence([]);
+    if (!statutoryComplianceAssessmentId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const evidence = await invoke<StatutoryComplianceEvidence[]>(
+        "list_statutory_compliance_evidence",
+        { statutoryComplianceAssessmentId },
+      );
+      setStatutoryComplianceEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitStatutoryComplianceRequirement(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedEngagementId || !newComplianceRequirementVersionId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<StatutoryComplianceRequirement>(
+        "create_statutory_compliance_requirement",
+        {
+          engagementId: selectedEngagementId,
+          firmLibraryVersionId: newComplianceRequirementVersionId,
+        },
+      );
+      setStatutoryComplianceRequirements((current) => [created, ...current]);
+      setNewComplianceRequirementVersionId("");
+      await selectStatutoryComplianceRequirement(
+        created.statutoryComplianceRequirementId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  function updateComplianceStatus(status: string) {
+    setComplianceStatus(status);
+    if (status === "UNASSESSED") {
+      setComplianceDueDate("");
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+      setComplianceConclusion("");
+      setComplianceEvidenceVersionIds([]);
+    } else if (status === "PENDING") {
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+    } else if (status === "COMPLIANT") {
+      setComplianceExceptionText("");
+    } else if (status === "EXCEPTION") {
+      // Dates and evidence remain available because they may explain a late or failed compliance.
+    } else if (status === "NOT_APPLICABLE") {
+      setComplianceDueDate("");
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+      setComplianceEvidenceVersionIds([]);
+    }
+  }
+
+  async function searchComplianceEvidence(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const queryText = complianceEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setComplianceEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setComplianceEvidenceSearchResults(results);
+      setSelectedComplianceEvidenceDocument(null);
+      setComplianceEvidenceVersionHistory([]);
+      setSelectedComplianceControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setComplianceEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectComplianceEvidenceDocument(document: SearchResult) {
+    setComplianceEvidenceSearchBusy(true);
+    setSelectedComplianceEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setComplianceEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedComplianceControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setComplianceEvidenceVersionHistory([]);
+      setSelectedComplianceControlledVersionId("");
+    } finally {
+      setComplianceEvidenceSearchBusy(false);
+    }
+  }
+
+  function addComplianceEvidenceVersion() {
+    if (
+      !selectedComplianceControlledVersionId ||
+      complianceEvidenceVersionIds.includes(selectedComplianceControlledVersionId)
+    ) {
+      return;
+    }
+    setComplianceEvidenceVersionIds((current) => [
+      ...current,
+      selectedComplianceControlledVersionId,
+    ]);
+  }
+
+  async function submitStatutoryComplianceAssessment(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedStatutoryComplianceRequirementId) return;
+
+    const applicability =
+      complianceStatus === "UNASSESSED"
+        ? "UNDETERMINED"
+        : complianceStatus === "NOT_APPLICABLE"
+          ? "NOT_APPLICABLE"
+          : "APPLICABLE";
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<StatutoryComplianceAssessment>(
+        "create_statutory_compliance_assessment",
+        {
+          input: {
+            statutoryComplianceRequirementId:
+              selectedStatutoryComplianceRequirementId,
+            applicability,
+            dueDate: complianceDueDate || null,
+            actualComplianceDate: complianceActualDate || null,
+            status: complianceStatus,
+            exceptionText: complianceExceptionText.trim() || null,
+            conclusion: complianceConclusion.trim() || null,
+            controlledEvidenceVersionIds: complianceEvidenceVersionIds,
+          },
+        },
+      );
+      const [assessments, evidence] = await Promise.all([
+        invoke<StatutoryComplianceAssessment[]>(
+          "list_statutory_compliance_assessments",
+          {
+            statutoryComplianceRequirementId:
+              selectedStatutoryComplianceRequirementId,
+          },
+        ),
+        invoke<StatutoryComplianceEvidence[]>(
+          "list_statutory_compliance_evidence",
+          { statutoryComplianceAssessmentId: created.statutoryComplianceAssessmentId },
+        ),
+      ]);
+      setStatutoryComplianceAssessments(assessments);
+      setSelectedStatutoryComplianceAssessmentId(
+        created.statutoryComplianceAssessmentId,
+      );
+      setStatutoryComplianceEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function submitEngagementArea(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedEngagementId) return;
@@ -4732,6 +4977,35 @@ export default function App() {
         (template) => template.serviceTypeId === selectedEngagement.serviceTypeId,
       )
     : [];
+  const compatibleComplianceLibraryItems = selectedEngagement
+    ? firmLibraryItems.filter(
+        (item) =>
+          item.category === "STATUTORY_COMPLIANCE_REQUIREMENT" &&
+          (item.serviceTypeId === null ||
+            item.serviceTypeId === selectedEngagement.serviceTypeId) &&
+          !statutoryComplianceRequirements.some(
+            (requirement) => requirement.firmLibraryItemId === item.firmLibraryItemId,
+          ),
+      )
+    : [];
+  const selectedStatutoryComplianceRequirement =
+    statutoryComplianceRequirements.find(
+      (item) =>
+        item.statutoryComplianceRequirementId ===
+        selectedStatutoryComplianceRequirementId,
+    ) ?? null;
+  const selectedStatutoryComplianceAssessment =
+    statutoryComplianceAssessments.find(
+      (item) =>
+        item.statutoryComplianceAssessmentId ===
+        selectedStatutoryComplianceAssessmentId,
+    ) ?? null;
+  const complianceControlledEvidenceVersions =
+    complianceEvidenceVersionHistory.filter(
+      (entry) =>
+        entry.controlledEvidenceVersionId &&
+        entry.controlledVerificationState === "HASH_VERIFIED",
+    );
   const selectedLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === selectedLedgerImportId) ?? null;
   const ledgerControlledEvidenceVersions = ledgerEvidenceVersionHistory.filter(
