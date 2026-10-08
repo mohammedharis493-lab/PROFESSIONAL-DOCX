@@ -5,6 +5,7 @@ mod launcher;
 mod ledger;
 mod persistence;
 mod preview;
+mod reconciliation;
 mod search;
 mod spreadsheet;
 mod trial_balance;
@@ -883,6 +884,90 @@ impl From<persistence::TrialBalanceComparisonRecord> for TrialBalanceComparisonD
             net_movement_minor: value.net_movement_minor,
             account_count: value.account_count,
             movements: value.movements.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconciliationRunDto {
+    reconciliation_run_id: String,
+    engagement_id: String,
+    reconciliation_type: String,
+    title: String,
+    rule_code: String,
+    parameters_json: String,
+    left_item_count: u64,
+    right_item_count: u64,
+    matched_pair_count: u64,
+    exception_count: u64,
+    ran_at_ms: i64,
+}
+
+impl From<persistence::ReconciliationRunRecord> for ReconciliationRunDto {
+    fn from(value: persistence::ReconciliationRunRecord) -> Self {
+        Self {
+            reconciliation_run_id: value.reconciliation_run_id,
+            engagement_id: value.engagement_id,
+            reconciliation_type: value.reconciliation_type,
+            title: value.title,
+            rule_code: value.rule_code,
+            parameters_json: value.parameters_json,
+            left_item_count: value.left_item_count,
+            right_item_count: value.right_item_count,
+            matched_pair_count: value.matched_pair_count,
+            exception_count: value.exception_count,
+            ran_at_ms: value.ran_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconciliationExceptionDto {
+    reconciliation_exception_id: String,
+    reconciliation_run_id: String,
+    reconciliation_item_id: String,
+    exception_code: String,
+    side: String,
+    match_key: String,
+    amount_minor: i64,
+    event_date_text: Option<String>,
+    description_text: Option<String>,
+    source_kind: String,
+    source_entity_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    sheet_name: Option<String>,
+    source_row_number: Option<u64>,
+    source_row_hash_hex: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::ReconciliationExceptionRecord> for ReconciliationExceptionDto {
+    fn from(value: persistence::ReconciliationExceptionRecord) -> Self {
+        Self {
+            reconciliation_exception_id: value.reconciliation_exception_id,
+            reconciliation_run_id: value.reconciliation_run_id,
+            reconciliation_item_id: value.reconciliation_item_id,
+            exception_code: value.exception_code,
+            side: value.side,
+            match_key: value.match_key,
+            amount_minor: value.amount_minor,
+            event_date_text: value.event_date_text,
+            description_text: value.description_text,
+            source_kind: value.source_kind,
+            source_entity_id: value.source_entity_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            sheet_name: value.sheet_name,
+            source_row_number: value.source_row_number,
+            source_row_hash_hex: value.source_row_hash.map(|hash| hex_bytes(&hash)),
+            created_at_ms: value.created_at_ms,
         }
     }
 }
@@ -1958,6 +2043,42 @@ fn compare_trial_balance_opening_closing(
     validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
     persistence::compare_trial_balance_opening_closing(database.path(), &trial_balance_import_id)
         .map(Into::into)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_trial_balance_opening_closing_reconciliation(
+    trial_balance_import_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<ReconciliationRunDto, String> {
+    validate_uuid(&trial_balance_import_id, "trial-balance-import")?;
+    persistence::run_trial_balance_opening_closing_reconciliation(
+        database.path(),
+        &trial_balance_import_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_reconciliation_runs(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ReconciliationRunDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_reconciliation_runs(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_reconciliation_exceptions(
+    reconciliation_run_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<ReconciliationExceptionDto>, String> {
+    validate_uuid(&reconciliation_run_id, "reconciliation-run")?;
+    persistence::list_reconciliation_exceptions(database.path(), &reconciliation_run_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
 
@@ -3098,6 +3219,9 @@ pub fn run() {
             list_trial_balance_imports,
             list_trial_balance_accounts,
             compare_trial_balance_opening_closing,
+            run_trial_balance_opening_closing_reconciliation,
+            list_reconciliation_runs,
+            list_reconciliation_exceptions,
             create_engagement_from_template,
             create_engagement_area,
             list_engagement_areas,

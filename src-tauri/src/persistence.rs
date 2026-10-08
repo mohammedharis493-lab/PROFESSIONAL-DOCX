@@ -18,8 +18,9 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 17;
+const LATEST_SCHEMA_VERSION: i64 = 18;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
+const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
 struct Migration {
     version: i64,
@@ -112,6 +113,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 17,
         name: "fs_schedule_links",
         sql: include_str!("../migrations/0017_fs_schedule_links.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "reconciliation_framework",
+        sql: include_str!("../migrations/0018_reconciliation_framework.sql"),
     },
 ];
 
@@ -571,12 +577,86 @@ pub struct FinancialStatementScheduleLinkRecord {
     pub linked_at_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ReconciliationItemInput {
+    pub match_key: String,
+    pub amount_minor: i64,
+    pub event_date_text: Option<String>,
+    pub description_text: Option<String>,
+    pub source_kind: String,
+    pub source_entity_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: Option<String>,
+    pub source_row_number: Option<u64>,
+    pub source_row_hash: Option<Vec<u8>>,
+}
+
+pub struct ReconciliationRunDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub reconciliation_type: &'a str,
+    pub title: &'a str,
+    pub parameters_json: &'a str,
+    pub left_items: &'a [ReconciliationItemInput],
+    pub right_items: &'a [ReconciliationItemInput],
+}
+
+#[derive(Debug, Clone)]
+pub struct ReconciliationRunRecord {
+    pub reconciliation_run_id: String,
+    pub engagement_id: String,
+    pub reconciliation_type: String,
+    pub title: String,
+    pub rule_code: String,
+    pub parameters_json: String,
+    pub left_item_count: u64,
+    pub right_item_count: u64,
+    pub matched_pair_count: u64,
+    pub exception_count: u64,
+    pub ran_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReconciliationExceptionRecord {
+    pub reconciliation_exception_id: String,
+    pub reconciliation_run_id: String,
+    pub reconciliation_item_id: String,
+    pub exception_code: String,
+    pub side: String,
+    pub match_key: String,
+    pub amount_minor: i64,
+    pub event_date_text: Option<String>,
+    pub description_text: Option<String>,
+    pub source_kind: String,
+    pub source_entity_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: Option<String>,
+    pub source_row_number: Option<u64>,
+    pub source_row_hash: Option<Vec<u8>>,
+    pub created_at_ms: i64,
+}
+
 struct TrialBalanceMappingTarget {
     trial_balance_import_id: String,
     account_code_text: Option<String>,
     account_name_text: String,
     source_row_number: i64,
     source_row_hash: Vec<u8>,
+}
+
+struct TrialBalanceReconciliationSource {
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256: Vec<u8>,
+    sheet_name: String,
+    amount_scale: u32,
 }
 
 struct FirmLibraryItemIdentity {
@@ -4291,6 +4371,69 @@ fn normalize_firm_library_definition(
     Ok((canonical, hash))
 }
 
+fn normalize_reconciliation_parameters(parameters_json: &str) -> Result<String, PersistenceError> {
+    if parameters_json.len() > RECONCILIATION_PARAMETERS_MAX_BYTES {
+        return Err(PersistenceError::Configuration(format!(
+            "reconciliation parameters must be at most {RECONCILIATION_PARAMETERS_MAX_BYTES} bytes"
+        )));
+    }
+
+    let parameters: serde_json::Value = serde_json::from_str(parameters_json).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "reconciliation parameters must be valid JSON: {error}"
+        ))
+    })?;
+    if !parameters.is_object() {
+        return Err(PersistenceError::Configuration(
+            "reconciliation parameters must be a JSON object".to_string(),
+        ));
+    }
+
+    serde_json::to_string(&parameters).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "reconciliation parameters could not be serialized: {error}"
+        ))
+    })
+}
+
+fn normalize_reconciliation_source_identifier(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 240 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation source identifier must contain 1 to 240 printable characters"
+                .to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_reconciliation_match_key(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 500 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation match key must contain 1 to 500 printable characters".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_reconciliation_sheet_name(
+    value: Option<&str>,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > 255 || value.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation worksheet must contain at most 255 printable characters".to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
     let normalized = value.trim();
     let count = normalized.chars().count();
@@ -7508,6 +7651,667 @@ pub fn list_current_financial_statement_schedule_links(
             version_number: version_number.max(0) as u64,
             supersedes_link_id: row.get(11)?,
             linked_at_ms: row.get(12)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_reconciliation_run(
+    database_path: &Path,
+    definition: ReconciliationRunDefinition<'_>,
+) -> Result<ReconciliationRunRecord, PersistenceError> {
+    let ReconciliationRunDefinition {
+        engagement_id,
+        reconciliation_type,
+        title,
+        parameters_json,
+        left_items,
+        right_items,
+    } = definition;
+
+    let reconciliation_type = workflow_state_key(reconciliation_type);
+    if reconciliation_type.is_empty() || reconciliation_type.chars().count() > 80 {
+        return Err(PersistenceError::Configuration(
+            "reconciliation type must contain 1 to 80 normalized characters".to_string(),
+        ));
+    }
+    let title = normalize_domain_label(title, "reconciliation title", 240)?;
+    let parameters_json = normalize_reconciliation_parameters(parameters_json)?;
+
+    struct NormalizedItem {
+        stable_id: String,
+        match_key: String,
+        amount_minor: i64,
+        event_date_text: Option<String>,
+        description_text: Option<String>,
+        source_kind: String,
+        source_entity_id: String,
+        controlled_evidence_version_id: String,
+        document_id: String,
+        source_content_version_id: String,
+        source_sha256: Vec<u8>,
+        sheet_name: Option<String>,
+        source_row_number: Option<u64>,
+        source_row_hash: Option<Vec<u8>>,
+    }
+
+    fn normalize_item(item: &ReconciliationItemInput) -> Result<NormalizedItem, PersistenceError> {
+        let match_key = normalize_reconciliation_match_key(&item.match_key)?;
+        let source_kind = workflow_state_key(&item.source_kind);
+        if source_kind.is_empty() || source_kind.chars().count() > 80 {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source kind must contain 1 to 80 normalized characters".to_string(),
+            ));
+        }
+        let source_entity_id = normalize_reconciliation_source_identifier(&item.source_entity_id)?;
+
+        let event_date_text = match item.event_date_text.as_deref() {
+            Some(value) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else if value.chars().count() > 80
+                    || value.chars().any(|character| character.is_control())
+                {
+                    return Err(PersistenceError::Configuration(
+                        "reconciliation event date text must contain at most 80 printable characters"
+                            .to_string(),
+                    ));
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            None => None,
+        };
+        let description_text = match item.description_text.as_deref() {
+            Some(value) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else if value.chars().count() > 1_000
+                    || value.chars().any(|character| character.is_control())
+                {
+                    return Err(PersistenceError::Configuration(
+                        "reconciliation description must contain at most 1000 printable characters"
+                            .to_string(),
+                    ));
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            None => None,
+        };
+
+        if item.source_sha256.len() != 32 {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source SHA-256 must contain exactly 32 bytes".to_string(),
+            ));
+        }
+        if item.source_row_number.is_some() != item.source_row_hash.is_some() {
+            return Err(PersistenceError::Configuration(
+                "reconciliation row provenance requires both row number and row hash".to_string(),
+            ));
+        }
+        if let Some(source_row_hash) = item.source_row_hash.as_deref() {
+            if source_row_hash.len() != 32 {
+                return Err(PersistenceError::Configuration(
+                    "reconciliation source row hash must contain exactly 32 bytes".to_string(),
+                ));
+            }
+        }
+        if matches!(item.source_row_number, Some(0)) {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source row number must be at least 1".to_string(),
+            ));
+        }
+
+        Ok(NormalizedItem {
+            stable_id: format!("{source_kind}\u{1f}{source_entity_id}"),
+            match_key,
+            amount_minor: item.amount_minor,
+            event_date_text,
+            description_text,
+            source_kind,
+            source_entity_id,
+            controlled_evidence_version_id: item.controlled_evidence_version_id.clone(),
+            document_id: item.document_id.clone(),
+            source_content_version_id: item.source_content_version_id.clone(),
+            source_sha256: item.source_sha256.clone(),
+            sheet_name: normalize_reconciliation_sheet_name(item.sheet_name.as_deref())?,
+            source_row_number: item.source_row_number,
+            source_row_hash: item.source_row_hash.clone(),
+        })
+    }
+
+    let normalized_left = left_items
+        .iter()
+        .map(normalize_item)
+        .collect::<Result<Vec<_>, _>>()?;
+    let normalized_right = right_items
+        .iter()
+        .map(normalize_item)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let engine_left = normalized_left
+        .iter()
+        .map(|item| crate::reconciliation::ExactReconciliationItem {
+            stable_id: item.stable_id.clone(),
+            match_key: item.match_key.clone(),
+            amount_minor: item.amount_minor,
+        })
+        .collect::<Vec<_>>();
+    let engine_right = normalized_right
+        .iter()
+        .map(|item| crate::reconciliation::ExactReconciliationItem {
+            stable_id: item.stable_id.clone(),
+            match_key: item.match_key.clone(),
+            amount_minor: item.amount_minor,
+        })
+        .collect::<Vec<_>>();
+    let outcome = crate::reconciliation::reconcile_exact_key_amount(&engine_left, &engine_right)
+        .map_err(PersistenceError::Configuration)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let mut verified_evidence = BTreeMap::new();
+    for item in normalized_left.iter().chain(normalized_right.iter()) {
+        if verified_evidence.contains_key(&item.controlled_evidence_version_id) {
+            continue;
+        }
+
+        let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    document_id,
+                    source_content_version_id,
+                    sha256,
+                    verification_state,
+                    retention_state
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [&item.controlled_evidence_version_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(evidence) = evidence else {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {} does not exist",
+                item.controlled_evidence_version_id
+            )));
+        };
+        if evidence.3 != "HASH_VERIFIED" || evidence.4 != "RETAINED" {
+            return Err(PersistenceError::Configuration(
+                "reconciliation items require retained hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+        verified_evidence.insert(item.controlled_evidence_version_id.clone(), evidence);
+    }
+
+    for item in normalized_left.iter().chain(normalized_right.iter()) {
+        let evidence = verified_evidence
+            .get(&item.controlled_evidence_version_id)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation controlled evidence validation is incomplete".to_string(),
+                )
+            })?;
+        if evidence.0 != item.document_id
+            || evidence.1 != item.source_content_version_id
+            || evidence.2.as_slice() != item.source_sha256.as_slice()
+        {
+            return Err(PersistenceError::Configuration(
+                "reconciliation item provenance does not match controlled evidence".to_string(),
+            ));
+        }
+    }
+
+    let reconciliation_run_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let exception_count =
+        outcome.unmatched_left_stable_ids.len() + outcome.unmatched_right_stable_ids.len();
+
+    transaction.execute(
+        "INSERT INTO reconciliation_runs (
+            reconciliation_run_id,
+            engagement_id,
+            reconciliation_type,
+            title,
+            rule_code,
+            parameters_json,
+            left_item_count,
+            right_item_count,
+            matched_pair_count,
+            exception_count,
+            ran_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, 'EXACT_KEY_AMOUNT', ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &reconciliation_run_id,
+            engagement_id,
+            &reconciliation_type,
+            &title,
+            &parameters_json,
+            u64_to_i64(normalized_left.len() as u64)?,
+            u64_to_i64(normalized_right.len() as u64)?,
+            u64_to_i64(outcome.matches.len() as u64)?,
+            u64_to_i64(exception_count as u64)?,
+            now
+        ],
+    )?;
+
+    let mut left_item_ids = BTreeMap::new();
+    let mut right_item_ids = BTreeMap::new();
+
+    let insert_items = |side: &str,
+                        items: &[NormalizedItem],
+                        item_ids: &mut BTreeMap<String, String>|
+     -> Result<(), PersistenceError> {
+        for item in items {
+            let reconciliation_item_id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO reconciliation_items (
+                    reconciliation_item_id,
+                    reconciliation_run_id,
+                    side,
+                    match_key,
+                    amount_minor,
+                    event_date_text,
+                    description_text,
+                    source_kind,
+                    source_entity_id,
+                    controlled_evidence_version_id,
+                    document_id,
+                    source_content_version_id,
+                    source_sha256,
+                    sheet_name,
+                    source_row_number,
+                    source_row_hash,
+                    created_at_ms
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                 )",
+                params![
+                    &reconciliation_item_id,
+                    &reconciliation_run_id,
+                    side,
+                    &item.match_key,
+                    item.amount_minor,
+                    item.event_date_text.as_deref(),
+                    item.description_text.as_deref(),
+                    &item.source_kind,
+                    &item.source_entity_id,
+                    &item.controlled_evidence_version_id,
+                    &item.document_id,
+                    &item.source_content_version_id,
+                    &item.source_sha256,
+                    item.sheet_name.as_deref(),
+                    item.source_row_number.map(u64_to_i64).transpose()?,
+                    item.source_row_hash.as_deref(),
+                    now
+                ],
+            )?;
+            item_ids.insert(item.stable_id.clone(), reconciliation_item_id);
+        }
+        Ok(())
+    };
+
+    insert_items("LEFT", &normalized_left, &mut left_item_ids)?;
+    insert_items("RIGHT", &normalized_right, &mut right_item_ids)?;
+
+    for matched in &outcome.matches {
+        let left_item_id = left_item_ids.get(&matched.left_stable_id).ok_or_else(|| {
+            PersistenceError::Configuration(
+                "reconciliation left match resolution failed".to_string(),
+            )
+        })?;
+        let right_item_id = right_item_ids
+            .get(&matched.right_stable_id)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation right match resolution failed".to_string(),
+                )
+            })?;
+        transaction.execute(
+            "INSERT INTO reconciliation_matches (
+                reconciliation_match_id,
+                reconciliation_run_id,
+                left_item_id,
+                right_item_id,
+                matched_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                Uuid::new_v4().to_string(),
+                &reconciliation_run_id,
+                left_item_id,
+                right_item_id,
+                now
+            ],
+        )?;
+    }
+
+    for (exception_code, stable_ids, item_ids) in [
+        (
+            "UNMATCHED_LEFT",
+            &outcome.unmatched_left_stable_ids,
+            &left_item_ids,
+        ),
+        (
+            "UNMATCHED_RIGHT",
+            &outcome.unmatched_right_stable_ids,
+            &right_item_ids,
+        ),
+    ] {
+        for stable_id in stable_ids {
+            let reconciliation_item_id = item_ids.get(stable_id).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation exception resolution failed".to_string(),
+                )
+            })?;
+            transaction.execute(
+                "INSERT INTO reconciliation_exceptions (
+                    reconciliation_exception_id,
+                    reconciliation_run_id,
+                    reconciliation_item_id,
+                    exception_code,
+                    created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    &reconciliation_run_id,
+                    reconciliation_item_id,
+                    exception_code,
+                    now
+                ],
+            )?;
+        }
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "RECONCILIATION_RUN_COMPLETED",
+            entity_type: "RECONCILIATION_RUN",
+            entity_id: &reconciliation_run_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reconciliationType": reconciliation_type,
+                "ruleCode": "EXACT_KEY_AMOUNT",
+                "leftItemCount": normalized_left.len(),
+                "rightItemCount": normalized_right.len(),
+                "matchedPairCount": outcome.matches.len(),
+                "exceptionCount": exception_count
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+
+    Ok(ReconciliationRunRecord {
+        reconciliation_run_id,
+        engagement_id: engagement_id.to_string(),
+        reconciliation_type,
+        title,
+        rule_code: "EXACT_KEY_AMOUNT".to_string(),
+        parameters_json,
+        left_item_count: normalized_left.len() as u64,
+        right_item_count: normalized_right.len() as u64,
+        matched_pair_count: outcome.matches.len() as u64,
+        exception_count: exception_count as u64,
+        ran_at_ms: now,
+    })
+}
+
+pub fn run_trial_balance_opening_closing_reconciliation(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<ReconciliationRunRecord, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let source = connection
+        .query_row(
+            "SELECT
+                engagement_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                sheet_name,
+                amount_scale
+             FROM trial_balance_imports
+             WHERE trial_balance_import_id = ?1",
+            [trial_balance_import_id],
+            |row| {
+                let amount_scale: i64 = row.get(6)?;
+                Ok(TrialBalanceReconciliationSource {
+                    engagement_id: row.get(0)?,
+                    controlled_evidence_version_id: row.get(1)?,
+                    document_id: row.get(2)?,
+                    source_content_version_id: row.get(3)?,
+                    source_sha256: row.get(4)?,
+                    sheet_name: row.get(5)?,
+                    amount_scale: amount_scale.max(0) as u32,
+                })
+            },
+        )
+        .optional()?;
+    let Some(source) = source else {
+        return Err(PersistenceError::Configuration(format!(
+            "trial balance import {trial_balance_import_id} does not exist"
+        )));
+    };
+    drop(connection);
+
+    let accounts = list_trial_balance_accounts(database_path, trial_balance_import_id)?;
+    let mut left_items = Vec::with_capacity(accounts.len());
+    let mut right_items = Vec::with_capacity(accounts.len());
+
+    for account in &accounts {
+        let account_label = account
+            .account_code_text
+            .as_deref()
+            .map(|code| format!("{code} - {}", account.account_name_text))
+            .unwrap_or_else(|| account.account_name_text.clone());
+
+        let common = |amount_minor: i64, description_text: String| ReconciliationItemInput {
+            match_key: account.trial_balance_account_id.clone(),
+            amount_minor,
+            event_date_text: None,
+            description_text: Some(description_text),
+            source_kind: "TRIAL_BALANCE_ACCOUNT".to_string(),
+            source_entity_id: account.trial_balance_account_id.clone(),
+            controlled_evidence_version_id: source.controlled_evidence_version_id.clone(),
+            document_id: source.document_id.clone(),
+            source_content_version_id: source.source_content_version_id.clone(),
+            source_sha256: source.source_sha256.clone(),
+            sheet_name: Some(source.sheet_name.clone()),
+            source_row_number: Some(account.source_row_number),
+            source_row_hash: Some(account.source_row_hash.clone()),
+        };
+
+        left_items.push(common(
+            account.opening_minor,
+            format!("Opening balance - {account_label}"),
+        ));
+        right_items.push(common(
+            account.closing_minor,
+            format!("Closing balance - {account_label}"),
+        ));
+    }
+
+    let parameters_json = json!({
+        "trialBalanceImportId": trial_balance_import_id,
+        "amountScale": source.amount_scale,
+        "leftSide": "OPENING",
+        "rightSide": "CLOSING",
+        "comparison": "EXACT_ACCOUNT_AND_AMOUNT"
+    })
+    .to_string();
+
+    create_reconciliation_run(
+        database_path,
+        ReconciliationRunDefinition {
+            engagement_id: &source.engagement_id,
+            reconciliation_type: "TRIAL_BALANCE_OPENING_CLOSING",
+            title: "Trial Balance opening vs closing exact reconciliation",
+            parameters_json: &parameters_json,
+            left_items: &left_items,
+            right_items: &right_items,
+        },
+    )
+}
+
+pub fn list_reconciliation_runs(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<ReconciliationRunRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            reconciliation_run_id,
+            engagement_id,
+            reconciliation_type,
+            title,
+            rule_code,
+            parameters_json,
+            left_item_count,
+            right_item_count,
+            matched_pair_count,
+            exception_count,
+            ran_at_ms
+         FROM reconciliation_runs
+         WHERE engagement_id = ?1
+         ORDER BY ran_at_ms DESC, reconciliation_run_id DESC",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(ReconciliationRunRecord {
+            reconciliation_run_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            reconciliation_type: row.get(2)?,
+            title: row.get(3)?,
+            rule_code: row.get(4)?,
+            parameters_json: row.get(5)?,
+            left_item_count: row.get::<_, i64>(6)?.max(0) as u64,
+            right_item_count: row.get::<_, i64>(7)?.max(0) as u64,
+            matched_pair_count: row.get::<_, i64>(8)?.max(0) as u64,
+            exception_count: row.get::<_, i64>(9)?.max(0) as u64,
+            ran_at_ms: row.get(10)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_reconciliation_exceptions(
+    database_path: &Path,
+    reconciliation_run_id: &str,
+) -> Result<Vec<ReconciliationExceptionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let run_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM reconciliation_runs
+            WHERE reconciliation_run_id = ?1
+        )",
+        [reconciliation_run_id],
+        |row| row.get(0),
+    )?;
+    if !run_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "reconciliation run {reconciliation_run_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            e.reconciliation_exception_id,
+            e.reconciliation_run_id,
+            i.reconciliation_item_id,
+            e.exception_code,
+            i.side,
+            i.match_key,
+            i.amount_minor,
+            i.event_date_text,
+            i.description_text,
+            i.source_kind,
+            i.source_entity_id,
+            i.controlled_evidence_version_id,
+            i.document_id,
+            i.source_content_version_id,
+            i.source_sha256,
+            i.sheet_name,
+            i.source_row_number,
+            i.source_row_hash,
+            e.created_at_ms
+         FROM reconciliation_exceptions e
+         JOIN reconciliation_items i
+           ON i.reconciliation_item_id = e.reconciliation_item_id
+         WHERE e.reconciliation_run_id = ?1
+         ORDER BY
+            CASE e.exception_code
+                WHEN 'UNMATCHED_LEFT' THEN 0
+                ELSE 1
+            END,
+            i.match_key,
+            i.amount_minor,
+            i.source_kind,
+            i.source_entity_id",
+    )?;
+    let rows = statement.query_map([reconciliation_run_id], |row| {
+        let source_row_number: Option<i64> = row.get(16)?;
+        Ok(ReconciliationExceptionRecord {
+            reconciliation_exception_id: row.get(0)?,
+            reconciliation_run_id: row.get(1)?,
+            reconciliation_item_id: row.get(2)?,
+            exception_code: row.get(3)?,
+            side: row.get(4)?,
+            match_key: row.get(5)?,
+            amount_minor: row.get(6)?,
+            event_date_text: row.get(7)?,
+            description_text: row.get(8)?,
+            source_kind: row.get(9)?,
+            source_entity_id: row.get(10)?,
+            controlled_evidence_version_id: row.get(11)?,
+            document_id: row.get(12)?,
+            source_content_version_id: row.get(13)?,
+            source_sha256: row.get(14)?,
+            sheet_name: row.get(15)?,
+            source_row_number: source_row_number.map(|value| value.max(0) as u64),
+            source_row_hash: row.get(17)?,
+            created_at_ms: row.get(18)?,
         })
     })?;
 
@@ -11223,7 +12027,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 17);
+        assert_eq!(migration_count, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11276,14 +12080,18 @@ mod tests {
                        'ledger_tb_mappings',
                        'financial_statement_schedules',
                        'trial_balance_schedule_mappings',
-                       'financial_statement_schedule_links'
+                       'financial_statement_schedule_links',
+                       'reconciliation_runs',
+                       'reconciliation_items',
+                       'reconciliation_matches',
+                       'reconciliation_exceptions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 47);
+        assert_eq!(table_count, 51);
     }
 
     #[test]
@@ -11319,7 +12127,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11367,7 +12175,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: i64 = connection
             .query_row(
@@ -11416,7 +12224,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11461,14 +12269,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -11510,14 +12318,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11567,14 +12375,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11619,14 +12427,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11671,14 +12479,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11723,14 +12531,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11774,14 +12582,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11825,14 +12633,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11889,14 +12697,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -11948,14 +12756,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11999,14 +12807,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -12048,14 +12856,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12099,14 +12907,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -12120,6 +12928,59 @@ mod tests {
             )
             .expect("financial statement schedule link table should exist");
         assert!(table_exists);
+    }
+
+    #[test]
+    fn eighteenth_migration_adds_immutable_reconciliation_framework() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..17] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 17);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 18");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 18);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'reconciliation_runs',
+                       'reconciliation_items',
+                       'reconciliation_matches',
+                       'reconciliation_exceptions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("reconciliation framework tables should exist");
+        assert_eq!(table_count, 4);
     }
 
     #[test]
@@ -12753,6 +13614,181 @@ mod tests {
         assert!(schedule_mapping_mutation_error
             .to_string()
             .contains("trial balance schedule mappings are immutable"));
+
+        let reconciliation_row_hash = |label: &str| Sha256::digest(label.as_bytes()).to_vec();
+        let reconciliation_item =
+            |source_entity_id: &str, match_key: &str, amount_minor: i64, source_row_number: u64| {
+                ReconciliationItemInput {
+                    match_key: match_key.to_string(),
+                    amount_minor,
+                    event_date_text: Some("2026-03-31".to_string()),
+                    description_text: Some(format!("Reconciliation item {source_entity_id}")),
+                    source_kind: "TEST_ROW".to_string(),
+                    source_entity_id: source_entity_id.to_string(),
+                    controlled_evidence_version_id: controlled_evidence_version_id.clone(),
+                    document_id: document_id.clone(),
+                    source_content_version_id: content_version_id.clone(),
+                    source_sha256: source_sha256.clone(),
+                    sheet_name: Some("Recon".to_string()),
+                    source_row_number: Some(source_row_number),
+                    source_row_hash: Some(reconciliation_row_hash(source_entity_id)),
+                }
+            };
+
+        let left_reconciliation_items = vec![
+            reconciliation_item("L-A", "INV-100", 10_000, 10),
+            reconciliation_item("L-B", "INV-100", 10_000, 11),
+            reconciliation_item("L-C", "INV-200", 20_000, 12),
+        ];
+        let right_reconciliation_items = vec![
+            reconciliation_item("R-A", "INV-100", 10_000, 20),
+            reconciliation_item("R-C", "INV-300", 30_000, 21),
+            reconciliation_item("R-B", "INV-200", 20_000, 22),
+        ];
+
+        let reconciliation_run = create_reconciliation_run(
+            &database.path,
+            ReconciliationRunDefinition {
+                engagement_id: &engagement.engagement_id,
+                reconciliation_type: "generic test",
+                title: "Exact key and amount reconciliation",
+                parameters_json: r#"{"comparison":"EXACT","amountScale":2}"#,
+                left_items: &left_reconciliation_items,
+                right_items: &right_reconciliation_items,
+            },
+        )
+        .expect("reconciliation run should succeed");
+        assert_eq!(reconciliation_run.reconciliation_type, "GENERIC_TEST");
+        assert_eq!(reconciliation_run.rule_code, "EXACT_KEY_AMOUNT");
+        assert_eq!(reconciliation_run.left_item_count, 3);
+        assert_eq!(reconciliation_run.right_item_count, 3);
+        assert_eq!(reconciliation_run.matched_pair_count, 2);
+        assert_eq!(reconciliation_run.exception_count, 2);
+
+        let reconciliation_runs =
+            list_reconciliation_runs(&database.path, &engagement.engagement_id)
+                .expect("reconciliation runs");
+        assert_eq!(reconciliation_runs.len(), 1);
+        assert_eq!(
+            reconciliation_runs[0].reconciliation_run_id,
+            reconciliation_run.reconciliation_run_id
+        );
+
+        let reconciliation_exceptions = list_reconciliation_exceptions(
+            &database.path,
+            &reconciliation_run.reconciliation_run_id,
+        )
+        .expect("reconciliation exceptions");
+        assert_eq!(reconciliation_exceptions.len(), 2);
+        assert_eq!(
+            reconciliation_exceptions
+                .iter()
+                .map(|exception| (
+                    exception.exception_code.as_str(),
+                    exception.source_entity_id.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("UNMATCHED_LEFT", "L-B"), ("UNMATCHED_RIGHT", "R-C")]
+        );
+        for exception in &reconciliation_exceptions {
+            assert_eq!(
+                exception.controlled_evidence_version_id,
+                controlled_evidence_version_id
+            );
+            assert_eq!(exception.document_id, document_id);
+            assert_eq!(exception.source_content_version_id, content_version_id);
+            assert_eq!(exception.source_sha256, source_sha256);
+            assert_eq!(exception.sheet_name.as_deref(), Some("Recon"));
+            assert_eq!(exception.source_row_hash.as_ref().map(Vec::len), Some(32));
+        }
+
+        let mut invalid_reconciliation_left = left_reconciliation_items.clone();
+        invalid_reconciliation_left[0].source_sha256 = vec![0xCD; 32];
+        let provenance_error = create_reconciliation_run(
+            &database.path,
+            ReconciliationRunDefinition {
+                engagement_id: &engagement.engagement_id,
+                reconciliation_type: "generic test",
+                title: "Invalid provenance reconciliation",
+                parameters_json: "{}",
+                left_items: &invalid_reconciliation_left,
+                right_items: &right_reconciliation_items,
+            },
+        )
+        .expect_err("mismatched controlled evidence provenance must fail");
+        assert!(provenance_error
+            .to_string()
+            .contains("does not match controlled evidence"));
+
+        let reconciliation_run_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_runs
+                 SET exception_count = 0
+                 WHERE reconciliation_run_id = ?1",
+                [&reconciliation_run.reconciliation_run_id],
+            )
+            .expect_err("reconciliation runs must be immutable");
+        assert!(reconciliation_run_mutation_error
+            .to_string()
+            .contains("reconciliation runs are immutable"));
+
+        let reconciliation_item_id: String = connection
+            .query_row(
+                "SELECT reconciliation_item_id
+                 FROM reconciliation_items
+                 WHERE reconciliation_run_id = ?1
+                 ORDER BY reconciliation_item_id
+                 LIMIT 1",
+                [&reconciliation_run.reconciliation_run_id],
+                |row| row.get(0),
+            )
+            .expect("reconciliation item should exist");
+        let reconciliation_item_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_items
+                 SET amount_minor = amount_minor + 1
+                 WHERE reconciliation_item_id = ?1",
+                [&reconciliation_item_id],
+            )
+            .expect_err("reconciliation items must be immutable");
+        assert!(reconciliation_item_mutation_error
+            .to_string()
+            .contains("reconciliation items are immutable"));
+
+        let reconciliation_match_id: String = connection
+            .query_row(
+                "SELECT reconciliation_match_id
+                 FROM reconciliation_matches
+                 WHERE reconciliation_run_id = ?1
+                 ORDER BY reconciliation_match_id
+                 LIMIT 1",
+                [&reconciliation_run.reconciliation_run_id],
+                |row| row.get(0),
+            )
+            .expect("reconciliation match should exist");
+        let reconciliation_match_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_matches
+                 SET matched_at_ms = matched_at_ms + 1
+                 WHERE reconciliation_match_id = ?1",
+                [&reconciliation_match_id],
+            )
+            .expect_err("reconciliation matches must be immutable");
+        assert!(reconciliation_match_mutation_error
+            .to_string()
+            .contains("reconciliation matches are immutable"));
+
+        let reconciliation_exception_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_exceptions
+                 SET exception_code = 'UNMATCHED_RIGHT'
+                 WHERE reconciliation_exception_id = ?1",
+                [&reconciliation_exceptions[0].reconciliation_exception_id],
+            )
+            .expect_err("reconciliation exceptions must be immutable");
+        assert!(reconciliation_exception_mutation_error
+            .to_string()
+            .contains("reconciliation exceptions are immutable"));
 
         let trial_balance_mutation_error = connection
             .execute(
