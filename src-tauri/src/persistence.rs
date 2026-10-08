@@ -4453,9 +4453,9 @@ fn normalize_statutory_compliance_text(
     };
     let count = value.chars().count();
     if count > max_chars
-        || value.chars().any(|character| {
-            character.is_control() && !matches!(character, '\n' | '\r' | '\t')
-        })
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
     {
         return Err(PersistenceError::Configuration(format!(
             "{field_name} must contain at most {max_chars} printable characters"
@@ -4484,15 +4484,15 @@ fn normalize_statutory_compliance_date(
         )));
     }
 
-    let year = value[..4].parse::<u32>().map_err(|_| {
-        PersistenceError::Configuration(format!("{field_name} year is invalid"))
-    })?;
-    let month = value[5..7].parse::<u32>().map_err(|_| {
-        PersistenceError::Configuration(format!("{field_name} month is invalid"))
-    })?;
-    let day = value[8..].parse::<u32>().map_err(|_| {
-        PersistenceError::Configuration(format!("{field_name} day is invalid"))
-    })?;
+    let year = value[..4]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} year is invalid")))?;
+    let month = value[5..7]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} month is invalid")))?;
+    let day = value[8..]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} day is invalid")))?;
     if year == 0 || !(1..=12).contains(&month) {
         return Err(PersistenceError::Configuration(format!(
             "{field_name} is not a valid calendar date"
@@ -4561,11 +4561,8 @@ fn normalize_statutory_compliance_assessment(
         "statutory compliance exception",
         10_000,
     )?;
-    let conclusion = normalize_statutory_compliance_text(
-        conclusion,
-        "statutory compliance conclusion",
-        10_000,
-    )?;
+    let conclusion =
+        normalize_statutory_compliance_text(conclusion, "statutory compliance conclusion", 10_000)?;
 
     let mut evidence_ids = controlled_evidence_version_ids.to_vec();
     evidence_ids.sort();
@@ -4626,10 +4623,7 @@ fn normalize_statutory_compliance_assessment(
             }
         }
         "EXCEPTION" => {
-            if applicability != "APPLICABLE"
-                || exception_text.is_none()
-                || conclusion.is_none()
-            {
+            if applicability != "APPLICABLE" || exception_text.is_none() || conclusion.is_none() {
                 return Err(PersistenceError::Configuration(
                     "EXCEPTION status requires applicable state, exception text, and conclusion"
                         .to_string(),
@@ -5931,10 +5925,17 @@ pub fn create_statutory_compliance_requirement(
         PersistenceError::Configuration(format!("engagement {engagement_id} does not exist"))
     })?;
 
-    let library_version: Option<(String, String, Option<String>, Option<String>, i64, String, Vec<u8>)> =
-        transaction
-            .query_row(
-                "SELECT
+    let library_version: Option<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+        String,
+        Vec<u8>,
+    )> = transaction
+        .query_row(
+            "SELECT
                     i.firm_library_item_id,
                     i.name,
                     i.description,
@@ -5948,20 +5949,20 @@ pub fn create_statutory_compliance_requirement(
                  WHERE v.firm_library_version_id = ?1
                    AND i.category = 'STATUTORY_COMPLIANCE_REQUIREMENT'
                    AND i.archived_at_ms IS NULL",
-                [firm_library_version_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )
-            .optional()?;
+            [firm_library_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
     let Some((
         firm_library_item_id,
         requirement_name,
@@ -6133,22 +6134,16 @@ pub fn create_statutory_compliance_assessment(
     database_path: &Path,
     definition: StatutoryComplianceAssessmentDefinition<'_>,
 ) -> Result<StatutoryComplianceAssessmentRecord, PersistenceError> {
-    let (
-        applicability,
-        due_date,
-        actual_compliance_date,
-        status,
-        exception_text,
-        conclusion,
-    ) = normalize_statutory_compliance_assessment(
-        definition.applicability,
-        definition.due_date,
-        definition.actual_compliance_date,
-        definition.status,
-        definition.exception_text,
-        definition.conclusion,
-        definition.controlled_evidence_version_ids,
-    )?;
+    let (applicability, due_date, actual_compliance_date, status, exception_text, conclusion) =
+        normalize_statutory_compliance_assessment(
+            definition.applicability,
+            definition.due_date,
+            definition.actual_compliance_date,
+            definition.status,
+            definition.exception_text,
+            definition.conclusion,
+            definition.controlled_evidence_version_ids,
+        )?;
 
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -14839,9 +14834,7 @@ mod tests {
             },
         )
         .expect_err("unknown evidence should fail");
-        assert!(missing_evidence
-            .to_string()
-            .contains("does not exist"));
+        assert!(missing_evidence.to_string().contains("does not exist"));
 
         let duplicate_requirement = create_statutory_compliance_requirement(
             &database.path,
