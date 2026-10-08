@@ -354,6 +354,42 @@ type LedgerException = {
   createdAtMs: number;
 };
 
+type ReconciliationRun = {
+  reconciliationRunId: string;
+  engagementId: string;
+  reconciliationType: string;
+  title: string;
+  ruleCode: string;
+  parametersJson: string;
+  leftItemCount: number;
+  rightItemCount: number;
+  matchedPairCount: number;
+  exceptionCount: number;
+  ranAtMs: number;
+};
+
+type ReconciliationException = {
+  reconciliationExceptionId: string;
+  reconciliationRunId: string;
+  reconciliationItemId: string;
+  exceptionCode: string;
+  side: string;
+  matchKey: string;
+  amountMinor: number;
+  eventDateText: string | null;
+  descriptionText: string | null;
+  sourceKind: string;
+  sourceEntityId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  sheetName: string | null;
+  sourceRowNumber: number | null;
+  sourceRowHashHex: string | null;
+  createdAtMs: number;
+};
+
 type LedgerAccountSummary = {
   ledgerImportId: string;
   accountKey: string;
@@ -1009,6 +1045,22 @@ function formatMinorUnitAmount(value: number, scale: number) {
   return `${sign}${integer.toLocaleString()}.${fraction}`;
 }
 
+function reconciliationRunAmountScale(run: ReconciliationRun | null) {
+  if (!run) return 2;
+  try {
+    const parameters = JSON.parse(run.parametersJson) as { amountScale?: unknown };
+    const amountScale = parameters.amountScale;
+    return typeof amountScale === "number" &&
+      Number.isInteger(amountScale) &&
+      amountScale >= 0 &&
+      amountScale <= 6
+      ? amountScale
+      : 2;
+  } catch {
+    return 2;
+  }
+}
+
 function sourceUnavailable(availabilityState: string) {
   return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
 }
@@ -1149,6 +1201,11 @@ export default function App() {
   const [ledgerTestRuns, setLedgerTestRuns] = useState<LedgerTestRun[]>([]);
   const [ledgerTestRun, setLedgerTestRun] = useState<LedgerTestRun | null>(null);
   const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
+  const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRun[]>([]);
+  const [selectedReconciliationRunId, setSelectedReconciliationRunId] =
+    useState<string | null>(null);
+  const [reconciliationExceptions, setReconciliationExceptions] =
+    useState<ReconciliationException[]>([]);
   const [trialBalanceImports, setTrialBalanceImports] = useState<TrialBalanceImport[]>([]);
   const [selectedTrialBalanceImportId, setSelectedTrialBalanceImportId] = useState<string | null>(null);
   const [trialBalanceComparison, setTrialBalanceComparison] =
@@ -1497,6 +1554,9 @@ export default function App() {
     setLedgerTestRuns([]);
     setLedgerTestRun(null);
     setLedgerExceptions([]);
+    setReconciliationRuns([]);
+    setSelectedReconciliationRunId(null);
+    setReconciliationExceptions([]);
     setTrialBalanceImports([]);
     setSelectedTrialBalanceImportId(null);
     setTrialBalanceComparison(null);
@@ -1535,6 +1595,7 @@ export default function App() {
         trialBalanceImportRecords,
         scheduleRecords,
         statementLinkRecords,
+        reconciliationRunRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1549,6 +1610,7 @@ export default function App() {
           "list_current_financial_statement_schedule_links",
           { engagementId },
         ),
+        invoke<ReconciliationRun[]>("list_reconciliation_runs", { engagementId }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1558,6 +1620,21 @@ export default function App() {
       setTrialBalanceImports(trialBalanceImportRecords);
       setFinancialStatementSchedules(scheduleRecords);
       setFinancialStatementScheduleLinks(statementLinkRecords);
+      setReconciliationRuns(reconciliationRunRecords);
+      const latestTrialBalanceReconciliation =
+        reconciliationRunRecords.find(
+          (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
+        ) ?? null;
+      setSelectedReconciliationRunId(
+        latestTrialBalanceReconciliation?.reconciliationRunId ?? null,
+      );
+      if (latestTrialBalanceReconciliation) {
+        const exceptions = await invoke<ReconciliationException[]>(
+          "list_reconciliation_exceptions",
+          { reconciliationRunId: latestTrialBalanceReconciliation.reconciliationRunId },
+        );
+        setReconciliationExceptions(exceptions);
+      }
       const firstScheduleId = scheduleRecords[0]?.financialStatementScheduleId ?? "";
       setSelectedFinancialStatementScheduleId(firstScheduleId);
       setSelectedFsLinkScheduleId(firstScheduleId);
@@ -2419,6 +2496,51 @@ export default function App() {
       setSelectedTrialBalanceControlledVersionId("");
     } finally {
       setTrialBalanceEvidenceSearchBusy(false);
+    }
+  }
+
+  async function openReconciliationRun(reconciliationRunId: string | null) {
+    setSelectedReconciliationRunId(reconciliationRunId);
+    setReconciliationExceptions([]);
+    if (!reconciliationRunId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const exceptions = await invoke<ReconciliationException[]>(
+        "list_reconciliation_exceptions",
+        { reconciliationRunId },
+      );
+      setReconciliationExceptions(exceptions);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function runTrialBalanceReconciliation() {
+    if (!selectedTrialBalanceImport) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const run = await invoke<ReconciliationRun>(
+        "run_trial_balance_opening_closing_reconciliation",
+        { trialBalanceImportId: selectedTrialBalanceImport.trialBalanceImportId },
+      );
+      const exceptions = await invoke<ReconciliationException[]>(
+        "list_reconciliation_exceptions",
+        { reconciliationRunId: run.reconciliationRunId },
+      );
+      setReconciliationRuns((current) => [
+        run,
+        ...current.filter((item) => item.reconciliationRunId !== run.reconciliationRunId),
+      ]);
+      setSelectedReconciliationRunId(run.reconciliationRunId);
+      setReconciliationExceptions(exceptions);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
     }
   }
 
@@ -4507,6 +4629,15 @@ export default function App() {
     trialBalanceImports.find(
       (item) => item.trialBalanceImportId === selectedTrialBalanceImportId,
     ) ?? null;
+  const trialBalanceReconciliationRuns = reconciliationRuns.filter(
+    (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
+  );
+  const selectedReconciliationRun =
+    trialBalanceReconciliationRuns.find(
+      (run) => run.reconciliationRunId === selectedReconciliationRunId,
+    ) ?? null;
+  const selectedReconciliationAmountScale =
+    reconciliationRunAmountScale(selectedReconciliationRun);
   const selectedMappingLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === mappingLedgerImportId) ?? null;
   const compatibleMappingTrialBalanceImports = selectedMappingLedgerImport
@@ -6102,6 +6233,131 @@ export default function App() {
                     ) : (
                       <div className="empty-result">
                         Import a controlled Trial Balance workbook to establish accounting linkage.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">RECONCILIATION</span>
+                        <h3>Deterministic TB opening vs closing</h3>
+                      </div>
+                    </div>
+
+                    <p className="evidence-integrity-note">
+                      The backend matches exact immutable TB account IDs and exact signed balances.
+                      Differences remain immutable exceptions; this screen cannot clear or rewrite
+                      them.
+                    </p>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={workspaceBusy || !selectedTrialBalanceImport}
+                      onClick={() => void runTrialBalanceReconciliation()}
+                    >
+                      Run exact reconciliation
+                    </button>
+
+                    {trialBalanceReconciliationRuns.length ? (
+                      <label className="workspace-form compact">
+                        <span>Completed reconciliation run</span>
+                        <select
+                          value={selectedReconciliationRunId ?? ""}
+                          onChange={(event) =>
+                            void openReconciliationRun(event.target.value || null)
+                          }
+                          disabled={workspaceBusy}
+                        >
+                          <option value="">Select immutable run</option>
+                          {trialBalanceReconciliationRuns.map((run) => (
+                            <option key={run.reconciliationRunId} value={run.reconciliationRunId}>
+                              {formatTimestamp(run.ranAtMs)} · {run.exceptionCount} exception(s) ·{" "}
+                              {run.matchedPairCount} matched
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <p className="evidence-integrity-note">
+                        No deterministic reconciliation has been run for this engagement yet.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">RECONCILIATION REVIEW</span>
+                        <h3>Immutable exceptions & provenance</h3>
+                      </div>
+                    </div>
+
+                    {selectedReconciliationRun ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              {selectedReconciliationRun.exceptionCount} exception(s) ·{" "}
+                              {selectedReconciliationRun.matchedPairCount} exact match(es)
+                            </strong>
+                            <small>
+                              {selectedReconciliationRun.leftItemCount} opening item(s) ·{" "}
+                              {selectedReconciliationRun.rightItemCount} closing item(s) · rule{" "}
+                              {selectedReconciliationRun.ruleCode}
+                            </small>
+                            <small>{formatTimestamp(selectedReconciliationRun.ranAtMs)}</small>
+                          </span>
+                          {reconciliationExceptions.slice(0, 100).map((exception) => (
+                            <span key={exception.reconciliationExceptionId}>
+                              <strong>
+                                {exception.side} ·{" "}
+                                {formatMinorUnitAmount(
+                                  exception.amountMinor,
+                                  selectedReconciliationAmountScale,
+                                )}{" "}
+                                · {exception.exceptionCode}
+                              </strong>
+                              <small>
+                                {exception.descriptionText ?? exception.matchKey} ·{" "}
+                                {exception.sourceKind}
+                              </small>
+                              <small>
+                                {exception.sheetName ?? "Controlled source"}
+                                {exception.sourceRowNumber
+                                  ? "!row " + exception.sourceRowNumber
+                                  : ""}{" "}
+                                · row SHA{" "}
+                                {exception.sourceRowHashHex
+                                  ? exception.sourceRowHashHex.slice(0, 16) + "…"
+                                  : "n/a"}{" "}
+                                · source SHA {exception.sourceSha256Hex.slice(0, 16)}…
+                              </small>
+                              <small>
+                                Controlled ID{" "}
+                                {exception.controlledEvidenceVersionId.slice(0, 18)}…
+                              </small>
+                            </span>
+                          ))}
+                        </div>
+                        {reconciliationExceptions.length > 100 ? (
+                          <p className="evidence-integrity-note">
+                            Showing the first 100 of{" "}
+                            {reconciliationExceptions.length.toLocaleString()} immutable
+                            exceptions.
+                          </p>
+                        ) : selectedReconciliationRun.exceptionCount === 0 ? (
+                          <p className="evidence-integrity-note">
+                            This run has no exceptions: every opening item matched an exact closing
+                            item under the stored deterministic rule.
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Run or select an immutable reconciliation to inspect its result.
                       </div>
                     )}
                   </div>
