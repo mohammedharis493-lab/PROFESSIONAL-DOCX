@@ -3840,7 +3840,7 @@ pub fn complete_evidence_capture(
                 "captureJobId": completion.capture_job_id,
                 "fileInstanceId": completion.file_instance_id,
                 "sourceContentVersionId": source_content_version_id,
-                "versionNumber": library_version.version_number,
+                "versionNumber": version_number,
                 "sizeBytes": completion.size_bytes
             })
             .to_string()
@@ -4588,7 +4588,7 @@ fn normalize_statutory_compliance_assessment(
                 || due_date.is_some()
                 || actual_compliance_date.is_some()
                 || normalized.exception_text.is_some()
-                || normalized.conclusion.is_some()
+                || conclusion.is_some()
                 || !controlled_evidence_version_ids.is_empty()
             {
                 return Err(PersistenceError::Configuration(
@@ -4621,7 +4621,7 @@ fn normalize_statutory_compliance_assessment(
                 ));
             }
             if let (Some(due_date), Some(actual_date)) =
-                (normalized.due_date.as_deref(), normalized.actual_compliance_date.as_deref())
+                (due_date.as_deref(), actual_compliance_date.as_deref())
             {
                 if actual_date > due_date {
                     return Err(PersistenceError::Configuration(
@@ -4657,12 +4657,12 @@ fn normalize_statutory_compliance_assessment(
     }
 
     Ok(NormalizedStatutoryComplianceAssessment {
-        applicability: normalized.applicability,
-        due_date: normalized.due_date,
-        actual_compliance_date: normalized.actual_compliance_date,
-        status: normalized.status,
-        exception_text: normalized.exception_text,
-        conclusion: normalized.conclusion,
+        applicability,
+        due_date,
+        actual_compliance_date,
+        status,
+        exception_text,
+        conclusion,
     })
 }
 
@@ -5188,7 +5188,7 @@ pub fn create_engagement(
             &name,
             period_start.as_deref(),
             period_end.as_deref(),
-            &normalized.status,
+            &status,
             now
         ],
     )?;
@@ -5644,7 +5644,7 @@ pub fn create_firm_library_item(
             archived_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
         params![
-            &library_version.firm_library_item_id,
+            &firm_library_item_id,
             &category,
             &name,
             &normalized_name,
@@ -5664,9 +5664,9 @@ pub fn create_firm_library_item(
          ) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
         params![
             &firm_library_version_id,
-            &library_version.firm_library_item_id,
+            &firm_library_item_id,
             &definition_json,
-            &library_version.definition_hash,
+            &definition_hash,
             now
         ],
     )?;
@@ -5676,7 +5676,7 @@ pub fn create_firm_library_item(
         DomainAuditEvent {
             event_type: "FIRM_LIBRARY_ITEM_CREATED",
             entity_type: "FIRM_LIBRARY_ITEM",
-            entity_id: &library_version.firm_library_item_id,
+            entity_id: &firm_library_item_id,
             related_entity_type: Some("FIRM_LIBRARY_VERSION"),
             related_entity_id: Some(&firm_library_version_id),
             occurred_at_ms: now,
@@ -5684,7 +5684,7 @@ pub fn create_firm_library_item(
                 "category": category.as_str(),
                 "serviceTypeId": service_type_id,
                 "versionNumber": 1,
-                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash)
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
             }),
         },
     )?;
@@ -5771,7 +5771,7 @@ pub fn publish_firm_library_version(
             firm_library_item_id,
             next_version_number,
             &definition_json,
-            &library_version.definition_hash,
+            &definition_hash,
             now
         ],
     )?;
@@ -5788,7 +5788,7 @@ pub fn publish_firm_library_version(
             details: json!({
                 "category": item.category.as_str(),
                 "versionNumber": next_version_number,
-                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash)
+                "definitionHash": bytes_to_lower_hex(&definition_hash)
             }),
         },
     )?;
