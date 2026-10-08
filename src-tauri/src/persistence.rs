@@ -7656,6 +7656,574 @@ pub fn list_current_financial_statement_schedule_links(
     Ok(result)
 }
 
+pub fn create_reconciliation_run(
+    database_path: &Path,
+    definition: ReconciliationRunDefinition<'_>,
+) -> Result<ReconciliationRunRecord, PersistenceError> {
+    let ReconciliationRunDefinition {
+        engagement_id,
+        reconciliation_type,
+        title,
+        parameters_json,
+        left_items,
+        right_items,
+    } = definition;
+
+    let reconciliation_type = workflow_state_key(reconciliation_type);
+    if reconciliation_type.is_empty() || reconciliation_type.chars().count() > 80 {
+        return Err(PersistenceError::Configuration(
+            "reconciliation type must contain 1 to 80 normalized characters".to_string(),
+        ));
+    }
+    let title = normalize_domain_label(title, "reconciliation title", 240)?;
+    let parameters_json = normalize_reconciliation_parameters(parameters_json)?;
+
+    struct NormalizedItem {
+        stable_id: String,
+        match_key: String,
+        amount_minor: i64,
+        event_date_text: Option<String>,
+        description_text: Option<String>,
+        source_kind: String,
+        source_entity_id: String,
+        controlled_evidence_version_id: String,
+        document_id: String,
+        source_content_version_id: String,
+        source_sha256: Vec<u8>,
+        sheet_name: Option<String>,
+        source_row_number: Option<u64>,
+        source_row_hash: Option<Vec<u8>>,
+    }
+
+    fn normalize_item(
+        item: &ReconciliationItemInput,
+    ) -> Result<NormalizedItem, PersistenceError> {
+        let match_key = normalize_reconciliation_match_key(&item.match_key)?;
+        let source_kind = workflow_state_key(&item.source_kind);
+        if source_kind.is_empty() || source_kind.chars().count() > 80 {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source kind must contain 1 to 80 normalized characters"
+                    .to_string(),
+            ));
+        }
+        let source_entity_id =
+            normalize_reconciliation_source_identifier(&item.source_entity_id)?;
+
+        let event_date_text = match item.event_date_text.as_deref() {
+            Some(value) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else if value.chars().count() > 80
+                    || value.chars().any(|character| character.is_control())
+                {
+                    return Err(PersistenceError::Configuration(
+                        "reconciliation event date text must contain at most 80 printable characters"
+                            .to_string(),
+                    ));
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            None => None,
+        };
+        let description_text = match item.description_text.as_deref() {
+            Some(value) => {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else if value.chars().count() > 1_000
+                    || value.chars().any(|character| character.is_control())
+                {
+                    return Err(PersistenceError::Configuration(
+                        "reconciliation description must contain at most 1000 printable characters"
+                            .to_string(),
+                    ));
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            None => None,
+        };
+
+        if item.source_sha256.len() != 32 {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source SHA-256 must contain exactly 32 bytes".to_string(),
+            ));
+        }
+        if item.source_row_number.is_some() != item.source_row_hash.is_some() {
+            return Err(PersistenceError::Configuration(
+                "reconciliation row provenance requires both row number and row hash".to_string(),
+            ));
+        }
+        if let Some(source_row_hash) = item.source_row_hash.as_deref() {
+            if source_row_hash.len() != 32 {
+                return Err(PersistenceError::Configuration(
+                    "reconciliation source row hash must contain exactly 32 bytes".to_string(),
+                ));
+            }
+        }
+        if matches!(item.source_row_number, Some(0)) {
+            return Err(PersistenceError::Configuration(
+                "reconciliation source row number must be at least 1".to_string(),
+            ));
+        }
+
+        Ok(NormalizedItem {
+            stable_id: format!("{source_kind}\u{1f}{source_entity_id}"),
+            match_key,
+            amount_minor: item.amount_minor,
+            event_date_text,
+            description_text,
+            source_kind,
+            source_entity_id,
+            controlled_evidence_version_id: item.controlled_evidence_version_id.clone(),
+            document_id: item.document_id.clone(),
+            source_content_version_id: item.source_content_version_id.clone(),
+            source_sha256: item.source_sha256.clone(),
+            sheet_name: normalize_reconciliation_sheet_name(item.sheet_name.as_deref())?,
+            source_row_number: item.source_row_number,
+            source_row_hash: item.source_row_hash.clone(),
+        })
+    }
+
+    let normalized_left = left_items
+        .iter()
+        .map(normalize_item)
+        .collect::<Result<Vec<_>, _>>()?;
+    let normalized_right = right_items
+        .iter()
+        .map(normalize_item)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let engine_left = normalized_left
+        .iter()
+        .map(|item| crate::reconciliation::ExactReconciliationItem {
+            stable_id: item.stable_id.clone(),
+            match_key: item.match_key.clone(),
+            amount_minor: item.amount_minor,
+        })
+        .collect::<Vec<_>>();
+    let engine_right = normalized_right
+        .iter()
+        .map(|item| crate::reconciliation::ExactReconciliationItem {
+            stable_id: item.stable_id.clone(),
+            match_key: item.match_key.clone(),
+            amount_minor: item.amount_minor,
+        })
+        .collect::<Vec<_>>();
+    let outcome = crate::reconciliation::reconcile_exact_key_amount(
+        &engine_left,
+        &engine_right,
+    )
+    .map_err(PersistenceError::Configuration)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    let mut verified_evidence = BTreeMap::new();
+    for item in normalized_left.iter().chain(normalized_right.iter()) {
+        if verified_evidence.contains_key(&item.controlled_evidence_version_id) {
+            continue;
+        }
+
+        let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    document_id,
+                    source_content_version_id,
+                    sha256,
+                    verification_state,
+                    retention_state
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [&item.controlled_evidence_version_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(evidence) = evidence else {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {} does not exist",
+                item.controlled_evidence_version_id
+            )));
+        };
+        if evidence.3 != "HASH_VERIFIED" || evidence.4 != "RETAINED" {
+            return Err(PersistenceError::Configuration(
+                "reconciliation items require retained hash-verified controlled evidence"
+                    .to_string(),
+            ));
+        }
+        verified_evidence.insert(item.controlled_evidence_version_id.clone(), evidence);
+    }
+
+    for item in normalized_left.iter().chain(normalized_right.iter()) {
+        let evidence = verified_evidence
+            .get(&item.controlled_evidence_version_id)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation controlled evidence validation is incomplete".to_string(),
+                )
+            })?;
+        if evidence.0 != item.document_id
+            || evidence.1 != item.source_content_version_id
+            || evidence.2 != item.source_sha256
+        {
+            return Err(PersistenceError::Configuration(
+                "reconciliation item provenance does not match controlled evidence".to_string(),
+            ));
+        }
+    }
+
+    let reconciliation_run_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    let exception_count = outcome.unmatched_left_stable_ids.len()
+        + outcome.unmatched_right_stable_ids.len();
+
+    transaction.execute(
+        "INSERT INTO reconciliation_runs (
+            reconciliation_run_id,
+            engagement_id,
+            reconciliation_type,
+            title,
+            rule_code,
+            parameters_json,
+            left_item_count,
+            right_item_count,
+            matched_pair_count,
+            exception_count,
+            ran_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, 'EXACT_KEY_AMOUNT', ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &reconciliation_run_id,
+            engagement_id,
+            &reconciliation_type,
+            &title,
+            &parameters_json,
+            u64_to_i64(normalized_left.len() as u64)?,
+            u64_to_i64(normalized_right.len() as u64)?,
+            u64_to_i64(outcome.matches.len() as u64)?,
+            u64_to_i64(exception_count as u64)?,
+            now
+        ],
+    )?;
+
+    let mut left_item_ids = BTreeMap::new();
+    let mut right_item_ids = BTreeMap::new();
+
+    for (side, items, item_ids) in [
+        ("LEFT", &normalized_left, &mut left_item_ids),
+        ("RIGHT", &normalized_right, &mut right_item_ids),
+    ] {
+        for item in items {
+            let reconciliation_item_id = Uuid::new_v4().to_string();
+            transaction.execute(
+                "INSERT INTO reconciliation_items (
+                    reconciliation_item_id,
+                    reconciliation_run_id,
+                    side,
+                    match_key,
+                    amount_minor,
+                    event_date_text,
+                    description_text,
+                    source_kind,
+                    source_entity_id,
+                    controlled_evidence_version_id,
+                    document_id,
+                    source_content_version_id,
+                    source_sha256,
+                    sheet_name,
+                    source_row_number,
+                    source_row_hash,
+                    created_at_ms
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                 )",
+                params![
+                    &reconciliation_item_id,
+                    &reconciliation_run_id,
+                    side,
+                    &item.match_key,
+                    item.amount_minor,
+                    item.event_date_text.as_deref(),
+                    item.description_text.as_deref(),
+                    &item.source_kind,
+                    &item.source_entity_id,
+                    &item.controlled_evidence_version_id,
+                    &item.document_id,
+                    &item.source_content_version_id,
+                    &item.source_sha256,
+                    item.sheet_name.as_deref(),
+                    item.source_row_number.map(u64_to_i64).transpose()?,
+                    item.source_row_hash.as_deref(),
+                    now
+                ],
+            )?;
+            item_ids.insert(item.stable_id.clone(), reconciliation_item_id);
+        }
+    }
+
+    for matched in &outcome.matches {
+        let left_item_id = left_item_ids
+            .get(&matched.left_stable_id)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation left match resolution failed".to_string(),
+                )
+            })?;
+        let right_item_id = right_item_ids
+            .get(&matched.right_stable_id)
+            .ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation right match resolution failed".to_string(),
+                )
+            })?;
+        transaction.execute(
+            "INSERT INTO reconciliation_matches (
+                reconciliation_match_id,
+                reconciliation_run_id,
+                left_item_id,
+                right_item_id,
+                matched_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                Uuid::new_v4().to_string(),
+                &reconciliation_run_id,
+                left_item_id,
+                right_item_id,
+                now
+            ],
+        )?;
+    }
+
+    for (exception_code, stable_ids, item_ids) in [
+        (
+            "UNMATCHED_LEFT",
+            &outcome.unmatched_left_stable_ids,
+            &left_item_ids,
+        ),
+        (
+            "UNMATCHED_RIGHT",
+            &outcome.unmatched_right_stable_ids,
+            &right_item_ids,
+        ),
+    ] {
+        for stable_id in stable_ids {
+            let reconciliation_item_id = item_ids.get(stable_id).ok_or_else(|| {
+                PersistenceError::Configuration(
+                    "reconciliation exception resolution failed".to_string(),
+                )
+            })?;
+            transaction.execute(
+                "INSERT INTO reconciliation_exceptions (
+                    reconciliation_exception_id,
+                    reconciliation_run_id,
+                    reconciliation_item_id,
+                    exception_code,
+                    created_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    &reconciliation_run_id,
+                    reconciliation_item_id,
+                    exception_code,
+                    now
+                ],
+            )?;
+        }
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "RECONCILIATION_RUN_COMPLETED",
+            entity_type: "RECONCILIATION_RUN",
+            entity_id: &reconciliation_run_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reconciliationType": reconciliation_type,
+                "ruleCode": "EXACT_KEY_AMOUNT",
+                "leftItemCount": normalized_left.len(),
+                "rightItemCount": normalized_right.len(),
+                "matchedPairCount": outcome.matches.len(),
+                "exceptionCount": exception_count
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+
+    Ok(ReconciliationRunRecord {
+        reconciliation_run_id,
+        engagement_id: engagement_id.to_string(),
+        reconciliation_type,
+        title,
+        rule_code: "EXACT_KEY_AMOUNT".to_string(),
+        parameters_json,
+        left_item_count: normalized_left.len() as u64,
+        right_item_count: normalized_right.len() as u64,
+        matched_pair_count: outcome.matches.len() as u64,
+        exception_count: exception_count as u64,
+        ran_at_ms: now,
+    })
+}
+
+pub fn list_reconciliation_runs(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<ReconciliationRunRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            reconciliation_run_id,
+            engagement_id,
+            reconciliation_type,
+            title,
+            rule_code,
+            parameters_json,
+            left_item_count,
+            right_item_count,
+            matched_pair_count,
+            exception_count,
+            ran_at_ms
+         FROM reconciliation_runs
+         WHERE engagement_id = ?1
+         ORDER BY ran_at_ms DESC, reconciliation_run_id DESC",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(ReconciliationRunRecord {
+            reconciliation_run_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            reconciliation_type: row.get(2)?,
+            title: row.get(3)?,
+            rule_code: row.get(4)?,
+            parameters_json: row.get(5)?,
+            left_item_count: row.get::<_, i64>(6)?.max(0) as u64,
+            right_item_count: row.get::<_, i64>(7)?.max(0) as u64,
+            matched_pair_count: row.get::<_, i64>(8)?.max(0) as u64,
+            exception_count: row.get::<_, i64>(9)?.max(0) as u64,
+            ran_at_ms: row.get(10)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_reconciliation_exceptions(
+    database_path: &Path,
+    reconciliation_run_id: &str,
+) -> Result<Vec<ReconciliationExceptionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let run_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM reconciliation_runs
+            WHERE reconciliation_run_id = ?1
+        )",
+        [reconciliation_run_id],
+        |row| row.get(0),
+    )?;
+    if !run_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "reconciliation run {reconciliation_run_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            e.reconciliation_exception_id,
+            e.reconciliation_run_id,
+            i.reconciliation_item_id,
+            e.exception_code,
+            i.side,
+            i.match_key,
+            i.amount_minor,
+            i.event_date_text,
+            i.description_text,
+            i.source_kind,
+            i.source_entity_id,
+            i.controlled_evidence_version_id,
+            i.document_id,
+            i.source_content_version_id,
+            i.source_sha256,
+            i.sheet_name,
+            i.source_row_number,
+            i.source_row_hash,
+            e.created_at_ms
+         FROM reconciliation_exceptions e
+         JOIN reconciliation_items i
+           ON i.reconciliation_item_id = e.reconciliation_item_id
+         WHERE e.reconciliation_run_id = ?1
+         ORDER BY
+            CASE e.exception_code
+                WHEN 'UNMATCHED_LEFT' THEN 0
+                ELSE 1
+            END,
+            i.match_key,
+            i.amount_minor,
+            i.source_kind,
+            i.source_entity_id",
+    )?;
+    let rows = statement.query_map([reconciliation_run_id], |row| {
+        let source_row_number: Option<i64> = row.get(16)?;
+        Ok(ReconciliationExceptionRecord {
+            reconciliation_exception_id: row.get(0)?,
+            reconciliation_run_id: row.get(1)?,
+            reconciliation_item_id: row.get(2)?,
+            exception_code: row.get(3)?,
+            side: row.get(4)?,
+            match_key: row.get(5)?,
+            amount_minor: row.get(6)?,
+            event_date_text: row.get(7)?,
+            description_text: row.get(8)?,
+            source_kind: row.get(9)?,
+            source_entity_id: row.get(10)?,
+            controlled_evidence_version_id: row.get(11)?,
+            document_id: row.get(12)?,
+            source_content_version_id: row.get(13)?,
+            source_sha256: row.get(14)?,
+            sheet_name: row.get(15)?,
+            source_row_number: source_row_number.map(|value| value.max(0) as u64),
+            source_row_hash: row.get(17)?,
+            created_at_ms: row.get(18)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_engagement_from_template(
     database_path: &Path,
     engagement_template_version_id: &str,
