@@ -2499,6 +2499,51 @@ export default function App() {
     }
   }
 
+  async function openReconciliationRun(reconciliationRunId: string | null) {
+    setSelectedReconciliationRunId(reconciliationRunId);
+    setReconciliationExceptions([]);
+    if (!reconciliationRunId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const exceptions = await invoke<ReconciliationException[]>(
+        "list_reconciliation_exceptions",
+        { reconciliationRunId },
+      );
+      setReconciliationExceptions(exceptions);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function runTrialBalanceReconciliation() {
+    if (!selectedTrialBalanceImport) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const run = await invoke<ReconciliationRun>(
+        "run_trial_balance_opening_closing_reconciliation",
+        { trialBalanceImportId: selectedTrialBalanceImport.trialBalanceImportId },
+      );
+      const exceptions = await invoke<ReconciliationException[]>(
+        "list_reconciliation_exceptions",
+        { reconciliationRunId: run.reconciliationRunId },
+      );
+      setReconciliationRuns((current) => [
+        run,
+        ...current.filter((item) => item.reconciliationRunId !== run.reconciliationRunId),
+      ]);
+      setSelectedReconciliationRunId(run.reconciliationRunId);
+      setReconciliationExceptions(exceptions);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function selectTrialBalanceImport(trialBalanceImportId: string | null) {
     setSelectedTrialBalanceImportId(trialBalanceImportId);
     setTrialBalanceComparison(null);
@@ -4584,6 +4629,15 @@ export default function App() {
     trialBalanceImports.find(
       (item) => item.trialBalanceImportId === selectedTrialBalanceImportId,
     ) ?? null;
+  const trialBalanceReconciliationRuns = reconciliationRuns.filter(
+    (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
+  );
+  const selectedReconciliationRun =
+    trialBalanceReconciliationRuns.find(
+      (run) => run.reconciliationRunId === selectedReconciliationRunId,
+    ) ?? null;
+  const selectedReconciliationAmountScale =
+    reconciliationRunAmountScale(selectedReconciliationRun);
   const selectedMappingLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === mappingLedgerImportId) ?? null;
   const compatibleMappingTrialBalanceImports = selectedMappingLedgerImport
