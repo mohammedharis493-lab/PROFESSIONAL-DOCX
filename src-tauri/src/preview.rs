@@ -1,4 +1,5 @@
 use crate::{
+    evidence::{self, EvidenceError, EvidenceState},
     launcher,
     persistence::{self, ResolvedFileSource},
 };
@@ -156,6 +157,74 @@ pub fn pdf_preview_response(database_path: &Path, request: Request<Vec<u8>>) -> 
         .expect("static PDF preview response headers are valid")
 }
 
+pub fn controlled_pdf_preview_response(
+    database_path: &Path,
+    evidence_state: &EvidenceState,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Some(controlled_evidence_version_id) =
+        parse_controlled_pdf_preview_evidence_id(request.uri().path())
+    else {
+        return pdf_error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid controlled PDF preview request.",
+        );
+    };
+
+    let controlled = match evidence::read_controlled_evidence_bytes(
+        database_path,
+        evidence_state,
+        &controlled_evidence_version_id,
+        MAX_PDF_PREVIEW_BYTES as usize,
+    ) {
+        Ok(controlled) => controlled,
+        Err(EvidenceError::Configuration(message))
+            if message.contains("exceeds the") && message.contains("read limit") =>
+        {
+            return pdf_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Controlled PDF is too large for in-app preview.",
+            );
+        }
+        Err(EvidenceError::Configuration(_)) => {
+            return pdf_error_response(
+                StatusCode::NOT_FOUND,
+                "Controlled PDF evidence is unavailable.",
+            );
+        }
+        Err(EvidenceError::Integrity(_)) => {
+            return pdf_error_response(
+                StatusCode::CONFLICT,
+                "Controlled PDF evidence failed integrity verification.",
+            );
+        }
+        Err(_) => {
+            return pdf_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to read controlled PDF evidence.",
+            );
+        }
+    };
+
+    if !has_pdf_header(&controlled.bytes) {
+        return pdf_error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Controlled evidence is not a valid PDF preview target.",
+        );
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/pdf")
+        .header(CONTENT_DISPOSITION, "inline")
+        .header(CACHE_CONTROL, "no-store, private")
+        .header(CONTENT_LENGTH, controlled.bytes.len().to_string())
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(controlled.bytes)
+        .expect("static controlled PDF preview response headers are valid")
+}
+
 fn parse_image_preview_file_instance_id(path: &str) -> Option<String> {
     let raw = path.strip_prefix("/image/")?;
     if raw.is_empty() || raw.contains('/') {
@@ -167,6 +236,15 @@ fn parse_image_preview_file_instance_id(path: &str) -> Option<String> {
 
 fn parse_pdf_preview_file_instance_id(path: &str) -> Option<String> {
     let raw = path.strip_prefix("/pdf/")?;
+    if raw.is_empty() || raw.contains('/') {
+        return None;
+    }
+
+    Uuid::parse_str(raw).ok().map(|value| value.to_string())
+}
+
+fn parse_controlled_pdf_preview_evidence_id(path: &str) -> Option<String> {
+    let raw = path.strip_prefix("/controlled-pdf/")?;
     if raw.is_empty() || raw.contains('/') {
         return None;
     }
@@ -553,6 +631,18 @@ mod tests {
         assert!(parse_pdf_preview_file_instance_id("/pdf/not-a-uuid").is_none());
         assert!(parse_pdf_preview_file_instance_id("/pdf/a/b").is_none());
         assert!(parse_pdf_preview_file_instance_id("/other/value").is_none());
+    }
+
+    #[test]
+    fn parses_only_uuid_controlled_pdf_preview_routes() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            parse_controlled_pdf_preview_evidence_id(&format!("/controlled-pdf/{id}")),
+            Some(id.to_string())
+        );
+        assert!(parse_controlled_pdf_preview_evidence_id("/controlled-pdf/not-a-uuid").is_none());
+        assert!(parse_controlled_pdf_preview_evidence_id("/controlled-pdf/a/b").is_none());
+        assert!(parse_controlled_pdf_preview_evidence_id("/pdf/value").is_none());
     }
 
     #[cfg(unix)]
