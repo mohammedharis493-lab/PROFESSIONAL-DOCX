@@ -6696,8 +6696,11 @@ pub fn create_internal_audit_objective(
     description: Option<&str>,
     status: &str,
 ) -> Result<InternalAuditObjectiveRecord, PersistenceError> {
-    let reference =
-        normalize_internal_audit_optional_text(reference, "internal audit objective reference", 100)?;
+    let reference = normalize_internal_audit_optional_text(
+        reference,
+        "internal audit objective reference",
+        100,
+    )?;
     let title = normalize_domain_label(title, "internal audit objective title", 500)?;
     let description = normalize_internal_audit_optional_text(
         description,
@@ -6821,8 +6824,11 @@ pub fn create_internal_audit_risk(
     let reference =
         normalize_internal_audit_optional_text(reference, "internal audit risk reference", 100)?;
     let title = normalize_domain_label(title, "internal audit risk title", 500)?;
-    let description =
-        normalize_internal_audit_optional_text(description, "internal audit risk description", 10_000)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit risk description",
+        10_000,
+    )?;
     let risk_classification = normalize_internal_audit_optional_text(
         risk_classification,
         "internal audit risk classification",
