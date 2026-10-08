@@ -715,6 +715,55 @@ impl From<persistence::InternalAuditTestEvidenceRecord> for InternalAuditTestEvi
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct InternalAuditProcessInputDto {
+    engagement_id: String,
+    parent_process_id: Option<String>,
+    code: Option<String>,
+    name: String,
+    description: Option<String>,
+    display_order: i64,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditRiskInputDto {
+    internal_audit_objective_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    risk_classification: Option<String>,
+    inherent_rating: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditControlInputDto {
+    internal_audit_risk_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    control_type: Option<String>,
+    frequency: Option<String>,
+    owner_text: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditTestInputDto {
+    internal_audit_control_id: String,
+    reference: Option<String>,
+    title: String,
+    procedure_text: String,
+    sample_strategy: Option<String>,
+    expected_result: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StatutoryComplianceAssessmentInputDto {
     statutory_compliance_requirement_id: String,
     applicability: String,
@@ -2031,29 +2080,25 @@ fn list_statutory_compliance_evidence(
 
 #[tauri::command]
 fn create_internal_audit_process(
-    engagement_id: String,
-    parent_process_id: Option<String>,
-    code: Option<String>,
-    name: String,
-    description: Option<String>,
-    display_order: i64,
-    status: Option<String>,
+    input: InternalAuditProcessInputDto,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<InternalAuditProcessDto, String> {
-    validate_uuid(&engagement_id, "engagement")?;
+    validate_uuid(&input.engagement_id, "engagement")?;
     validate_optional_uuid(
-        parent_process_id.as_deref(),
+        input.parent_process_id.as_deref(),
         "internal-audit-parent-process",
     )?;
     persistence::create_internal_audit_process(
         database.path(),
-        &engagement_id,
-        parent_process_id.as_deref(),
-        code.as_deref(),
-        &name,
-        description.as_deref(),
-        display_order,
-        status.as_deref().unwrap_or("ACTIVE"),
+        persistence::InternalAuditProcessDefinition {
+            engagement_id: &input.engagement_id,
+            parent_process_id: input.parent_process_id.as_deref(),
+            code: input.code.as_deref(),
+            name: &input.name,
+            description: input.description.as_deref(),
+            display_order: input.display_order,
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
@@ -2105,25 +2150,24 @@ fn list_internal_audit_objectives(
 
 #[tauri::command]
 fn create_internal_audit_risk(
-    internal_audit_objective_id: String,
-    reference: Option<String>,
-    title: String,
-    description: Option<String>,
-    risk_classification: Option<String>,
-    inherent_rating: Option<String>,
-    status: Option<String>,
+    input: InternalAuditRiskInputDto,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<InternalAuditRiskDto, String> {
-    validate_uuid(&internal_audit_objective_id, "internal-audit-objective")?;
+    validate_uuid(
+        &input.internal_audit_objective_id,
+        "internal-audit-objective",
+    )?;
     persistence::create_internal_audit_risk(
         database.path(),
-        &internal_audit_objective_id,
-        reference.as_deref(),
-        &title,
-        description.as_deref(),
-        risk_classification.as_deref(),
-        inherent_rating.as_deref(),
-        status.as_deref().unwrap_or("ACTIVE"),
+        persistence::InternalAuditRiskDefinition {
+            internal_audit_objective_id: &input.internal_audit_objective_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            description: input.description.as_deref(),
+            risk_classification: input.risk_classification.as_deref(),
+            inherent_rating: input.inherent_rating.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
@@ -2142,27 +2186,22 @@ fn list_internal_audit_risks(
 
 #[tauri::command]
 fn create_internal_audit_control(
-    internal_audit_risk_id: String,
-    reference: Option<String>,
-    title: String,
-    description: Option<String>,
-    control_type: Option<String>,
-    frequency: Option<String>,
-    owner_text: Option<String>,
-    status: Option<String>,
+    input: InternalAuditControlInputDto,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<InternalAuditControlDto, String> {
-    validate_uuid(&internal_audit_risk_id, "internal-audit-risk")?;
+    validate_uuid(&input.internal_audit_risk_id, "internal-audit-risk")?;
     persistence::create_internal_audit_control(
         database.path(),
-        &internal_audit_risk_id,
-        reference.as_deref(),
-        &title,
-        description.as_deref(),
-        control_type.as_deref(),
-        frequency.as_deref(),
-        owner_text.as_deref(),
-        status.as_deref().unwrap_or("ACTIVE"),
+        persistence::InternalAuditControlDefinition {
+            internal_audit_risk_id: &input.internal_audit_risk_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            description: input.description.as_deref(),
+            control_type: input.control_type.as_deref(),
+            frequency: input.frequency.as_deref(),
+            owner_text: input.owner_text.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
@@ -2181,25 +2220,21 @@ fn list_internal_audit_controls(
 
 #[tauri::command]
 fn create_internal_audit_test(
-    internal_audit_control_id: String,
-    reference: Option<String>,
-    title: String,
-    procedure_text: String,
-    sample_strategy: Option<String>,
-    expected_result: Option<String>,
-    status: Option<String>,
+    input: InternalAuditTestInputDto,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<InternalAuditTestDto, String> {
-    validate_uuid(&internal_audit_control_id, "internal-audit-control")?;
+    validate_uuid(&input.internal_audit_control_id, "internal-audit-control")?;
     persistence::create_internal_audit_test(
         database.path(),
-        &internal_audit_control_id,
-        reference.as_deref(),
-        &title,
-        &procedure_text,
-        sample_strategy.as_deref(),
-        expected_result.as_deref(),
-        status.as_deref().unwrap_or("ACTIVE"),
+        persistence::InternalAuditTestDefinition {
+            internal_audit_control_id: &input.internal_audit_control_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            procedure_text: &input.procedure_text,
+            sample_strategy: input.sample_strategy.as_deref(),
+            expected_result: input.expected_result.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
     )
     .map(Into::into)
     .map_err(|error| error.to_string())
