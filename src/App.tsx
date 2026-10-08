@@ -512,8 +512,11 @@ type ActiveTextPreview = {
 };
 
 type ActivePdfPreview = {
-  file: IndexedFile;
+  file: IndexedFile | null;
+  title: string;
   url: string;
+  sizeBytes: number;
+  controlledEvidenceVersionId: string | null;
 };
 
 type ActiveImagePreview = {
@@ -1257,6 +1260,8 @@ export default function App() {
   const [activeWordPreview, setActiveWordPreview] =
     useState<ActiveWordPreview | null>(null);
   const [previewingFileInstanceId, setPreviewingFileInstanceId] =
+    useState<string | null>(null);
+  const [previewingControlledEvidenceVersionId, setPreviewingControlledEvidenceVersionId] =
     useState<string | null>(null);
   const [viewerSearchQuery, setViewerSearchQuery] = useState("");
   const [viewerSearchIndex, setViewerSearchIndex] = useState(0);
@@ -3656,7 +3661,13 @@ export default function App() {
       closeWordPreview();
       setActiveTextPreview(null);
       pdfBlobUrlRef.current = blobUrl;
-      setActivePdfPreview({ file, url: blobUrl });
+      setActivePdfPreview({
+        file,
+        title: file.name,
+        url: blobUrl,
+        sizeBytes: blob.size,
+        controlledEvidenceVersionId: null,
+      });
 
       if (usedQuery?.trim()) {
         try {
@@ -3671,6 +3682,56 @@ export default function App() {
       setError(String(previewError));
     } finally {
       setPreviewingFileInstanceId(null);
+    }
+  }
+
+  async function previewControlledPdf(
+    controlledEvidenceVersionId: string,
+    title: string,
+    pageNumber?: number,
+  ) {
+    resetViewerSearch();
+    setError(null);
+    setPreviewingControlledEvidenceVersionId(controlledEvidenceVersionId);
+
+    try {
+      const protocolUrl = convertFileSrc(
+        `/controlled-pdf/${controlledEvidenceVersionId}`,
+        "pdx-preview",
+      );
+      const response = await fetch(protocolUrl, { cache: "no-store" });
+
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(
+          message || `Controlled PDF preview failed with status ${response.status}.`,
+        );
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const viewerUrl =
+        pageNumber && Number.isInteger(pageNumber) && pageNumber > 0
+          ? `${blobUrl}#page=${pageNumber}`
+          : blobUrl;
+
+      closePdfPreview();
+      closeImagePreview();
+      closeWorkbookPreview();
+      closeWordPreview();
+      setActiveTextPreview(null);
+      pdfBlobUrlRef.current = blobUrl;
+      setActivePdfPreview({
+        file: null,
+        title,
+        url: viewerUrl,
+        sizeBytes: blob.size,
+        controlledEvidenceVersionId,
+      });
+    } catch (previewError) {
+      setError(String(previewError));
+    } finally {
+      setPreviewingControlledEvidenceVersionId(null);
     }
   }
 
@@ -4483,6 +4544,12 @@ export default function App() {
     financialStatementScheduleLinks.find(
       (item) => item.financialStatementScheduleId === selectedFsLinkScheduleId,
     ) ?? null;
+  const financialStatementScheduleLinkByScheduleId = Object.fromEntries(
+    financialStatementScheduleLinks.map((link) => [
+      link.financialStatementScheduleId,
+      link,
+    ]),
+  ) as Record<string, FinancialStatementScheduleLink>;
   const fsControlledEvidenceVersions = fsEvidenceVersionHistory.filter(
     (entry) =>
       entry.controlledEvidenceVersionId &&
@@ -6415,30 +6482,65 @@ export default function App() {
 
                     <div className="workspace-mini-list">
                       {trialBalanceScheduleMappings.length ? (
-                        trialBalanceScheduleMappings.map((mapping) => (
-                          <span key={mapping.trialBalanceScheduleMappingId}>
-                            <strong>
-                              {mapping.trialBalanceAccountCodeText
-                                ? mapping.trialBalanceAccountCodeText + " · "
-                                : ""}
-                              {mapping.trialBalanceAccountNameText} →{" "}
-                              {mapping.scheduleReference} · {mapping.scheduleName}
-                            </strong>
-                            <small>
-                              Mapping v{mapping.versionNumber} · TB row{" "}
-                              {mapping.trialBalanceSourceRowNumber} · row SHA{" "}
-                              {mapping.trialBalanceSourceRowHashHex.slice(0, 16)}…
-                            </small>
-                            <small>
-                              {mapping.supersedesMappingId
-                                ? "Supersedes " +
-                                  mapping.supersedesMappingId.slice(0, 18) +
-                                  "… · "
-                                : ""}
-                              {formatTimestamp(mapping.mappedAtMs)}
-                            </small>
-                          </span>
-                        ))
+                        trialBalanceScheduleMappings.map((mapping) => {
+                          const fsLink =
+                            financialStatementScheduleLinkByScheduleId[
+                              mapping.financialStatementScheduleId
+                            ];
+                          const pageNumber =
+                            fsLink?.locationKind === "PAGE"
+                              ? Number.parseInt(fsLink.locationValue, 10)
+                              : null;
+                          return (
+                            <span key={mapping.trialBalanceScheduleMappingId}>
+                              <strong>
+                                {mapping.trialBalanceAccountCodeText
+                                  ? mapping.trialBalanceAccountCodeText + " · "
+                                  : ""}
+                                {mapping.trialBalanceAccountNameText} →{" "}
+                                {mapping.scheduleReference} · {mapping.scheduleName}
+                              </strong>
+                              <small>
+                                Mapping v{mapping.versionNumber} · TB row{" "}
+                                {mapping.trialBalanceSourceRowNumber} · row SHA{" "}
+                                {mapping.trialBalanceSourceRowHashHex.slice(0, 16)}…
+                              </small>
+                              <small>
+                                {mapping.supersedesMappingId
+                                  ? "Supersedes " +
+                                    mapping.supersedesMappingId.slice(0, 18) +
+                                    "… · "
+                                  : ""}
+                                {formatTimestamp(mapping.mappedAtMs)}
+                              </small>
+                              {fsLink?.locationKind === "PAGE" &&
+                              pageNumber !== null &&
+                              Number.isInteger(pageNumber) &&
+                              pageNumber > 0 ? (
+                                <button
+                                  className="file-action"
+                                  type="button"
+                                  disabled={
+                                    previewingControlledEvidenceVersionId ===
+                                    fsLink.controlledEvidenceVersionId
+                                  }
+                                  onClick={() =>
+                                    void previewControlledPdf(
+                                      fsLink.controlledEvidenceVersionId,
+                                      `${mapping.scheduleReference} · ${mapping.scheduleName}`,
+                                      pageNumber,
+                                    )
+                                  }
+                                >
+                                  {previewingControlledEvidenceVersionId ===
+                                  fsLink.controlledEvidenceVersionId
+                                    ? "Opening controlled PDF…"
+                                    : `Open FS page ${pageNumber}`}
+                                </button>
+                              ) : null}
+                            </span>
+                          );
+                        })
                       ) : scheduleMappingTrialBalanceImportId ? (
                         <div className="empty-result">
                           No Trial Balance accounts are mapped to financial statement schedules yet.
@@ -6650,6 +6752,28 @@ export default function App() {
                                 : ""}
                               {formatTimestamp(link.linkedAtMs)}
                             </small>
+                            {link.locationKind === "PAGE" ? (
+                              <button
+                                className="file-action"
+                                type="button"
+                                disabled={
+                                  previewingControlledEvidenceVersionId ===
+                                  link.controlledEvidenceVersionId
+                                }
+                                onClick={() =>
+                                  void previewControlledPdf(
+                                    link.controlledEvidenceVersionId,
+                                    `${link.scheduleReference} · ${link.scheduleName}`,
+                                    Number.parseInt(link.locationValue, 10),
+                                  )
+                                }
+                              >
+                                {previewingControlledEvidenceVersionId ===
+                                link.controlledEvidenceVersionId
+                                  ? "Opening controlled PDF…"
+                                  : `Open controlled page ${link.locationValue}`}
+                              </button>
+                            ) : null}
                           </span>
                         ))
                       ) : (
@@ -7562,6 +7686,28 @@ export default function App() {
                                     ? `Controlled ID ${link.controlledEvidenceVersionId.slice(0, 18)}…`
                                     : `Content ID ${link.contentVersionId?.slice(0, 18) ?? "—"}…`}
                                 </code>
+                                {link.controlledEvidenceVersionId &&
+                                link.documentName.toLowerCase().endsWith(".pdf") ? (
+                                  <button
+                                    className="file-action"
+                                    type="button"
+                                    disabled={
+                                      previewingControlledEvidenceVersionId ===
+                                      link.controlledEvidenceVersionId
+                                    }
+                                    onClick={() =>
+                                      void previewControlledPdf(
+                                        link.controlledEvidenceVersionId!,
+                                        link.documentName,
+                                      )
+                                    }
+                                  >
+                                    {previewingControlledEvidenceVersionId ===
+                                    link.controlledEvidenceVersionId
+                                      ? "Opening controlled PDF…"
+                                      : "Preview controlled PDF"}
+                                  </button>
+                                ) : null}
                               </article>
                             ))
                           ) : (
@@ -8658,33 +8804,42 @@ export default function App() {
             >
               <header className="text-preview-header">
                 <div>
-                  <p className="eyebrow">IN-APP PREVIEW · PDF</p>
-                  <h2 id="pdf-preview-title">{activePdfPreview.file.name}</h2>
+                  <p className="eyebrow">
+                    {activePdfPreview.controlledEvidenceVersionId
+                      ? "CONTROLLED EVIDENCE · PDF"
+                      : "IN-APP PREVIEW · PDF"}
+                  </p>
+                  <h2 id="pdf-preview-title">{activePdfPreview.title}</h2>
                   <span>
-                    {stateLabel(activePdfPreview.file.availabilityState)} ·{" "}
-                    {formatBytes(activePdfPreview.file.sizeBytes)}
+                    {activePdfPreview.file
+                      ? `${stateLabel(activePdfPreview.file.availabilityState)} · ${formatBytes(activePdfPreview.sizeBytes)}`
+                      : `HASH-VERIFIED · ${formatBytes(activePdfPreview.sizeBytes)}`}
                   </span>
                 </div>
                 <div className="text-preview-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() =>
-                      void openFileInstance(activePdfPreview.file.fileInstanceId)
-                    }
-                  >
-                    Open original
-                  </button>
-                  <button
-                    className="file-action file-action-related"
-                    type="button"
-                    onClick={() => void loadRelationshipContext(activePdfPreview.file)}
-                    disabled={relationshipContextLoadingDocumentId !== null}
-                  >
-                    {relationshipContextLoadingDocumentId === activePdfPreview.file.documentId
-                      ? "Loading links…"
-                      : "Related"}
-                  </button>
+                  {activePdfPreview.file ? (
+                    <>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() =>
+                          void openFileInstance(activePdfPreview.file!.fileInstanceId)
+                        }
+                      >
+                        Open original
+                      </button>
+                      <button
+                        className="file-action file-action-related"
+                        type="button"
+                        onClick={() => void loadRelationshipContext(activePdfPreview.file!)}
+                        disabled={relationshipContextLoadingDocumentId !== null}
+                      >
+                        {relationshipContextLoadingDocumentId === activePdfPreview.file.documentId
+                          ? "Loading links…"
+                          : "Related"}
+                      </button>
+                    </>
+                  ) : null}
                   <button
                     className="file-action"
                     type="button"
@@ -8708,16 +8863,25 @@ export default function App() {
               <div className="pdf-preview-body">
                 <iframe
                   src={activePdfPreview.url}
-                  title={`PDF preview: ${activePdfPreview.file.name}`}
+                  title={`PDF preview: ${activePdfPreview.title}`}
                   referrerPolicy="no-referrer"
                 />
               </div>
 
               <footer className="text-preview-footer">
-                <span>
-                  PDF content is served only from the validated indexed source.
-                </span>
-                <span>Preview limit: 64 MB · Open original for larger files.</span>
+                {activePdfPreview.controlledEvidenceVersionId ? (
+                  <>
+                    <span>
+                      PDF content is served from the retained, hash-verified controlled evidence copy.
+                    </span>
+                    <span>Preview limit: 64 MB · the linked working-source path is not used.</span>
+                  </>
+                ) : (
+                  <>
+                    <span>PDF content is served only from the validated indexed source.</span>
+                    <span>Preview limit: 64 MB · Open original for larger files.</span>
+                  </>
+                )}
               </footer>
             </section>
           </div>
