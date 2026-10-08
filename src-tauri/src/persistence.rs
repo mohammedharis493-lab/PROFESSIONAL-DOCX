@@ -8083,6 +8083,121 @@ pub fn create_reconciliation_run(
     })
 }
 
+pub fn run_trial_balance_opening_closing_reconciliation(
+    database_path: &Path,
+    trial_balance_import_id: &str,
+) -> Result<ReconciliationRunRecord, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let import: Option<(
+        String,
+        String,
+        String,
+        String,
+        Vec<u8>,
+        String,
+        u32,
+    )> = connection
+        .query_row(
+            "SELECT
+                engagement_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                sheet_name,
+                amount_scale
+             FROM trial_balance_imports
+             WHERE trial_balance_import_id = ?1",
+            [trial_balance_import_id],
+            |row| {
+                let amount_scale: i64 = row.get(6)?;
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    amount_scale.max(0) as u32,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        engagement_id,
+        controlled_evidence_version_id,
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        sheet_name,
+        amount_scale,
+    )) = import
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "trial balance import {trial_balance_import_id} does not exist"
+        )));
+    };
+    drop(connection);
+
+    let accounts = list_trial_balance_accounts(database_path, trial_balance_import_id)?;
+    let mut left_items = Vec::with_capacity(accounts.len());
+    let mut right_items = Vec::with_capacity(accounts.len());
+
+    for account in &accounts {
+        let account_label = account
+            .account_code_text
+            .as_deref()
+            .map(|code| format!("{code} - {}", account.account_name_text))
+            .unwrap_or_else(|| account.account_name_text.clone());
+
+        let common = |amount_minor: i64, description_text: String| ReconciliationItemInput {
+            match_key: account.trial_balance_account_id.clone(),
+            amount_minor,
+            event_date_text: None,
+            description_text: Some(description_text),
+            source_kind: "TRIAL_BALANCE_ACCOUNT".to_string(),
+            source_entity_id: account.trial_balance_account_id.clone(),
+            controlled_evidence_version_id: controlled_evidence_version_id.clone(),
+            document_id: document_id.clone(),
+            source_content_version_id: source_content_version_id.clone(),
+            source_sha256: source_sha256.clone(),
+            sheet_name: Some(sheet_name.clone()),
+            source_row_number: Some(account.source_row_number),
+            source_row_hash: Some(account.source_row_hash.clone()),
+        };
+
+        left_items.push(common(
+            account.opening_minor,
+            format!("Opening balance - {account_label}"),
+        ));
+        right_items.push(common(
+            account.closing_minor,
+            format!("Closing balance - {account_label}"),
+        ));
+    }
+
+    let parameters_json = json!({
+        "trialBalanceImportId": trial_balance_import_id,
+        "amountScale": amount_scale,
+        "leftSide": "OPENING",
+        "rightSide": "CLOSING",
+        "comparison": "EXACT_ACCOUNT_AND_AMOUNT"
+    })
+    .to_string();
+
+    create_reconciliation_run(
+        database_path,
+        ReconciliationRunDefinition {
+            engagement_id: &engagement_id,
+            reconciliation_type: "TRIAL_BALANCE_OPENING_CLOSING",
+            title: "Trial Balance opening vs closing exact reconciliation",
+            parameters_json: &parameters_json,
+            left_items: &left_items,
+            right_items: &right_items,
+        },
+    )
+}
+
 pub fn list_reconciliation_runs(
     database_path: &Path,
     engagement_id: &str,
