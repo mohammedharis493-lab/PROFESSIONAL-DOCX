@@ -354,6 +354,42 @@ type LedgerException = {
   createdAtMs: number;
 };
 
+type ReconciliationRun = {
+  reconciliationRunId: string;
+  engagementId: string;
+  reconciliationType: string;
+  title: string;
+  ruleCode: string;
+  parametersJson: string;
+  leftItemCount: number;
+  rightItemCount: number;
+  matchedPairCount: number;
+  exceptionCount: number;
+  ranAtMs: number;
+};
+
+type ReconciliationException = {
+  reconciliationExceptionId: string;
+  reconciliationRunId: string;
+  reconciliationItemId: string;
+  exceptionCode: string;
+  side: string;
+  matchKey: string;
+  amountMinor: number;
+  eventDateText: string | null;
+  descriptionText: string | null;
+  sourceKind: string;
+  sourceEntityId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  sheetName: string | null;
+  sourceRowNumber: number | null;
+  sourceRowHashHex: string | null;
+  createdAtMs: number;
+};
+
 type LedgerAccountSummary = {
   ledgerImportId: string;
   accountKey: string;
@@ -1009,6 +1045,22 @@ function formatMinorUnitAmount(value: number, scale: number) {
   return `${sign}${integer.toLocaleString()}.${fraction}`;
 }
 
+function reconciliationRunAmountScale(run: ReconciliationRun | null) {
+  if (!run) return 2;
+  try {
+    const parameters = JSON.parse(run.parametersJson) as { amountScale?: unknown };
+    const amountScale = parameters.amountScale;
+    return typeof amountScale === "number" &&
+      Number.isInteger(amountScale) &&
+      amountScale >= 0 &&
+      amountScale <= 6
+      ? amountScale
+      : 2;
+  } catch {
+    return 2;
+  }
+}
+
 function sourceUnavailable(availabilityState: string) {
   return availabilityState === "MISSING" || availabilityState === "UNAVAILABLE";
 }
@@ -1149,6 +1201,11 @@ export default function App() {
   const [ledgerTestRuns, setLedgerTestRuns] = useState<LedgerTestRun[]>([]);
   const [ledgerTestRun, setLedgerTestRun] = useState<LedgerTestRun | null>(null);
   const [ledgerExceptions, setLedgerExceptions] = useState<LedgerException[]>([]);
+  const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRun[]>([]);
+  const [selectedReconciliationRunId, setSelectedReconciliationRunId] =
+    useState<string | null>(null);
+  const [reconciliationExceptions, setReconciliationExceptions] =
+    useState<ReconciliationException[]>([]);
   const [trialBalanceImports, setTrialBalanceImports] = useState<TrialBalanceImport[]>([]);
   const [selectedTrialBalanceImportId, setSelectedTrialBalanceImportId] = useState<string | null>(null);
   const [trialBalanceComparison, setTrialBalanceComparison] =
