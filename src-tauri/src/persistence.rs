@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 19;
+const LATEST_SCHEMA_VERSION: i64 = 20;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -123,6 +123,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 19,
         name: "statutory_compliance",
         sql: include_str!("../migrations/0019_statutory_compliance.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "internal_audit",
+        sql: include_str!("../migrations/0020_internal_audit.sql"),
     },
 ];
 
@@ -425,6 +430,123 @@ struct StatutoryComplianceLibraryVersionIdentity {
     version_number: i64,
     definition_json: String,
     definition_hash: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditProcessRecord {
+    pub internal_audit_process_id: String,
+    pub engagement_id: String,
+    pub parent_process_id: Option<String>,
+    pub code: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub display_order: i64,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+pub struct InternalAuditProcessDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub parent_process_id: Option<&'a str>,
+    pub code: Option<&'a str>,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub display_order: i64,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditObjectiveRecord {
+    pub internal_audit_objective_id: String,
+    pub internal_audit_process_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditRiskRecord {
+    pub internal_audit_risk_id: String,
+    pub internal_audit_objective_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub risk_classification: Option<String>,
+    pub inherent_rating: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+pub struct InternalAuditRiskDefinition<'a> {
+    pub internal_audit_objective_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub risk_classification: Option<&'a str>,
+    pub inherent_rating: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditControlRecord {
+    pub internal_audit_control_id: String,
+    pub internal_audit_risk_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub control_type: Option<String>,
+    pub frequency: Option<String>,
+    pub owner_text: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+pub struct InternalAuditControlDefinition<'a> {
+    pub internal_audit_risk_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub control_type: Option<&'a str>,
+    pub frequency: Option<&'a str>,
+    pub owner_text: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditTestRecord {
+    pub internal_audit_test_id: String,
+    pub internal_audit_control_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub procedure_text: String,
+    pub sample_strategy: Option<String>,
+    pub expected_result: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+pub struct InternalAuditTestDefinition<'a> {
+    pub internal_audit_control_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub procedure_text: &'a str,
+    pub sample_strategy: Option<&'a str>,
+    pub expected_result: Option<&'a str>,
+    pub status: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditTestEvidenceRecord {
+    pub internal_audit_test_evidence_link_id: String,
+    pub internal_audit_test_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -4358,6 +4480,37 @@ fn normalize_domain_label(
     Ok(normalized)
 }
 
+fn normalize_internal_audit_optional_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > max_chars
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain at most {max_chars} printable characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_internal_audit_status(value: &str) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if status.is_empty() || status.chars().count() > 80 {
+        return Err(PersistenceError::Configuration(
+            "internal audit status must contain 1 to 80 normalized characters".to_string(),
+        ));
+    }
+    Ok(status)
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
@@ -6408,6 +6561,919 @@ pub fn list_statutory_compliance_evidence(
             source_content_version_id: row.get(4)?,
             source_sha256: row.get(5)?,
             linked_at_ms: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_process(
+    database_path: &Path,
+    definition: InternalAuditProcessDefinition<'_>,
+) -> Result<InternalAuditProcessRecord, PersistenceError> {
+    let InternalAuditProcessDefinition {
+        engagement_id,
+        parent_process_id,
+        code,
+        name,
+        description,
+        display_order,
+        status,
+    } = definition;
+    let code = normalize_internal_audit_optional_text(code, "internal audit process code", 80)?;
+    let name = normalize_domain_label(name, "internal audit process name", 240)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit process description",
+        10_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(parent_process_id) = parent_process_id {
+        let parent_engagement_id: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM internal_audit_processes
+                 WHERE internal_audit_process_id = ?1",
+                [parent_process_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(parent_engagement_id) = parent_engagement_id else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit parent process {parent_process_id} does not exist"
+            )));
+        };
+        if parent_engagement_id != engagement_id {
+            return Err(PersistenceError::Configuration(
+                "internal audit parent process must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let internal_audit_process_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_processes (
+            internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code,
+            name,
+            description,
+            display_order,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code.as_deref(),
+            &name,
+            description.as_deref(),
+            display_order,
+            &status,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_PROCESS_CREATED",
+            entity_type: "INTERNAL_AUDIT_PROCESS",
+            entity_id: &internal_audit_process_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "parentProcessId": parent_process_id,
+                "code": code,
+                "name": name,
+                "displayOrder": display_order,
+                "status": status
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(InternalAuditProcessRecord {
+        internal_audit_process_id,
+        engagement_id: engagement_id.to_string(),
+        parent_process_id: parent_process_id.map(str::to_string),
+        code,
+        name,
+        description,
+        display_order,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_processes(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<InternalAuditProcessRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code,
+            name,
+            description,
+            display_order,
+            status,
+            created_at_ms
+         FROM internal_audit_processes
+         WHERE engagement_id = ?1
+         ORDER BY display_order, created_at_ms, internal_audit_process_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(InternalAuditProcessRecord {
+            internal_audit_process_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            parent_process_id: row.get(2)?,
+            code: row.get(3)?,
+            name: row.get(4)?,
+            description: row.get(5)?,
+            display_order: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_objective(
+    database_path: &Path,
+    internal_audit_process_id: &str,
+    reference: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+    status: &str,
+) -> Result<InternalAuditObjectiveRecord, PersistenceError> {
+    let reference = normalize_internal_audit_optional_text(
+        reference,
+        "internal audit objective reference",
+        100,
+    )?;
+    let title = normalize_domain_label(title, "internal audit objective title", 500)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit objective description",
+        10_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let process_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_processes
+            WHERE internal_audit_process_id = ?1
+        )",
+        [internal_audit_process_id],
+        |row| row.get(0),
+    )?;
+    if !process_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit process {internal_audit_process_id} does not exist"
+        )));
+    }
+
+    let internal_audit_objective_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_objectives (
+            internal_audit_objective_id,
+            internal_audit_process_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &internal_audit_objective_id,
+            internal_audit_process_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_OBJECTIVE_CREATED",
+            entity_type: "INTERNAL_AUDIT_OBJECTIVE",
+            entity_id: &internal_audit_objective_id,
+            related_entity_type: Some("INTERNAL_AUDIT_PROCESS"),
+            related_entity_id: Some(internal_audit_process_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditObjectiveRecord {
+        internal_audit_objective_id,
+        internal_audit_process_id: internal_audit_process_id.to_string(),
+        reference,
+        title,
+        description,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_objectives(
+    database_path: &Path,
+    internal_audit_process_id: &str,
+) -> Result<Vec<InternalAuditObjectiveRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_objective_id,
+            internal_audit_process_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms
+         FROM internal_audit_objectives
+         WHERE internal_audit_process_id = ?1
+         ORDER BY created_at_ms, internal_audit_objective_id",
+    )?;
+    let rows = statement.query_map([internal_audit_process_id], |row| {
+        Ok(InternalAuditObjectiveRecord {
+            internal_audit_objective_id: row.get(0)?,
+            internal_audit_process_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            status: row.get(5)?,
+            created_at_ms: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_risk(
+    database_path: &Path,
+    definition: InternalAuditRiskDefinition<'_>,
+) -> Result<InternalAuditRiskRecord, PersistenceError> {
+    let InternalAuditRiskDefinition {
+        internal_audit_objective_id,
+        reference,
+        title,
+        description,
+        risk_classification,
+        inherent_rating,
+        status,
+    } = definition;
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit risk reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit risk title", 500)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit risk description",
+        10_000,
+    )?;
+    let risk_classification = normalize_internal_audit_optional_text(
+        risk_classification,
+        "internal audit risk classification",
+        120,
+    )?;
+    let inherent_rating = normalize_internal_audit_optional_text(
+        inherent_rating,
+        "internal audit inherent risk rating",
+        120,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let objective_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_objectives
+            WHERE internal_audit_objective_id = ?1
+        )",
+        [internal_audit_objective_id],
+        |row| row.get(0),
+    )?;
+    if !objective_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit objective {internal_audit_objective_id} does not exist"
+        )));
+    }
+
+    let internal_audit_risk_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_risks (
+            internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference,
+            title,
+            description,
+            risk_classification,
+            inherent_rating,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            risk_classification.as_deref(),
+            inherent_rating.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_RISK_CREATED",
+            entity_type: "INTERNAL_AUDIT_RISK",
+            entity_id: &internal_audit_risk_id,
+            related_entity_type: Some("INTERNAL_AUDIT_OBJECTIVE"),
+            related_entity_id: Some(internal_audit_objective_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "riskClassification": risk_classification,
+                "inherentRating": inherent_rating,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditRiskRecord {
+        internal_audit_risk_id,
+        internal_audit_objective_id: internal_audit_objective_id.to_string(),
+        reference,
+        title,
+        description,
+        risk_classification,
+        inherent_rating,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_risks(
+    database_path: &Path,
+    internal_audit_objective_id: &str,
+) -> Result<Vec<InternalAuditRiskRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference,
+            title,
+            description,
+            risk_classification,
+            inherent_rating,
+            status,
+            created_at_ms
+         FROM internal_audit_risks
+         WHERE internal_audit_objective_id = ?1
+         ORDER BY created_at_ms, internal_audit_risk_id",
+    )?;
+    let rows = statement.query_map([internal_audit_objective_id], |row| {
+        Ok(InternalAuditRiskRecord {
+            internal_audit_risk_id: row.get(0)?,
+            internal_audit_objective_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            risk_classification: row.get(5)?,
+            inherent_rating: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_control(
+    database_path: &Path,
+    definition: InternalAuditControlDefinition<'_>,
+) -> Result<InternalAuditControlRecord, PersistenceError> {
+    let InternalAuditControlDefinition {
+        internal_audit_risk_id,
+        reference,
+        title,
+        description,
+        control_type,
+        frequency,
+        owner_text,
+        status,
+    } = definition;
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit control reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit control title", 500)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit control description",
+        10_000,
+    )?;
+    let control_type =
+        normalize_internal_audit_optional_text(control_type, "internal audit control type", 120)?;
+    let frequency =
+        normalize_internal_audit_optional_text(frequency, "internal audit control frequency", 120)?;
+    let owner_text =
+        normalize_internal_audit_optional_text(owner_text, "internal audit control owner", 240)?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let risk_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_risks
+            WHERE internal_audit_risk_id = ?1
+        )",
+        [internal_audit_risk_id],
+        |row| row.get(0),
+    )?;
+    if !risk_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit risk {internal_audit_risk_id} does not exist"
+        )));
+    }
+
+    let internal_audit_control_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_controls (
+            internal_audit_control_id,
+            internal_audit_risk_id,
+            reference,
+            title,
+            description,
+            control_type,
+            frequency,
+            owner_text,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &internal_audit_control_id,
+            internal_audit_risk_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            control_type.as_deref(),
+            frequency.as_deref(),
+            owner_text.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_CONTROL_CREATED",
+            entity_type: "INTERNAL_AUDIT_CONTROL",
+            entity_id: &internal_audit_control_id,
+            related_entity_type: Some("INTERNAL_AUDIT_RISK"),
+            related_entity_id: Some(internal_audit_risk_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "controlType": control_type,
+                "frequency": frequency,
+                "owner": owner_text,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditControlRecord {
+        internal_audit_control_id,
+        internal_audit_risk_id: internal_audit_risk_id.to_string(),
+        reference,
+        title,
+        description,
+        control_type,
+        frequency,
+        owner_text,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_controls(
+    database_path: &Path,
+    internal_audit_risk_id: &str,
+) -> Result<Vec<InternalAuditControlRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_control_id,
+            internal_audit_risk_id,
+            reference,
+            title,
+            description,
+            control_type,
+            frequency,
+            owner_text,
+            status,
+            created_at_ms
+         FROM internal_audit_controls
+         WHERE internal_audit_risk_id = ?1
+         ORDER BY created_at_ms, internal_audit_control_id",
+    )?;
+    let rows = statement.query_map([internal_audit_risk_id], |row| {
+        Ok(InternalAuditControlRecord {
+            internal_audit_control_id: row.get(0)?,
+            internal_audit_risk_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            control_type: row.get(5)?,
+            frequency: row.get(6)?,
+            owner_text: row.get(7)?,
+            status: row.get(8)?,
+            created_at_ms: row.get(9)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_test(
+    database_path: &Path,
+    definition: InternalAuditTestDefinition<'_>,
+) -> Result<InternalAuditTestRecord, PersistenceError> {
+    let InternalAuditTestDefinition {
+        internal_audit_control_id,
+        reference,
+        title,
+        procedure_text,
+        sample_strategy,
+        expected_result,
+        status,
+    } = definition;
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit test reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit test title", 500)?;
+    let procedure_text = normalize_internal_audit_optional_text(
+        Some(procedure_text),
+        "internal audit test procedure",
+        20_000,
+    )?
+    .ok_or_else(|| {
+        PersistenceError::Configuration("internal audit test procedure is required".to_string())
+    })?;
+    let sample_strategy = normalize_internal_audit_optional_text(
+        sample_strategy,
+        "internal audit test sample strategy",
+        5_000,
+    )?;
+    let expected_result = normalize_internal_audit_optional_text(
+        expected_result,
+        "internal audit test expected result",
+        5_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let control_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_controls
+            WHERE internal_audit_control_id = ?1
+        )",
+        [internal_audit_control_id],
+        |row| row.get(0),
+    )?;
+    if !control_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit control {internal_audit_control_id} does not exist"
+        )));
+    }
+
+    let internal_audit_test_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_tests (
+            internal_audit_test_id,
+            internal_audit_control_id,
+            reference,
+            title,
+            procedure_text,
+            sample_strategy,
+            expected_result,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_test_id,
+            internal_audit_control_id,
+            reference.as_deref(),
+            &title,
+            &procedure_text,
+            sample_strategy.as_deref(),
+            expected_result.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_TEST_CREATED",
+            entity_type: "INTERNAL_AUDIT_TEST",
+            entity_id: &internal_audit_test_id,
+            related_entity_type: Some("INTERNAL_AUDIT_CONTROL"),
+            related_entity_id: Some(internal_audit_control_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditTestRecord {
+        internal_audit_test_id,
+        internal_audit_control_id: internal_audit_control_id.to_string(),
+        reference,
+        title,
+        procedure_text,
+        sample_strategy,
+        expected_result,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_tests(
+    database_path: &Path,
+    internal_audit_control_id: &str,
+) -> Result<Vec<InternalAuditTestRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_test_id,
+            internal_audit_control_id,
+            reference,
+            title,
+            procedure_text,
+            sample_strategy,
+            expected_result,
+            status,
+            created_at_ms
+         FROM internal_audit_tests
+         WHERE internal_audit_control_id = ?1
+         ORDER BY created_at_ms, internal_audit_test_id",
+    )?;
+    let rows = statement.query_map([internal_audit_control_id], |row| {
+        Ok(InternalAuditTestRecord {
+            internal_audit_test_id: row.get(0)?,
+            internal_audit_control_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            procedure_text: row.get(4)?,
+            sample_strategy: row.get(5)?,
+            expected_result: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_test_evidence_link(
+    database_path: &Path,
+    internal_audit_test_id: &str,
+    controlled_evidence_version_id: &str,
+    description: Option<&str>,
+) -> Result<InternalAuditTestEvidenceRecord, PersistenceError> {
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit test evidence description",
+        2_000,
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let test_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_tests
+            WHERE internal_audit_test_id = ?1
+        )",
+        [internal_audit_test_id],
+        |row| row.get(0),
+    )?;
+    if !test_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit test {internal_audit_test_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "internal audit test evidence must be retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "internal audit test evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let duplicate: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_test_evidence_links
+            WHERE internal_audit_test_id = ?1
+              AND controlled_evidence_version_id = ?2
+        )",
+        params![internal_audit_test_id, controlled_evidence_version_id],
+        |row| row.get(0),
+    )?;
+    if duplicate {
+        return Err(PersistenceError::Configuration(
+            "this controlled evidence version is already linked to the internal audit test"
+                .to_string(),
+        ));
+    }
+
+    let internal_audit_test_evidence_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_test_evidence_links (
+            internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            description.as_deref(),
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_TEST_EVIDENCE_LINKED",
+            entity_type: "INTERNAL_AUDIT_TEST_EVIDENCE",
+            entity_id: &internal_audit_test_evidence_link_id,
+            related_entity_type: Some("INTERNAL_AUDIT_TEST"),
+            related_entity_id: Some(internal_audit_test_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256)
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditTestEvidenceRecord {
+        internal_audit_test_evidence_link_id,
+        internal_audit_test_id: internal_audit_test_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        description,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_test_evidence(
+    database_path: &Path,
+    internal_audit_test_id: &str,
+) -> Result<Vec<InternalAuditTestEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         FROM internal_audit_test_evidence_links
+         WHERE internal_audit_test_id = ?1
+         ORDER BY linked_at_ms, internal_audit_test_evidence_link_id",
+    )?;
+    let rows = statement.query_map([internal_audit_test_id], |row| {
+        Ok(InternalAuditTestEvidenceRecord {
+            internal_audit_test_evidence_link_id: row.get(0)?,
+            internal_audit_test_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            description: row.get(6)?,
+            linked_at_ms: row.get(7)?,
         })
     })?;
     let mut result = Vec::new();
@@ -12827,7 +13893,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 19);
+        assert_eq!(migration_count, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -12887,14 +13953,20 @@ mod tests {
                        'reconciliation_exceptions',
                        'statutory_compliance_requirements',
                        'statutory_compliance_assessments',
-                       'statutory_compliance_evidence_links'
+                       'statutory_compliance_evidence_links',
+                       'internal_audit_processes',
+                       'internal_audit_objectives',
+                       'internal_audit_risks',
+                       'internal_audit_controls',
+                       'internal_audit_tests',
+                       'internal_audit_test_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 54);
+        assert_eq!(table_count, 60);
     }
 
     #[test]
@@ -12930,7 +14002,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -12978,7 +14050,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_exists: i64 = connection
             .query_row(
@@ -13027,7 +14099,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13072,14 +14144,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_exists: bool = connection
             .query_row(
@@ -13121,14 +14193,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13178,14 +14250,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13230,14 +14302,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13282,14 +14354,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13334,14 +14406,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13385,14 +14457,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13436,14 +14508,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13500,14 +14572,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -13559,14 +14631,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13610,14 +14682,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_exists: bool = connection
             .query_row(
@@ -13659,14 +14731,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13710,14 +14782,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_exists: bool = connection
             .query_row(
@@ -13760,14 +14832,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13813,14 +14885,14 @@ mod tests {
             assert_eq!(user_version, 18);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 19");
+        initialize_database(&database.path).expect("database should upgrade to version 20");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 19);
+        assert_eq!(user_version, 20);
 
         let table_count: i64 = connection
             .query_row(
@@ -13836,6 +14908,194 @@ mod tests {
             )
             .expect("statutory compliance tables should exist");
         assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn twentieth_migration_adds_internal_audit_process_control_model() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..19] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 19);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 20");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 20);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'internal_audit_processes',
+                       'internal_audit_objectives',
+                       'internal_audit_risks',
+                       'internal_audit_controls',
+                       'internal_audit_tests',
+                       'internal_audit_test_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("internal audit tables should exist");
+        assert_eq!(table_count, 6);
+    }
+
+    #[test]
+    fn internal_audit_process_risk_control_test_chain_is_configurable() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Internal Audit Client").expect("client");
+        let service = create_service_type(&database.path, "Internal Audit").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Procure-to-Pay internal audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+
+        let process = create_internal_audit_process(
+            &database.path,
+            InternalAuditProcessDefinition {
+                engagement_id: &engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: Some("Configurable end-to-end procurement and payment process."),
+                display_order: 10,
+                status: "ACTIVE",
+            },
+        )
+        .expect("process should create");
+        assert_eq!(process.name, "Procure-to-Pay");
+        assert_eq!(process.code.as_deref(), Some("P2P"));
+
+        let objective = create_internal_audit_objective(
+            &database.path,
+            &process.internal_audit_process_id,
+            Some("OBJ-01"),
+            "Purchases are authorized and valid",
+            Some("Assess whether purchasing activity is appropriately authorized."),
+            "ACTIVE",
+        )
+        .expect("objective should create");
+
+        let risk = create_internal_audit_risk(
+            &database.path,
+            InternalAuditRiskDefinition {
+                internal_audit_objective_id: &objective.internal_audit_objective_id,
+                reference: Some("R-01"),
+                title: "Unauthorized purchases",
+                description: Some("Purchases may be initiated without appropriate approval."),
+                risk_classification: Some("Operational"),
+                inherent_rating: Some("High"),
+                status: "ACTIVE",
+            },
+        )
+        .expect("risk should create");
+
+        let control = create_internal_audit_control(
+            &database.path,
+            InternalAuditControlDefinition {
+                internal_audit_risk_id: &risk.internal_audit_risk_id,
+                reference: Some("C-01"),
+                title: "Purchase orders require delegated approval",
+                description: Some("Workflow routes purchase orders to an authorized approver."),
+                control_type: Some("Preventive"),
+                frequency: Some("Per transaction"),
+                owner_text: Some("Procurement Manager"),
+                status: "ACTIVE",
+            },
+        )
+        .expect("control should create");
+
+        let test = create_internal_audit_test(
+            &database.path,
+            InternalAuditTestDefinition {
+                internal_audit_control_id: &control.internal_audit_control_id,
+                reference: Some("T-01"),
+                title: "Test purchase order approvals",
+                procedure_text:
+                    "Select a sample of purchase orders and inspect evidence of delegated approval.",
+                sample_strategy: Some("Auditor-selected sample"),
+                expected_result: Some(
+                    "Every sampled purchase order has valid approval before commitment.",
+                ),
+                status: "ACTIVE",
+            },
+        )
+        .expect("test should create");
+
+        assert_eq!(
+            list_internal_audit_processes(&database.path, &engagement.engagement_id)
+                .expect("processes")
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_internal_audit_objectives(&database.path, &process.internal_audit_process_id)
+                .expect("objectives")[0]
+                .internal_audit_objective_id,
+            objective.internal_audit_objective_id
+        );
+        assert_eq!(
+            list_internal_audit_risks(&database.path, &objective.internal_audit_objective_id)
+                .expect("risks")[0]
+                .internal_audit_risk_id,
+            risk.internal_audit_risk_id
+        );
+        assert_eq!(
+            list_internal_audit_controls(&database.path, &risk.internal_audit_risk_id)
+                .expect("controls")[0]
+                .internal_audit_control_id,
+            control.internal_audit_control_id
+        );
+        assert_eq!(
+            list_internal_audit_tests(&database.path, &control.internal_audit_control_id)
+                .expect("tests")[0]
+                .internal_audit_test_id,
+            test.internal_audit_test_id
+        );
+
+        let missing_evidence = create_internal_audit_test_evidence_link(
+            &database.path,
+            &test.internal_audit_test_id,
+            &Uuid::new_v4().to_string(),
+            Some("Approval support"),
+        )
+        .expect_err("unknown controlled evidence must fail");
+        assert!(missing_evidence
+            .to_string()
+            .contains("controlled evidence version"));
     }
 
     #[test]

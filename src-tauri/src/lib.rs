@@ -537,6 +537,231 @@ impl From<persistence::StatutoryComplianceEvidenceRecord> for StatutoryComplianc
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditProcessDto {
+    internal_audit_process_id: String,
+    engagement_id: String,
+    parent_process_id: Option<String>,
+    code: Option<String>,
+    name: String,
+    description: Option<String>,
+    display_order: i64,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditProcessRecord> for InternalAuditProcessDto {
+    fn from(value: persistence::InternalAuditProcessRecord) -> Self {
+        Self {
+            internal_audit_process_id: value.internal_audit_process_id,
+            engagement_id: value.engagement_id,
+            parent_process_id: value.parent_process_id,
+            code: value.code,
+            name: value.name,
+            description: value.description,
+            display_order: value.display_order,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditObjectiveDto {
+    internal_audit_objective_id: String,
+    internal_audit_process_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditObjectiveRecord> for InternalAuditObjectiveDto {
+    fn from(value: persistence::InternalAuditObjectiveRecord) -> Self {
+        Self {
+            internal_audit_objective_id: value.internal_audit_objective_id,
+            internal_audit_process_id: value.internal_audit_process_id,
+            reference: value.reference,
+            title: value.title,
+            description: value.description,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditRiskDto {
+    internal_audit_risk_id: String,
+    internal_audit_objective_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    risk_classification: Option<String>,
+    inherent_rating: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditRiskRecord> for InternalAuditRiskDto {
+    fn from(value: persistence::InternalAuditRiskRecord) -> Self {
+        Self {
+            internal_audit_risk_id: value.internal_audit_risk_id,
+            internal_audit_objective_id: value.internal_audit_objective_id,
+            reference: value.reference,
+            title: value.title,
+            description: value.description,
+            risk_classification: value.risk_classification,
+            inherent_rating: value.inherent_rating,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditControlDto {
+    internal_audit_control_id: String,
+    internal_audit_risk_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    control_type: Option<String>,
+    frequency: Option<String>,
+    owner_text: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditControlRecord> for InternalAuditControlDto {
+    fn from(value: persistence::InternalAuditControlRecord) -> Self {
+        Self {
+            internal_audit_control_id: value.internal_audit_control_id,
+            internal_audit_risk_id: value.internal_audit_risk_id,
+            reference: value.reference,
+            title: value.title,
+            description: value.description,
+            control_type: value.control_type,
+            frequency: value.frequency,
+            owner_text: value.owner_text,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditTestDto {
+    internal_audit_test_id: String,
+    internal_audit_control_id: String,
+    reference: Option<String>,
+    title: String,
+    procedure_text: String,
+    sample_strategy: Option<String>,
+    expected_result: Option<String>,
+    status: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditTestRecord> for InternalAuditTestDto {
+    fn from(value: persistence::InternalAuditTestRecord) -> Self {
+        Self {
+            internal_audit_test_id: value.internal_audit_test_id,
+            internal_audit_control_id: value.internal_audit_control_id,
+            reference: value.reference,
+            title: value.title,
+            procedure_text: value.procedure_text,
+            sample_strategy: value.sample_strategy,
+            expected_result: value.expected_result,
+            status: value.status,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditTestEvidenceDto {
+    internal_audit_test_evidence_link_id: String,
+    internal_audit_test_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    description: Option<String>,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditTestEvidenceRecord> for InternalAuditTestEvidenceDto {
+    fn from(value: persistence::InternalAuditTestEvidenceRecord) -> Self {
+        Self {
+            internal_audit_test_evidence_link_id: value.internal_audit_test_evidence_link_id,
+            internal_audit_test_id: value.internal_audit_test_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            description: value.description,
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditProcessInputDto {
+    engagement_id: String,
+    parent_process_id: Option<String>,
+    code: Option<String>,
+    name: String,
+    description: Option<String>,
+    display_order: i64,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditRiskInputDto {
+    internal_audit_objective_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    risk_classification: Option<String>,
+    inherent_rating: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditControlInputDto {
+    internal_audit_risk_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    control_type: Option<String>,
+    frequency: Option<String>,
+    owner_text: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditTestInputDto {
+    internal_audit_control_id: String,
+    reference: Option<String>,
+    title: String,
+    procedure_text: String,
+    sample_strategy: Option<String>,
+    expected_result: Option<String>,
+    status: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StatutoryComplianceAssessmentInputDto {
@@ -1851,6 +2076,212 @@ fn list_statutory_compliance_evidence(
     )
     .map(|records| records.into_iter().map(Into::into).collect())
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_process(
+    input: InternalAuditProcessInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditProcessDto, String> {
+    validate_uuid(&input.engagement_id, "engagement")?;
+    validate_optional_uuid(
+        input.parent_process_id.as_deref(),
+        "internal-audit-parent-process",
+    )?;
+    persistence::create_internal_audit_process(
+        database.path(),
+        persistence::InternalAuditProcessDefinition {
+            engagement_id: &input.engagement_id,
+            parent_process_id: input.parent_process_id.as_deref(),
+            code: input.code.as_deref(),
+            name: &input.name,
+            description: input.description.as_deref(),
+            display_order: input.display_order,
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_processes(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditProcessDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_internal_audit_processes(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_objective(
+    internal_audit_process_id: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    status: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditObjectiveDto, String> {
+    validate_uuid(&internal_audit_process_id, "internal-audit-process")?;
+    persistence::create_internal_audit_objective(
+        database.path(),
+        &internal_audit_process_id,
+        reference.as_deref(),
+        &title,
+        description.as_deref(),
+        status.as_deref().unwrap_or("ACTIVE"),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_objectives(
+    internal_audit_process_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditObjectiveDto>, String> {
+    validate_uuid(&internal_audit_process_id, "internal-audit-process")?;
+    persistence::list_internal_audit_objectives(database.path(), &internal_audit_process_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_risk(
+    input: InternalAuditRiskInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditRiskDto, String> {
+    validate_uuid(
+        &input.internal_audit_objective_id,
+        "internal-audit-objective",
+    )?;
+    persistence::create_internal_audit_risk(
+        database.path(),
+        persistence::InternalAuditRiskDefinition {
+            internal_audit_objective_id: &input.internal_audit_objective_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            description: input.description.as_deref(),
+            risk_classification: input.risk_classification.as_deref(),
+            inherent_rating: input.inherent_rating.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_risks(
+    internal_audit_objective_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditRiskDto>, String> {
+    validate_uuid(&internal_audit_objective_id, "internal-audit-objective")?;
+    persistence::list_internal_audit_risks(database.path(), &internal_audit_objective_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_control(
+    input: InternalAuditControlInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditControlDto, String> {
+    validate_uuid(&input.internal_audit_risk_id, "internal-audit-risk")?;
+    persistence::create_internal_audit_control(
+        database.path(),
+        persistence::InternalAuditControlDefinition {
+            internal_audit_risk_id: &input.internal_audit_risk_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            description: input.description.as_deref(),
+            control_type: input.control_type.as_deref(),
+            frequency: input.frequency.as_deref(),
+            owner_text: input.owner_text.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_controls(
+    internal_audit_risk_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditControlDto>, String> {
+    validate_uuid(&internal_audit_risk_id, "internal-audit-risk")?;
+    persistence::list_internal_audit_controls(database.path(), &internal_audit_risk_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_test(
+    input: InternalAuditTestInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditTestDto, String> {
+    validate_uuid(&input.internal_audit_control_id, "internal-audit-control")?;
+    persistence::create_internal_audit_test(
+        database.path(),
+        persistence::InternalAuditTestDefinition {
+            internal_audit_control_id: &input.internal_audit_control_id,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            procedure_text: &input.procedure_text,
+            sample_strategy: input.sample_strategy.as_deref(),
+            expected_result: input.expected_result.as_deref(),
+            status: input.status.as_deref().unwrap_or("ACTIVE"),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_tests(
+    internal_audit_control_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditTestDto>, String> {
+    validate_uuid(&internal_audit_control_id, "internal-audit-control")?;
+    persistence::list_internal_audit_tests(database.path(), &internal_audit_control_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_test_evidence_link(
+    internal_audit_test_id: String,
+    controlled_evidence_version_id: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditTestEvidenceDto, String> {
+    validate_uuid(&internal_audit_test_id, "internal-audit-test")?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+    persistence::create_internal_audit_test_evidence_link(
+        database.path(),
+        &internal_audit_test_id,
+        &controlled_evidence_version_id,
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_test_evidence(
+    internal_audit_test_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditTestEvidenceDto>, String> {
+    validate_uuid(&internal_audit_test_id, "internal-audit-test")?;
+    persistence::list_internal_audit_test_evidence(database.path(), &internal_audit_test_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3408,6 +3839,18 @@ pub fn run() {
             create_statutory_compliance_assessment,
             list_statutory_compliance_assessments,
             list_statutory_compliance_evidence,
+            create_internal_audit_process,
+            list_internal_audit_processes,
+            create_internal_audit_objective,
+            list_internal_audit_objectives,
+            create_internal_audit_risk,
+            list_internal_audit_risks,
+            create_internal_audit_control,
+            list_internal_audit_controls,
+            create_internal_audit_test,
+            list_internal_audit_tests,
+            create_internal_audit_test_evidence_link,
+            list_internal_audit_test_evidence,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,
