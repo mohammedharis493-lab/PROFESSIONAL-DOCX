@@ -11929,7 +11929,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 17);
+        assert_eq!(migration_count, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -11982,14 +11982,18 @@ mod tests {
                        'ledger_tb_mappings',
                        'financial_statement_schedules',
                        'trial_balance_schedule_mappings',
-                       'financial_statement_schedule_links'
+                       'financial_statement_schedule_links',
+                       'reconciliation_runs',
+                       'reconciliation_items',
+                       'reconciliation_matches',
+                       'reconciliation_exceptions'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 47);
+        assert_eq!(table_count, 51);
     }
 
     #[test]
@@ -12025,7 +12029,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12073,7 +12077,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: i64 = connection
             .query_row(
@@ -12122,7 +12126,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12167,14 +12171,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -12216,14 +12220,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12273,14 +12277,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12325,14 +12329,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12377,14 +12381,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12429,14 +12433,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12480,14 +12484,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12531,14 +12535,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12595,14 +12599,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -12654,14 +12658,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12705,14 +12709,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -12754,14 +12758,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_count: i64 = connection
             .query_row(
@@ -12805,14 +12809,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 17");
+        initialize_database(&database.path).expect("database should upgrade to version 18");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
 
         let table_exists: bool = connection
             .query_row(
@@ -12826,6 +12830,59 @@ mod tests {
             )
             .expect("financial statement schedule link table should exist");
         assert!(table_exists);
+    }
+
+    #[test]
+    fn eighteenth_migration_adds_immutable_reconciliation_framework() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..17] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 17);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 18");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 18);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'reconciliation_runs',
+                       'reconciliation_items',
+                       'reconciliation_matches',
+                       'reconciliation_exceptions'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("reconciliation framework tables should exist");
+        assert_eq!(table_count, 4);
     }
 
     #[test]
@@ -13459,6 +13516,183 @@ mod tests {
         assert!(schedule_mapping_mutation_error
             .to_string()
             .contains("trial balance schedule mappings are immutable"));
+
+        let reconciliation_row_hash = |label: &str| Sha256::digest(label.as_bytes()).to_vec();
+        let reconciliation_item = |
+            source_entity_id: &str,
+            match_key: &str,
+            amount_minor: i64,
+            source_row_number: u64,
+        | ReconciliationItemInput {
+            match_key: match_key.to_string(),
+            amount_minor,
+            event_date_text: Some("2026-03-31".to_string()),
+            description_text: Some(format!("Reconciliation item {source_entity_id}")),
+            source_kind: "TEST_ROW".to_string(),
+            source_entity_id: source_entity_id.to_string(),
+            controlled_evidence_version_id: controlled_evidence_version_id.clone(),
+            document_id: document_id.clone(),
+            source_content_version_id: content_version_id.clone(),
+            source_sha256: source_sha256.clone(),
+            sheet_name: Some("Recon".to_string()),
+            source_row_number: Some(source_row_number),
+            source_row_hash: Some(reconciliation_row_hash(source_entity_id)),
+        };
+
+        let left_reconciliation_items = vec![
+            reconciliation_item("L-A", "INV-100", 10_000, 10),
+            reconciliation_item("L-B", "INV-100", 10_000, 11),
+            reconciliation_item("L-C", "INV-200", 20_000, 12),
+        ];
+        let right_reconciliation_items = vec![
+            reconciliation_item("R-A", "INV-100", 10_000, 20),
+            reconciliation_item("R-C", "INV-300", 30_000, 21),
+            reconciliation_item("R-B", "INV-200", 20_000, 22),
+        ];
+
+        let reconciliation_run = create_reconciliation_run(
+            &database.path,
+            ReconciliationRunDefinition {
+                engagement_id: &engagement.engagement_id,
+                reconciliation_type: "generic test",
+                title: "Exact key and amount reconciliation",
+                parameters_json: r#"{"comparison":"EXACT","amountScale":2}"#,
+                left_items: &left_reconciliation_items,
+                right_items: &right_reconciliation_items,
+            },
+        )
+        .expect("reconciliation run should succeed");
+        assert_eq!(reconciliation_run.reconciliation_type, "GENERIC_TEST");
+        assert_eq!(reconciliation_run.rule_code, "EXACT_KEY_AMOUNT");
+        assert_eq!(reconciliation_run.left_item_count, 3);
+        assert_eq!(reconciliation_run.right_item_count, 3);
+        assert_eq!(reconciliation_run.matched_pair_count, 2);
+        assert_eq!(reconciliation_run.exception_count, 2);
+
+        let reconciliation_runs =
+            list_reconciliation_runs(&database.path, &engagement.engagement_id)
+                .expect("reconciliation runs");
+        assert_eq!(reconciliation_runs.len(), 1);
+        assert_eq!(
+            reconciliation_runs[0].reconciliation_run_id,
+            reconciliation_run.reconciliation_run_id
+        );
+
+        let reconciliation_exceptions = list_reconciliation_exceptions(
+            &database.path,
+            &reconciliation_run.reconciliation_run_id,
+        )
+        .expect("reconciliation exceptions");
+        assert_eq!(reconciliation_exceptions.len(), 2);
+        assert_eq!(
+            reconciliation_exceptions
+                .iter()
+                .map(|exception| (
+                    exception.exception_code.as_str(),
+                    exception.source_entity_id.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("UNMATCHED_LEFT", "L-B"), ("UNMATCHED_RIGHT", "R-C")]
+        );
+        for exception in &reconciliation_exceptions {
+            assert_eq!(
+                exception.controlled_evidence_version_id,
+                controlled_evidence_version_id
+            );
+            assert_eq!(exception.document_id, document_id);
+            assert_eq!(exception.source_content_version_id, content_version_id);
+            assert_eq!(exception.source_sha256, source_sha256);
+            assert_eq!(exception.sheet_name.as_deref(), Some("Recon"));
+            assert_eq!(exception.source_row_hash.as_ref().map(Vec::len), Some(32));
+        }
+
+        let mut invalid_reconciliation_left = left_reconciliation_items.clone();
+        invalid_reconciliation_left[0].source_sha256 = vec![0xCD; 32];
+        let provenance_error = create_reconciliation_run(
+            &database.path,
+            ReconciliationRunDefinition {
+                engagement_id: &engagement.engagement_id,
+                reconciliation_type: "generic test",
+                title: "Invalid provenance reconciliation",
+                parameters_json: "{}",
+                left_items: &invalid_reconciliation_left,
+                right_items: &right_reconciliation_items,
+            },
+        )
+        .expect_err("mismatched controlled evidence provenance must fail");
+        assert!(provenance_error
+            .to_string()
+            .contains("does not match controlled evidence"));
+
+        let reconciliation_run_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_runs
+                 SET exception_count = 0
+                 WHERE reconciliation_run_id = ?1",
+                [&reconciliation_run.reconciliation_run_id],
+            )
+            .expect_err("reconciliation runs must be immutable");
+        assert!(reconciliation_run_mutation_error
+            .to_string()
+            .contains("reconciliation runs are immutable"));
+
+        let reconciliation_item_id: String = connection
+            .query_row(
+                "SELECT reconciliation_item_id
+                 FROM reconciliation_items
+                 WHERE reconciliation_run_id = ?1
+                 ORDER BY reconciliation_item_id
+                 LIMIT 1",
+                [&reconciliation_run.reconciliation_run_id],
+                |row| row.get(0),
+            )
+            .expect("reconciliation item should exist");
+        let reconciliation_item_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_items
+                 SET amount_minor = amount_minor + 1
+                 WHERE reconciliation_item_id = ?1",
+                [&reconciliation_item_id],
+            )
+            .expect_err("reconciliation items must be immutable");
+        assert!(reconciliation_item_mutation_error
+            .to_string()
+            .contains("reconciliation items are immutable"));
+
+        let reconciliation_match_id: String = connection
+            .query_row(
+                "SELECT reconciliation_match_id
+                 FROM reconciliation_matches
+                 WHERE reconciliation_run_id = ?1
+                 ORDER BY reconciliation_match_id
+                 LIMIT 1",
+                [&reconciliation_run.reconciliation_run_id],
+                |row| row.get(0),
+            )
+            .expect("reconciliation match should exist");
+        let reconciliation_match_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_matches
+                 SET matched_at_ms = matched_at_ms + 1
+                 WHERE reconciliation_match_id = ?1",
+                [&reconciliation_match_id],
+            )
+            .expect_err("reconciliation matches must be immutable");
+        assert!(reconciliation_match_mutation_error
+            .to_string()
+            .contains("reconciliation matches are immutable"));
+
+        let reconciliation_exception_mutation_error = connection
+            .execute(
+                "UPDATE reconciliation_exceptions
+                 SET exception_code = 'UNMATCHED_RIGHT'
+                 WHERE reconciliation_exception_id = ?1",
+                [&reconciliation_exceptions[0].reconciliation_exception_id],
+            )
+            .expect_err("reconciliation exceptions must be immutable");
+        assert!(reconciliation_exception_mutation_error
+            .to_string()
+            .contains("reconciliation exceptions are immutable"));
 
         let trial_balance_mutation_error = connection
             .execute(
