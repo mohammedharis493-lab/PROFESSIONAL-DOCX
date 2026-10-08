@@ -1764,6 +1764,101 @@ fn list_firm_library_versions(
 }
 
 #[tauri::command]
+fn create_statutory_compliance_requirement(
+    engagement_id: String,
+    firm_library_version_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<StatutoryComplianceRequirementDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_uuid(&firm_library_version_id, "firm-library-version")?;
+    persistence::create_statutory_compliance_requirement(
+        database.path(),
+        &engagement_id,
+        &firm_library_version_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_requirements(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceRequirementDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_statutory_compliance_requirements(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_statutory_compliance_assessment(
+    input: StatutoryComplianceAssessmentInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<StatutoryComplianceAssessmentDto, String> {
+    validate_uuid(
+        &input.statutory_compliance_requirement_id,
+        "statutory-compliance-requirement",
+    )?;
+    for controlled_evidence_version_id in &input.controlled_evidence_version_ids {
+        validate_uuid(
+            controlled_evidence_version_id,
+            "controlled-evidence-version",
+        )?;
+    }
+
+    persistence::create_statutory_compliance_assessment(
+        database.path(),
+        persistence::StatutoryComplianceAssessmentDefinition {
+            statutory_compliance_requirement_id: &input.statutory_compliance_requirement_id,
+            applicability: &input.applicability,
+            due_date: input.due_date.as_deref(),
+            actual_compliance_date: input.actual_compliance_date.as_deref(),
+            status: &input.status,
+            exception_text: input.exception_text.as_deref(),
+            conclusion: input.conclusion.as_deref(),
+            controlled_evidence_version_ids: &input.controlled_evidence_version_ids,
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_assessments(
+    statutory_compliance_requirement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceAssessmentDto>, String> {
+    validate_uuid(
+        &statutory_compliance_requirement_id,
+        "statutory-compliance-requirement",
+    )?;
+    persistence::list_statutory_compliance_assessments(
+        database.path(),
+        &statutory_compliance_requirement_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_evidence(
+    statutory_compliance_assessment_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceEvidenceDto>, String> {
+    validate_uuid(
+        &statutory_compliance_assessment_id,
+        "statutory-compliance-assessment",
+    )?;
+    persistence::list_statutory_compliance_evidence(
+        database.path(),
+        &statutory_compliance_assessment_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_ledger_from_controlled_evidence(
     input: LedgerImportInputDto,
     database: State<'_, persistence::DatabaseState>,
@@ -3313,6 +3408,11 @@ pub fn run() {
             publish_firm_library_version,
             list_firm_library_items,
             list_firm_library_versions,
+            create_statutory_compliance_requirement,
+            list_statutory_compliance_requirements,
+            create_statutory_compliance_assessment,
+            list_statutory_compliance_assessments,
+            list_statutory_compliance_evidence,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,
