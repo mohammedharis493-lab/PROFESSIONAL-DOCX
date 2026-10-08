@@ -4428,6 +4428,241 @@ fn normalize_firm_library_definition(
     Ok((canonical, hash))
 }
 
+fn normalize_statutory_compliance_state(
+    value: &str,
+    field_name: &str,
+    allowed: &[&str],
+) -> Result<String, PersistenceError> {
+    let normalized = workflow_state_key(value);
+    if allowed.iter().any(|candidate| *candidate == normalized) {
+        Ok(normalized)
+    } else {
+        Err(PersistenceError::Configuration(format!(
+            "{field_name} is not supported"
+        )))
+    }
+}
+
+fn normalize_statutory_compliance_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > max_chars
+        || value.chars().any(|character| {
+            character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+        })
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain at most {max_chars} printable characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_statutory_compliance_date(
+    value: Option<&str>,
+    field_name: &str,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes[..4].iter().all(u8::is_ascii_digit)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must use YYYY-MM-DD format"
+        )));
+    }
+
+    let year = value[..4].parse::<u32>().map_err(|_| {
+        PersistenceError::Configuration(format!("{field_name} year is invalid"))
+    })?;
+    let month = value[5..7].parse::<u32>().map_err(|_| {
+        PersistenceError::Configuration(format!("{field_name} month is invalid"))
+    })?;
+    let day = value[8..].parse::<u32>().map_err(|_| {
+        PersistenceError::Configuration(format!("{field_name} day is invalid"))
+    })?;
+    if year == 0 || !(1..=12).contains(&month) {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} is not a valid calendar date"
+        )));
+    }
+
+    let leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => unreachable!("month range is validated above"),
+    };
+    if day == 0 || day > max_day {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} is not a valid calendar date"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_statutory_compliance_assessment(
+    applicability: &str,
+    due_date: Option<&str>,
+    actual_compliance_date: Option<&str>,
+    status: &str,
+    exception_text: Option<&str>,
+    conclusion: Option<&str>,
+    controlled_evidence_version_ids: &[String],
+) -> Result<
+    (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    ),
+    PersistenceError,
+> {
+    let applicability = normalize_statutory_compliance_state(
+        applicability,
+        "statutory compliance applicability",
+        &["UNDETERMINED", "APPLICABLE", "NOT_APPLICABLE"],
+    )?;
+    let status = normalize_statutory_compliance_state(
+        status,
+        "statutory compliance status",
+        &[
+            "UNASSESSED",
+            "PENDING",
+            "COMPLIANT",
+            "EXCEPTION",
+            "NOT_APPLICABLE",
+        ],
+    )?;
+    let due_date = normalize_statutory_compliance_date(due_date, "statutory compliance due date")?;
+    let actual_compliance_date = normalize_statutory_compliance_date(
+        actual_compliance_date,
+        "statutory compliance actual compliance date",
+    )?;
+    let exception_text = normalize_statutory_compliance_text(
+        exception_text,
+        "statutory compliance exception",
+        10_000,
+    )?;
+    let conclusion = normalize_statutory_compliance_text(
+        conclusion,
+        "statutory compliance conclusion",
+        10_000,
+    )?;
+
+    let mut evidence_ids = controlled_evidence_version_ids.to_vec();
+    evidence_ids.sort();
+    evidence_ids.dedup();
+    if evidence_ids.len() != controlled_evidence_version_ids.len() {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance evidence versions must be unique".to_string(),
+        ));
+    }
+
+    match status.as_str() {
+        "UNASSESSED" => {
+            if applicability != "UNDETERMINED"
+                || due_date.is_some()
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+                || conclusion.is_some()
+                || !controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "UNASSESSED compliance must remain undetermined without dates, evidence, exception, or conclusion"
+                        .to_string(),
+                ));
+            }
+        }
+        "PENDING" => {
+            if applicability != "APPLICABLE"
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+            {
+                return Err(PersistenceError::Configuration(
+                    "PENDING compliance must be applicable, have no actual compliance date, and have no exception"
+                        .to_string(),
+                ));
+            }
+        }
+        "COMPLIANT" => {
+            if applicability != "APPLICABLE"
+                || actual_compliance_date.is_none()
+                || exception_text.is_some()
+                || conclusion.is_none()
+                || controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "COMPLIANT status requires applicable state, actual compliance date, conclusion, exact controlled evidence, and no exception"
+                        .to_string(),
+                ));
+            }
+            if let (Some(due_date), Some(actual_date)) =
+                (due_date.as_deref(), actual_compliance_date.as_deref())
+            {
+                if actual_date > due_date {
+                    return Err(PersistenceError::Configuration(
+                        "late statutory compliance must be recorded as an EXCEPTION rather than COMPLIANT"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        "EXCEPTION" => {
+            if applicability != "APPLICABLE"
+                || exception_text.is_none()
+                || conclusion.is_none()
+            {
+                return Err(PersistenceError::Configuration(
+                    "EXCEPTION status requires applicable state, exception text, and conclusion"
+                        .to_string(),
+                ));
+            }
+        }
+        "NOT_APPLICABLE" => {
+            if applicability != "NOT_APPLICABLE"
+                || due_date.is_some()
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+                || conclusion.is_none()
+                || !controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "NOT_APPLICABLE status requires a conclusion and cannot carry dates, exception text, or evidence"
+                        .to_string(),
+                ));
+            }
+        }
+        _ => unreachable!("status allow-list is validated above"),
+    }
+
+    Ok((
+        applicability,
+        due_date,
+        actual_compliance_date,
+        status,
+        exception_text,
+        conclusion,
+    ))
+}
+
 fn normalize_reconciliation_parameters(parameters_json: &str) -> Result<String, PersistenceError> {
     if parameters_json.len() > RECONCILIATION_PARAMETERS_MAX_BYTES {
         return Err(PersistenceError::Configuration(format!(
