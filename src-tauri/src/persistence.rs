@@ -6129,6 +6129,307 @@ pub fn list_statutory_compliance_requirements(
     Ok(result)
 }
 
+pub fn create_statutory_compliance_assessment(
+    database_path: &Path,
+    definition: StatutoryComplianceAssessmentDefinition<'_>,
+) -> Result<StatutoryComplianceAssessmentRecord, PersistenceError> {
+    let (
+        applicability,
+        due_date,
+        actual_compliance_date,
+        status,
+        exception_text,
+        conclusion,
+    ) = normalize_statutory_compliance_assessment(
+        definition.applicability,
+        definition.due_date,
+        definition.actual_compliance_date,
+        definition.status,
+        definition.exception_text,
+        definition.conclusion,
+        definition.controlled_evidence_version_ids,
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_id: Option<String> = transaction
+        .query_row(
+            "SELECT engagement_id
+             FROM statutory_compliance_requirements
+             WHERE statutory_compliance_requirement_id = ?1",
+            [definition.statutory_compliance_requirement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let engagement_id = engagement_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "statutory compliance requirement {} does not exist",
+            definition.statutory_compliance_requirement_id
+        ))
+    })?;
+
+    let latest: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT statutory_compliance_assessment_id, version_number
+             FROM statutory_compliance_assessments
+             WHERE statutory_compliance_requirement_id = ?1
+             ORDER BY version_number DESC
+             LIMIT 1",
+            [definition.statutory_compliance_requirement_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (supersedes_assessment_id, latest_version_number) = latest.ok_or_else(|| {
+        PersistenceError::Configuration(
+            "statutory compliance requirement has no initial assessment".to_string(),
+        )
+    })?;
+    let next_version_number = latest_version_number.checked_add(1).ok_or_else(|| {
+        PersistenceError::Configuration(
+            "statutory compliance assessment version exceeds supported range".to_string(),
+        )
+    })?;
+
+    let mut evidence = Vec::new();
+    for controlled_evidence_version_id in definition.controlled_evidence_version_ids {
+        let record: Option<(String, String, Vec<u8>, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    document_id,
+                    source_content_version_id,
+                    sha256,
+                    retention_state,
+                    verification_state
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [controlled_evidence_version_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            document_id,
+            source_content_version_id,
+            sha256,
+            retention_state,
+            verification_state,
+        )) = record
+        else {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {controlled_evidence_version_id} does not exist"
+            )));
+        };
+        if retention_state != "RETAINED"
+            || verification_state != "HASH_VERIFIED"
+            || sha256.len() != 32
+        {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {controlled_evidence_version_id} is not retained and hash verified"
+            )));
+        }
+        evidence.push((
+            controlled_evidence_version_id.clone(),
+            document_id,
+            source_content_version_id,
+            sha256,
+        ));
+    }
+
+    let assessment_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_assessments (
+            statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id,
+            version_number,
+            supersedes_assessment_id,
+            applicability,
+            due_date,
+            actual_compliance_date,
+            status,
+            exception_text,
+            conclusion,
+            assessed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &assessment_id,
+            definition.statutory_compliance_requirement_id,
+            next_version_number,
+            &supersedes_assessment_id,
+            &applicability,
+            due_date.as_deref(),
+            actual_compliance_date.as_deref(),
+            &status,
+            exception_text.as_deref(),
+            conclusion.as_deref(),
+            now
+        ],
+    )?;
+
+    for (controlled_evidence_version_id, document_id, source_content_version_id, source_sha256) in
+        &evidence
+    {
+        transaction.execute(
+            "INSERT INTO statutory_compliance_evidence_links (
+                statutory_compliance_evidence_link_id,
+                statutory_compliance_assessment_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                linked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                &assessment_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "STATUTORY_COMPLIANCE_ASSESSMENT_RECORDED",
+            entity_type: "STATUTORY_COMPLIANCE_ASSESSMENT",
+            entity_id: &assessment_id,
+            related_entity_type: Some("STATUTORY_COMPLIANCE_REQUIREMENT"),
+            related_entity_id: Some(definition.statutory_compliance_requirement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "engagementId": engagement_id,
+                "versionNumber": next_version_number,
+                "supersedesAssessmentId": supersedes_assessment_id,
+                "applicability": applicability,
+                "dueDate": due_date,
+                "actualComplianceDate": actual_compliance_date,
+                "status": status,
+                "evidenceCount": evidence.len(),
+                "hasException": exception_text.is_some(),
+                "hasConclusion": conclusion.is_some()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(StatutoryComplianceAssessmentRecord {
+        statutory_compliance_assessment_id: assessment_id,
+        statutory_compliance_requirement_id: definition
+            .statutory_compliance_requirement_id
+            .to_string(),
+        version_number: next_version_number.max(0) as u64,
+        supersedes_assessment_id: Some(supersedes_assessment_id),
+        applicability,
+        due_date,
+        actual_compliance_date,
+        status,
+        exception_text,
+        conclusion,
+        evidence_count: evidence.len() as u64,
+        assessed_at_ms: now,
+    })
+}
+
+pub fn list_statutory_compliance_assessments(
+    database_path: &Path,
+    statutory_compliance_requirement_id: &str,
+) -> Result<Vec<StatutoryComplianceAssessmentRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            a.statutory_compliance_assessment_id,
+            a.statutory_compliance_requirement_id,
+            a.version_number,
+            a.supersedes_assessment_id,
+            a.applicability,
+            a.due_date,
+            a.actual_compliance_date,
+            a.status,
+            a.exception_text,
+            a.conclusion,
+            (
+                SELECT COUNT(*)
+                FROM statutory_compliance_evidence_links e
+                WHERE e.statutory_compliance_assessment_id = a.statutory_compliance_assessment_id
+            ),
+            a.assessed_at_ms
+         FROM statutory_compliance_assessments a
+         WHERE a.statutory_compliance_requirement_id = ?1
+         ORDER BY a.version_number DESC",
+    )?;
+    let rows = statement.query_map([statutory_compliance_requirement_id], |row| {
+        let version_number: i64 = row.get(2)?;
+        let evidence_count: i64 = row.get(10)?;
+        Ok(StatutoryComplianceAssessmentRecord {
+            statutory_compliance_assessment_id: row.get(0)?,
+            statutory_compliance_requirement_id: row.get(1)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_assessment_id: row.get(3)?,
+            applicability: row.get(4)?,
+            due_date: row.get(5)?,
+            actual_compliance_date: row.get(6)?,
+            status: row.get(7)?,
+            exception_text: row.get(8)?,
+            conclusion: row.get(9)?,
+            evidence_count: evidence_count.max(0) as u64,
+            assessed_at_ms: row.get(11)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_statutory_compliance_evidence(
+    database_path: &Path,
+    statutory_compliance_assessment_id: &str,
+) -> Result<Vec<StatutoryComplianceEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            statutory_compliance_evidence_link_id,
+            statutory_compliance_assessment_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            linked_at_ms
+         FROM statutory_compliance_evidence_links
+         WHERE statutory_compliance_assessment_id = ?1
+         ORDER BY linked_at_ms, statutory_compliance_evidence_link_id",
+    )?;
+    let rows = statement.query_map([statutory_compliance_assessment_id], |row| {
+        Ok(StatutoryComplianceEvidenceRecord {
+            statutory_compliance_evidence_link_id: row.get(0)?,
+            statutory_compliance_assessment_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            linked_at_ms: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_ledger_import(
     database_path: &Path,
     definition: LedgerImportDefinition<'_>,
