@@ -6242,6 +6242,131 @@ export default function App() {
                   <div className="workspace-card">
                     <div className="workspace-card-heading">
                       <div>
+                        <span className="workspace-label">RECONCILIATION</span>
+                        <h3>Deterministic TB opening vs closing</h3>
+                      </div>
+                    </div>
+
+                    <p className="evidence-integrity-note">
+                      The backend matches exact immutable TB account IDs and exact signed balances.
+                      Differences remain immutable exceptions; this screen cannot clear or rewrite
+                      them.
+                    </p>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={workspaceBusy || !selectedTrialBalanceImport}
+                      onClick={() => void runTrialBalanceReconciliation()}
+                    >
+                      Run exact reconciliation
+                    </button>
+
+                    {trialBalanceReconciliationRuns.length ? (
+                      <label className="workspace-form compact">
+                        <span>Completed reconciliation run</span>
+                        <select
+                          value={selectedReconciliationRunId ?? ""}
+                          onChange={(event) =>
+                            void openReconciliationRun(event.target.value || null)
+                          }
+                          disabled={workspaceBusy}
+                        >
+                          <option value="">Select immutable run</option>
+                          {trialBalanceReconciliationRuns.map((run) => (
+                            <option key={run.reconciliationRunId} value={run.reconciliationRunId}>
+                              {formatTimestamp(run.ranAtMs)} · {run.exceptionCount} exception(s) ·{" "}
+                              {run.matchedPairCount} matched
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <p className="evidence-integrity-note">
+                        No deterministic reconciliation has been run for this engagement yet.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">RECONCILIATION REVIEW</span>
+                        <h3>Immutable exceptions & provenance</h3>
+                      </div>
+                    </div>
+
+                    {selectedReconciliationRun ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              {selectedReconciliationRun.exceptionCount} exception(s) ·{" "}
+                              {selectedReconciliationRun.matchedPairCount} exact match(es)
+                            </strong>
+                            <small>
+                              {selectedReconciliationRun.leftItemCount} opening item(s) ·{" "}
+                              {selectedReconciliationRun.rightItemCount} closing item(s) · rule{" "}
+                              {selectedReconciliationRun.ruleCode}
+                            </small>
+                            <small>{formatTimestamp(selectedReconciliationRun.ranAtMs)}</small>
+                          </span>
+                          {reconciliationExceptions.slice(0, 100).map((exception) => (
+                            <span key={exception.reconciliationExceptionId}>
+                              <strong>
+                                {exception.side} ·{" "}
+                                {formatMinorUnitAmount(
+                                  exception.amountMinor,
+                                  selectedReconciliationAmountScale,
+                                )}{" "}
+                                · {exception.exceptionCode}
+                              </strong>
+                              <small>
+                                {exception.descriptionText ?? exception.matchKey} ·{" "}
+                                {exception.sourceKind}
+                              </small>
+                              <small>
+                                {exception.sheetName ?? "Controlled source"}
+                                {exception.sourceRowNumber
+                                  ? "!row " + exception.sourceRowNumber
+                                  : ""}{" "}
+                                · row SHA{" "}
+                                {exception.sourceRowHashHex
+                                  ? exception.sourceRowHashHex.slice(0, 16) + "…"
+                                  : "n/a"}{" "}
+                                · source SHA {exception.sourceSha256Hex.slice(0, 16)}…
+                              </small>
+                              <small>
+                                Controlled ID{" "}
+                                {exception.controlledEvidenceVersionId.slice(0, 18)}…
+                              </small>
+                            </span>
+                          ))}
+                        </div>
+                        {reconciliationExceptions.length > 100 ? (
+                          <p className="evidence-integrity-note">
+                            Showing the first 100 of{" "}
+                            {reconciliationExceptions.length.toLocaleString()} immutable
+                            exceptions.
+                          </p>
+                        ) : selectedReconciliationRun.exceptionCount === 0 ? (
+                          <p className="evidence-integrity-note">
+                            This run has no exceptions: every opening item matched an exact closing
+                            item under the stored deterministic rule.
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Run or select an immutable reconciliation to inspect its result.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
                         <span className="workspace-label">ACCOUNT LINKAGE</span>
                         <h3>Ledger → Trial Balance mapping</h3>
                       </div>
