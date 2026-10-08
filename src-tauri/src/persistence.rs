@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 18;
+const LATEST_SCHEMA_VERSION: i64 = 19;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -118,6 +118,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 18,
         name: "reconciliation_framework",
         sql: include_str!("../migrations/0018_reconciliation_framework.sql"),
+    },
+    Migration {
+        version: 19,
+        name: "statutory_compliance",
+        sql: include_str!("../migrations/0019_statutory_compliance.sql"),
     },
 ];
 
@@ -349,6 +354,58 @@ pub struct FirmLibraryVersionRecord {
     pub definition_json: String,
     pub definition_hash: Vec<u8>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceRequirementRecord {
+    pub statutory_compliance_requirement_id: String,
+    pub engagement_id: String,
+    pub firm_library_item_id: String,
+    pub firm_library_version_id: String,
+    pub requirement_name: String,
+    pub requirement_description: Option<String>,
+    pub version_number: u64,
+    pub definition_json: String,
+    pub definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceAssessmentRecord {
+    pub statutory_compliance_assessment_id: String,
+    pub statutory_compliance_requirement_id: String,
+    pub version_number: u64,
+    pub supersedes_assessment_id: Option<String>,
+    pub applicability: String,
+    pub due_date: Option<String>,
+    pub actual_compliance_date: Option<String>,
+    pub status: String,
+    pub exception_text: Option<String>,
+    pub conclusion: Option<String>,
+    pub evidence_count: u64,
+    pub assessed_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceEvidenceRecord {
+    pub statutory_compliance_evidence_link_id: String,
+    pub statutory_compliance_assessment_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub linked_at_ms: i64,
+}
+
+pub struct StatutoryComplianceAssessmentDefinition<'a> {
+    pub statutory_compliance_requirement_id: &'a str,
+    pub applicability: &'a str,
+    pub due_date: Option<&'a str>,
+    pub actual_compliance_date: Option<&'a str>,
+    pub status: &'a str,
+    pub exception_text: Option<&'a str>,
+    pub conclusion: Option<&'a str>,
+    pub controlled_evidence_version_ids: &'a [String],
 }
 
 #[derive(Debug, Clone)]
