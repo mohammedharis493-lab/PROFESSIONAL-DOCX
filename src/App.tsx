@@ -3439,8 +3439,7 @@ export default function App() {
     }
   }
 
-  async function searchComplianceEvidence(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function searchComplianceEvidence() {
     const queryText = complianceEvidenceSearchQuery.trim();
     if (!queryText) return;
 
@@ -7699,10 +7698,7 @@ export default function App() {
                                 </div>
                               </div>
 
-                              <form
-                                className="workspace-inline-form"
-                                onSubmit={searchComplianceEvidence}
-                              >
+                              <div className="workspace-inline-form">
                                 <label>
                                   <span>Find supporting document</span>
                                   <input
@@ -7715,15 +7711,16 @@ export default function App() {
                                 </label>
                                 <button
                                   className="secondary-button"
-                                  type="submit"
+                                  type="button"
                                   disabled={
                                     complianceEvidenceSearchBusy ||
                                     !complianceEvidenceSearchQuery.trim()
                                   }
+                                  onClick={() => void searchComplianceEvidence()}
                                 >
                                   {complianceEvidenceSearchBusy ? "Searching…" : "Search"}
                                 </button>
-                              </form>
+                              </div>
 
                               {complianceEvidenceSearchResults.length ? (
                                 <div className="workspace-mini-list">
