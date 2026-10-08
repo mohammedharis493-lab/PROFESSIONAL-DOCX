@@ -7889,7 +7889,7 @@ pub fn create_reconciliation_run(
             })?;
         if evidence.0 != item.document_id
             || evidence.1 != item.source_content_version_id
-            || evidence.2 != item.source_sha256
+            || evidence.2.as_slice() != item.source_sha256.as_slice()
         {
             return Err(PersistenceError::Configuration(
                 "reconciliation item provenance does not match controlled evidence".to_string(),
@@ -7933,10 +7933,11 @@ pub fn create_reconciliation_run(
     let mut left_item_ids = BTreeMap::new();
     let mut right_item_ids = BTreeMap::new();
 
-    for (side, items, item_ids) in [
-        ("LEFT", &normalized_left, &mut left_item_ids),
-        ("RIGHT", &normalized_right, &mut right_item_ids),
-    ] {
+    let insert_items = |
+        side: &str,
+        items: &[NormalizedItem],
+        item_ids: &mut BTreeMap<String, String>,
+    | -> Result<(), PersistenceError> {
         for item in items {
             let reconciliation_item_id = Uuid::new_v4().to_string();
             transaction.execute(
@@ -7984,7 +7985,11 @@ pub fn create_reconciliation_run(
             )?;
             item_ids.insert(item.stable_id.clone(), reconciliation_item_id);
         }
-    }
+        Ok(())
+    };
+
+    insert_items("LEFT", &normalized_left, &mut left_item_ids)?;
+    insert_items("RIGHT", &normalized_right, &mut right_item_ids)?;
 
     for matched in &outcome.matches {
         let left_item_id = left_item_ids
