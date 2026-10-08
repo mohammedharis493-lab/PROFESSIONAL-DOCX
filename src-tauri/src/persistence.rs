@@ -4361,21 +4361,18 @@ fn normalize_firm_library_definition(
     Ok((canonical, hash))
 }
 
-fn normalize_reconciliation_parameters(
-    parameters_json: &str,
-) -> Result<String, PersistenceError> {
+fn normalize_reconciliation_parameters(parameters_json: &str) -> Result<String, PersistenceError> {
     if parameters_json.len() > RECONCILIATION_PARAMETERS_MAX_BYTES {
         return Err(PersistenceError::Configuration(format!(
             "reconciliation parameters must be at most {RECONCILIATION_PARAMETERS_MAX_BYTES} bytes"
         )));
     }
 
-    let parameters: serde_json::Value =
-        serde_json::from_str(parameters_json).map_err(|error| {
-            PersistenceError::Configuration(format!(
-                "reconciliation parameters must be valid JSON: {error}"
-            ))
-        })?;
+    let parameters: serde_json::Value = serde_json::from_str(parameters_json).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "reconciliation parameters must be valid JSON: {error}"
+        ))
+    })?;
     if !parameters.is_object() {
         return Err(PersistenceError::Configuration(
             "reconciliation parameters must be a JSON object".to_string(),
@@ -4389,9 +4386,7 @@ fn normalize_reconciliation_parameters(
     })
 }
 
-fn normalize_reconciliation_source_identifier(
-    value: &str,
-) -> Result<String, PersistenceError> {
+fn normalize_reconciliation_source_identifier(value: &str) -> Result<String, PersistenceError> {
     let normalized = value.trim();
     let count = normalized.chars().count();
     if count == 0 || count > 240 || normalized.chars().any(|character| character.is_control()) {
@@ -7695,19 +7690,15 @@ pub fn create_reconciliation_run(
         source_row_hash: Option<Vec<u8>>,
     }
 
-    fn normalize_item(
-        item: &ReconciliationItemInput,
-    ) -> Result<NormalizedItem, PersistenceError> {
+    fn normalize_item(item: &ReconciliationItemInput) -> Result<NormalizedItem, PersistenceError> {
         let match_key = normalize_reconciliation_match_key(&item.match_key)?;
         let source_kind = workflow_state_key(&item.source_kind);
         if source_kind.is_empty() || source_kind.chars().count() > 80 {
             return Err(PersistenceError::Configuration(
-                "reconciliation source kind must contain 1 to 80 normalized characters"
-                    .to_string(),
+                "reconciliation source kind must contain 1 to 80 normalized characters".to_string(),
             ));
         }
-        let source_entity_id =
-            normalize_reconciliation_source_identifier(&item.source_entity_id)?;
+        let source_entity_id = normalize_reconciliation_source_identifier(&item.source_entity_id)?;
 
         let event_date_text = match item.event_date_text.as_deref() {
             Some(value) => {
@@ -7812,11 +7803,8 @@ pub fn create_reconciliation_run(
             amount_minor: item.amount_minor,
         })
         .collect::<Vec<_>>();
-    let outcome = crate::reconciliation::reconcile_exact_key_amount(
-        &engine_left,
-        &engine_right,
-    )
-    .map_err(PersistenceError::Configuration)?;
+    let outcome = crate::reconciliation::reconcile_exact_key_amount(&engine_left, &engine_right)
+        .map_err(PersistenceError::Configuration)?;
 
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -7899,8 +7887,8 @@ pub fn create_reconciliation_run(
 
     let reconciliation_run_id = Uuid::new_v4().to_string();
     let now = now_unix_ms()?;
-    let exception_count = outcome.unmatched_left_stable_ids.len()
-        + outcome.unmatched_right_stable_ids.len();
+    let exception_count =
+        outcome.unmatched_left_stable_ids.len() + outcome.unmatched_right_stable_ids.len();
 
     transaction.execute(
         "INSERT INTO reconciliation_runs (
@@ -7933,11 +7921,10 @@ pub fn create_reconciliation_run(
     let mut left_item_ids = BTreeMap::new();
     let mut right_item_ids = BTreeMap::new();
 
-    let insert_items = |
-        side: &str,
-        items: &[NormalizedItem],
-        item_ids: &mut BTreeMap<String, String>,
-    | -> Result<(), PersistenceError> {
+    let insert_items = |side: &str,
+                        items: &[NormalizedItem],
+                        item_ids: &mut BTreeMap<String, String>|
+     -> Result<(), PersistenceError> {
         for item in items {
             let reconciliation_item_id = Uuid::new_v4().to_string();
             transaction.execute(
@@ -7992,13 +7979,11 @@ pub fn create_reconciliation_run(
     insert_items("RIGHT", &normalized_right, &mut right_item_ids)?;
 
     for matched in &outcome.matches {
-        let left_item_id = left_item_ids
-            .get(&matched.left_stable_id)
-            .ok_or_else(|| {
-                PersistenceError::Configuration(
-                    "reconciliation left match resolution failed".to_string(),
-                )
-            })?;
+        let left_item_id = left_item_ids.get(&matched.left_stable_id).ok_or_else(|| {
+            PersistenceError::Configuration(
+                "reconciliation left match resolution failed".to_string(),
+            )
+        })?;
         let right_item_id = right_item_ids
             .get(&matched.right_stable_id)
             .ok_or_else(|| {
@@ -13523,26 +13508,24 @@ mod tests {
             .contains("trial balance schedule mappings are immutable"));
 
         let reconciliation_row_hash = |label: &str| Sha256::digest(label.as_bytes()).to_vec();
-        let reconciliation_item = |
-            source_entity_id: &str,
-            match_key: &str,
-            amount_minor: i64,
-            source_row_number: u64,
-        | ReconciliationItemInput {
-            match_key: match_key.to_string(),
-            amount_minor,
-            event_date_text: Some("2026-03-31".to_string()),
-            description_text: Some(format!("Reconciliation item {source_entity_id}")),
-            source_kind: "TEST_ROW".to_string(),
-            source_entity_id: source_entity_id.to_string(),
-            controlled_evidence_version_id: controlled_evidence_version_id.clone(),
-            document_id: document_id.clone(),
-            source_content_version_id: content_version_id.clone(),
-            source_sha256: source_sha256.clone(),
-            sheet_name: Some("Recon".to_string()),
-            source_row_number: Some(source_row_number),
-            source_row_hash: Some(reconciliation_row_hash(source_entity_id)),
-        };
+        let reconciliation_item =
+            |source_entity_id: &str, match_key: &str, amount_minor: i64, source_row_number: u64| {
+                ReconciliationItemInput {
+                    match_key: match_key.to_string(),
+                    amount_minor,
+                    event_date_text: Some("2026-03-31".to_string()),
+                    description_text: Some(format!("Reconciliation item {source_entity_id}")),
+                    source_kind: "TEST_ROW".to_string(),
+                    source_entity_id: source_entity_id.to_string(),
+                    controlled_evidence_version_id: controlled_evidence_version_id.clone(),
+                    document_id: document_id.clone(),
+                    source_content_version_id: content_version_id.clone(),
+                    source_sha256: source_sha256.clone(),
+                    sheet_name: Some("Recon".to_string()),
+                    source_row_number: Some(source_row_number),
+                    source_row_hash: Some(reconciliation_row_hash(source_entity_id)),
+                }
+            };
 
         let left_reconciliation_items = vec![
             reconciliation_item("L-A", "INV-100", 10_000, 10),
