@@ -649,6 +649,16 @@ struct TrialBalanceMappingTarget {
     source_row_hash: Vec<u8>,
 }
 
+struct TrialBalanceReconciliationSource {
+    engagement_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256: Vec<u8>,
+    sheet_name: String,
+    amount_scale: u32,
+}
+
 struct FirmLibraryItemIdentity {
     category: String,
     name: String,
@@ -8088,7 +8098,7 @@ pub fn run_trial_balance_opening_closing_reconciliation(
     trial_balance_import_id: &str,
 ) -> Result<ReconciliationRunRecord, PersistenceError> {
     let connection = open_configured_connection(database_path)?;
-    let import = connection
+    let source = connection
         .query_row(
             "SELECT
                 engagement_id,
@@ -8103,28 +8113,19 @@ pub fn run_trial_balance_opening_closing_reconciliation(
             [trial_balance_import_id],
             |row| {
                 let amount_scale: i64 = row.get(6)?;
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    amount_scale.max(0) as u32,
-                ))
+                Ok(TrialBalanceReconciliationSource {
+                    engagement_id: row.get(0)?,
+                    controlled_evidence_version_id: row.get(1)?,
+                    document_id: row.get(2)?,
+                    source_content_version_id: row.get(3)?,
+                    source_sha256: row.get(4)?,
+                    sheet_name: row.get(5)?,
+                    amount_scale: amount_scale.max(0) as u32,
+                })
             },
         )
         .optional()?;
-    let Some((
-        engagement_id,
-        controlled_evidence_version_id,
-        document_id,
-        source_content_version_id,
-        source_sha256,
-        sheet_name,
-        amount_scale,
-    )) = import
-    else {
+    let Some(source) = source else {
         return Err(PersistenceError::Configuration(format!(
             "trial balance import {trial_balance_import_id} does not exist"
         )));
@@ -8149,11 +8150,11 @@ pub fn run_trial_balance_opening_closing_reconciliation(
             description_text: Some(description_text),
             source_kind: "TRIAL_BALANCE_ACCOUNT".to_string(),
             source_entity_id: account.trial_balance_account_id.clone(),
-            controlled_evidence_version_id: controlled_evidence_version_id.clone(),
-            document_id: document_id.clone(),
-            source_content_version_id: source_content_version_id.clone(),
-            source_sha256: source_sha256.clone(),
-            sheet_name: Some(sheet_name.clone()),
+            controlled_evidence_version_id: source.controlled_evidence_version_id.clone(),
+            document_id: source.document_id.clone(),
+            source_content_version_id: source.source_content_version_id.clone(),
+            source_sha256: source.source_sha256.clone(),
+            sheet_name: Some(source.sheet_name.clone()),
             source_row_number: Some(account.source_row_number),
             source_row_hash: Some(account.source_row_hash.clone()),
         };
@@ -8170,7 +8171,7 @@ pub fn run_trial_balance_opening_closing_reconciliation(
 
     let parameters_json = json!({
         "trialBalanceImportId": trial_balance_import_id,
-        "amountScale": amount_scale,
+        "amountScale": source.amount_scale,
         "leftSide": "OPENING",
         "rightSide": "CLOSING",
         "comparison": "EXACT_ACCOUNT_AND_AMOUNT"
@@ -8180,7 +8181,7 @@ pub fn run_trial_balance_opening_closing_reconciliation(
     create_reconciliation_run(
         database_path,
         ReconciliationRunDefinition {
-            engagement_id: &engagement_id,
+            engagement_id: &source.engagement_id,
             reconciliation_type: "TRIAL_BALANCE_OPENING_CLOSING",
             title: "Trial Balance opening vs closing exact reconciliation",
             parameters_json: &parameters_json,
