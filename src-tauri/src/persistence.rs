@@ -18,8 +18,9 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 17;
+const LATEST_SCHEMA_VERSION: i64 = 18;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
+const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
 struct Migration {
     version: i64,
@@ -112,6 +113,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 17,
         name: "fs_schedule_links",
         sql: include_str!("../migrations/0017_fs_schedule_links.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "reconciliation_framework",
+        sql: include_str!("../migrations/0018_reconciliation_framework.sql"),
     },
 ];
 
@@ -569,6 +575,70 @@ pub struct FinancialStatementScheduleLinkRecord {
     pub version_number: u64,
     pub supersedes_link_id: Option<String>,
     pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReconciliationItemInput {
+    pub match_key: String,
+    pub amount_minor: i64,
+    pub event_date_text: Option<String>,
+    pub description_text: Option<String>,
+    pub source_kind: String,
+    pub source_entity_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: Option<String>,
+    pub source_row_number: Option<u64>,
+    pub source_row_hash: Option<Vec<u8>>,
+}
+
+pub struct ReconciliationRunDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub reconciliation_type: &'a str,
+    pub title: &'a str,
+    pub parameters_json: &'a str,
+    pub left_items: &'a [ReconciliationItemInput],
+    pub right_items: &'a [ReconciliationItemInput],
+}
+
+#[derive(Debug, Clone)]
+pub struct ReconciliationRunRecord {
+    pub reconciliation_run_id: String,
+    pub engagement_id: String,
+    pub reconciliation_type: String,
+    pub title: String,
+    pub rule_code: String,
+    pub parameters_json: String,
+    pub left_item_count: u64,
+    pub right_item_count: u64,
+    pub matched_pair_count: u64,
+    pub exception_count: u64,
+    pub ran_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReconciliationExceptionRecord {
+    pub reconciliation_exception_id: String,
+    pub reconciliation_run_id: String,
+    pub reconciliation_item_id: String,
+    pub exception_code: String,
+    pub side: String,
+    pub match_key: String,
+    pub amount_minor: i64,
+    pub event_date_text: Option<String>,
+    pub description_text: Option<String>,
+    pub source_kind: String,
+    pub source_entity_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub sheet_name: Option<String>,
+    pub source_row_number: Option<u64>,
+    pub source_row_hash: Option<Vec<u8>>,
+    pub created_at_ms: i64,
 }
 
 struct TrialBalanceMappingTarget {
@@ -4289,6 +4359,74 @@ fn normalize_firm_library_definition(
     })?;
     let hash = Sha256::digest(canonical.as_bytes()).to_vec();
     Ok((canonical, hash))
+}
+
+fn normalize_reconciliation_parameters(
+    parameters_json: &str,
+) -> Result<String, PersistenceError> {
+    if parameters_json.len() > RECONCILIATION_PARAMETERS_MAX_BYTES {
+        return Err(PersistenceError::Configuration(format!(
+            "reconciliation parameters must be at most {RECONCILIATION_PARAMETERS_MAX_BYTES} bytes"
+        )));
+    }
+
+    let parameters: serde_json::Value =
+        serde_json::from_str(parameters_json).map_err(|error| {
+            PersistenceError::Configuration(format!(
+                "reconciliation parameters must be valid JSON: {error}"
+            ))
+        })?;
+    if !parameters.is_object() {
+        return Err(PersistenceError::Configuration(
+            "reconciliation parameters must be a JSON object".to_string(),
+        ));
+    }
+
+    serde_json::to_string(&parameters).map_err(|error| {
+        PersistenceError::Configuration(format!(
+            "reconciliation parameters could not be serialized: {error}"
+        ))
+    })
+}
+
+fn normalize_reconciliation_source_identifier(
+    value: &str,
+) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 240 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation source identifier must contain 1 to 240 printable characters"
+                .to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_reconciliation_match_key(value: &str) -> Result<String, PersistenceError> {
+    let normalized = value.trim();
+    let count = normalized.chars().count();
+    if count == 0 || count > 500 || normalized.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation match key must contain 1 to 500 printable characters".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_reconciliation_sheet_name(
+    value: Option<&str>,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > 255 || value.chars().any(|character| character.is_control()) {
+        return Err(PersistenceError::Configuration(
+            "reconciliation worksheet must contain at most 255 printable characters".to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn normalize_review_note_worksheet(value: &str) -> Result<String, PersistenceError> {
