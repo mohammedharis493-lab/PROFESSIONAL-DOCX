@@ -2041,7 +2041,10 @@ fn create_internal_audit_process(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<InternalAuditProcessDto, String> {
     validate_uuid(&engagement_id, "engagement")?;
-    validate_optional_uuid(parent_process_id.as_deref(), "internal-audit-parent-process")?;
+    validate_optional_uuid(
+        parent_process_id.as_deref(),
+        "internal-audit-parent-process",
+    )?;
     persistence::create_internal_audit_process(
         database.path(),
         &engagement_id,
