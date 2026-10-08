@@ -408,6 +408,25 @@ pub struct StatutoryComplianceAssessmentDefinition<'a> {
     pub controlled_evidence_version_ids: &'a [String],
 }
 
+struct NormalizedStatutoryComplianceAssessment {
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+}
+
+struct StatutoryComplianceLibraryVersionIdentity {
+    firm_library_item_id: String,
+    requirement_name: String,
+    requirement_description: Option<String>,
+    service_type_id: Option<String>,
+    version_number: i64,
+    definition_json: String,
+    definition_hash: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LedgerImportRecord {
     pub ledger_import_id: String,
@@ -3821,7 +3840,7 @@ pub fn complete_evidence_capture(
                 "captureJobId": completion.capture_job_id,
                 "fileInstanceId": completion.file_instance_id,
                 "sourceContentVersionId": source_content_version_id,
-                "versionNumber": version_number,
+                "versionNumber": library_version.version_number,
                 "sizeBytes": completion.size_bytes
             })
             .to_string()
@@ -4524,17 +4543,7 @@ fn normalize_statutory_compliance_assessment(
     exception_text: Option<&str>,
     conclusion: Option<&str>,
     controlled_evidence_version_ids: &[String],
-) -> Result<
-    (
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-    ),
-    PersistenceError,
-> {
+) -> Result<NormalizedStatutoryComplianceAssessment, PersistenceError> {
     let applicability = normalize_statutory_compliance_state(
         applicability,
         "statutory compliance applicability",
@@ -4578,8 +4587,8 @@ fn normalize_statutory_compliance_assessment(
             if applicability != "UNDETERMINED"
                 || due_date.is_some()
                 || actual_compliance_date.is_some()
-                || exception_text.is_some()
-                || conclusion.is_some()
+                || normalized.exception_text.is_some()
+                || normalized.conclusion.is_some()
                 || !controlled_evidence_version_ids.is_empty()
             {
                 return Err(PersistenceError::Configuration(
@@ -4612,7 +4621,7 @@ fn normalize_statutory_compliance_assessment(
                 ));
             }
             if let (Some(due_date), Some(actual_date)) =
-                (due_date.as_deref(), actual_compliance_date.as_deref())
+                (normalized.due_date.as_deref(), normalized.actual_compliance_date.as_deref())
             {
                 if actual_date > due_date {
                     return Err(PersistenceError::Configuration(
@@ -4647,14 +4656,14 @@ fn normalize_statutory_compliance_assessment(
         _ => unreachable!("status allow-list is validated above"),
     }
 
-    Ok((
-        applicability,
-        due_date,
-        actual_compliance_date,
-        status,
-        exception_text,
-        conclusion,
-    ))
+    Ok(NormalizedStatutoryComplianceAssessment {
+        applicability: normalized.applicability,
+        due_date: normalized.due_date,
+        actual_compliance_date: normalized.actual_compliance_date,
+        status: normalized.status,
+        exception_text: normalized.exception_text,
+        conclusion: normalized.conclusion,
+    })
 }
 
 fn normalize_reconciliation_parameters(parameters_json: &str) -> Result<String, PersistenceError> {
@@ -5179,7 +5188,7 @@ pub fn create_engagement(
             &name,
             period_start.as_deref(),
             period_end.as_deref(),
-            &status,
+            &normalized.status,
             now
         ],
     )?;
@@ -5635,7 +5644,7 @@ pub fn create_firm_library_item(
             archived_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
         params![
-            &firm_library_item_id,
+            &library_version.firm_library_item_id,
             &category,
             &name,
             &normalized_name,
@@ -5655,9 +5664,9 @@ pub fn create_firm_library_item(
          ) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
         params![
             &firm_library_version_id,
-            &firm_library_item_id,
+            &library_version.firm_library_item_id,
             &definition_json,
-            &definition_hash,
+            &library_version.definition_hash,
             now
         ],
     )?;
@@ -5667,7 +5676,7 @@ pub fn create_firm_library_item(
         DomainAuditEvent {
             event_type: "FIRM_LIBRARY_ITEM_CREATED",
             entity_type: "FIRM_LIBRARY_ITEM",
-            entity_id: &firm_library_item_id,
+            entity_id: &library_version.firm_library_item_id,
             related_entity_type: Some("FIRM_LIBRARY_VERSION"),
             related_entity_id: Some(&firm_library_version_id),
             occurred_at_ms: now,
@@ -5675,7 +5684,7 @@ pub fn create_firm_library_item(
                 "category": category.as_str(),
                 "serviceTypeId": service_type_id,
                 "versionNumber": 1,
-                "definitionHash": bytes_to_lower_hex(&definition_hash)
+                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash)
             }),
         },
     )?;
@@ -5762,7 +5771,7 @@ pub fn publish_firm_library_version(
             firm_library_item_id,
             next_version_number,
             &definition_json,
-            &definition_hash,
+            &library_version.definition_hash,
             now
         ],
     )?;
@@ -5779,7 +5788,7 @@ pub fn publish_firm_library_version(
             details: json!({
                 "category": item.category.as_str(),
                 "versionNumber": next_version_number,
-                "definitionHash": bytes_to_lower_hex(&definition_hash)
+                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash)
             }),
         },
     )?;
@@ -5925,15 +5934,7 @@ pub fn create_statutory_compliance_requirement(
         PersistenceError::Configuration(format!("engagement {engagement_id} does not exist"))
     })?;
 
-    let library_version: Option<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        i64,
-        String,
-        Vec<u8>,
-    )> = transaction
+    let library_version: Option<StatutoryComplianceLibraryVersionIdentity> = transaction
         .query_row(
             "SELECT
                     i.firm_library_item_id,
@@ -5951,34 +5952,26 @@ pub fn create_statutory_compliance_requirement(
                    AND i.archived_at_ms IS NULL",
             [firm_library_version_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
+                Ok(StatutoryComplianceLibraryVersionIdentity {
+                    firm_library_item_id: row.get(0)?,
+                    requirement_name: row.get(1)?,
+                    requirement_description: row.get(2)?,
+                    service_type_id: row.get(3)?,
+                    version_number: row.get(4)?,
+                    definition_json: row.get(5)?,
+                    definition_hash: row.get(6)?,
+                })
             },
         )
         .optional()?;
-    let Some((
-        firm_library_item_id,
-        requirement_name,
-        requirement_description,
-        requirement_service_type_id,
-        version_number,
-        definition_json,
-        definition_hash,
-    )) = library_version
-    else {
+    let Some(library_version) = library_version else {
         return Err(PersistenceError::Configuration(format!(
             "statutory compliance library version {firm_library_version_id} does not exist"
         )));
     };
 
-    if requirement_service_type_id
+    if library_version
+        .service_type_id
         .as_deref()
         .is_some_and(|value| value != engagement_service_type_id)
     {
@@ -5987,7 +5980,7 @@ pub fn create_statutory_compliance_requirement(
                 .to_string(),
         ));
     }
-    if definition_hash.len() != 32 {
+    if library_version.definition_hash.len() != 32 {
         return Err(PersistenceError::Configuration(
             "statutory compliance requirement definition hash is invalid".to_string(),
         ));
@@ -5999,7 +5992,7 @@ pub fn create_statutory_compliance_requirement(
             WHERE engagement_id = ?1
               AND firm_library_item_id = ?2
         )",
-        params![engagement_id, &firm_library_item_id],
+        params![engagement_id, &library_version.firm_library_item_id],
         |row| row.get(0),
     )?;
     if existing {
@@ -6026,11 +6019,11 @@ pub fn create_statutory_compliance_requirement(
         params![
             &requirement_id,
             engagement_id,
-            &firm_library_item_id,
+            &library_version.firm_library_item_id,
             firm_library_version_id,
-            &requirement_name,
-            requirement_description.as_deref(),
-            &definition_hash,
+            &library_version.requirement_name,
+            library_version.requirement_description.as_deref(),
+            &library_version.definition_hash,
             now
         ],
     )?;
@@ -6064,7 +6057,7 @@ pub fn create_statutory_compliance_requirement(
                 "firmLibraryItemId": firm_library_item_id,
                 "firmLibraryVersionId": firm_library_version_id,
                 "versionNumber": version_number,
-                "definitionHash": bytes_to_lower_hex(&definition_hash),
+                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash),
                 "initialAssessmentId": assessment_id
             }),
         },
@@ -6074,13 +6067,13 @@ pub fn create_statutory_compliance_requirement(
     Ok(StatutoryComplianceRequirementRecord {
         statutory_compliance_requirement_id: requirement_id,
         engagement_id: engagement_id.to_string(),
-        firm_library_item_id,
+        firm_library_item_id: library_version.firm_library_item_id,
         firm_library_version_id: firm_library_version_id.to_string(),
-        requirement_name,
-        requirement_description,
-        version_number: version_number.max(0) as u64,
-        definition_json,
-        definition_hash,
+        requirement_name: library_version.requirement_name,
+        requirement_description: library_version.requirement_description,
+        version_number: library_version.version_number.max(0) as u64,
+        definition_json: library_version.definition_json,
+        definition_hash: library_version.definition_hash,
         created_at_ms: now,
     })
 }
@@ -6134,16 +6127,15 @@ pub fn create_statutory_compliance_assessment(
     database_path: &Path,
     definition: StatutoryComplianceAssessmentDefinition<'_>,
 ) -> Result<StatutoryComplianceAssessmentRecord, PersistenceError> {
-    let (applicability, due_date, actual_compliance_date, status, exception_text, conclusion) =
-        normalize_statutory_compliance_assessment(
-            definition.applicability,
-            definition.due_date,
-            definition.actual_compliance_date,
-            definition.status,
-            definition.exception_text,
-            definition.conclusion,
-            definition.controlled_evidence_version_ids,
-        )?;
+    let normalized = normalize_statutory_compliance_assessment(
+        definition.applicability,
+        definition.due_date,
+        definition.actual_compliance_date,
+        definition.status,
+        definition.exception_text,
+        definition.conclusion,
+        definition.controlled_evidence_version_ids,
+    )?;
 
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -6259,12 +6251,12 @@ pub fn create_statutory_compliance_assessment(
             definition.statutory_compliance_requirement_id,
             next_version_number,
             &supersedes_assessment_id,
-            &applicability,
+            &normalized.applicability,
             due_date.as_deref(),
             actual_compliance_date.as_deref(),
             &status,
-            exception_text.as_deref(),
-            conclusion.as_deref(),
+            normalized.exception_text.as_deref(),
+            normalized.conclusion.as_deref(),
             now
         ],
     )?;
@@ -6307,10 +6299,10 @@ pub fn create_statutory_compliance_assessment(
                 "engagementId": engagement_id,
                 "versionNumber": next_version_number,
                 "supersedesAssessmentId": supersedes_assessment_id,
-                "applicability": applicability,
-                "dueDate": due_date,
-                "actualComplianceDate": actual_compliance_date,
-                "status": status,
+                "applicability": normalized.applicability,
+                "dueDate": normalized.due_date,
+                "actualComplianceDate": normalized.actual_compliance_date,
+                "status": normalized.status,
                 "evidenceCount": evidence.len(),
                 "hasException": exception_text.is_some(),
                 "hasConclusion": conclusion.is_some()
