@@ -458,9 +458,7 @@ struct StatutoryComplianceRequirementDto {
     created_at_ms: i64,
 }
 
-impl From<persistence::StatutoryComplianceRequirementRecord>
-    for StatutoryComplianceRequirementDto
-{
+impl From<persistence::StatutoryComplianceRequirementRecord> for StatutoryComplianceRequirementDto {
     fn from(value: persistence::StatutoryComplianceRequirementRecord) -> Self {
         Self {
             statutory_compliance_requirement_id: value.statutory_compliance_requirement_id,
@@ -494,9 +492,7 @@ struct StatutoryComplianceAssessmentDto {
     assessed_at_ms: i64,
 }
 
-impl From<persistence::StatutoryComplianceAssessmentRecord>
-    for StatutoryComplianceAssessmentDto
-{
+impl From<persistence::StatutoryComplianceAssessmentRecord> for StatutoryComplianceAssessmentDto {
     fn from(value: persistence::StatutoryComplianceAssessmentRecord) -> Self {
         Self {
             statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
@@ -530,8 +526,7 @@ struct StatutoryComplianceEvidenceDto {
 impl From<persistence::StatutoryComplianceEvidenceRecord> for StatutoryComplianceEvidenceDto {
     fn from(value: persistence::StatutoryComplianceEvidenceRecord) -> Self {
         Self {
-            statutory_compliance_evidence_link_id: value
-                .statutory_compliance_evidence_link_id,
+            statutory_compliance_evidence_link_id: value.statutory_compliance_evidence_link_id,
             statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
             controlled_evidence_version_id: value.controlled_evidence_version_id,
             document_id: value.document_id,
