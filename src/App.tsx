@@ -115,6 +115,44 @@ type FirmLibraryVersion = {
   createdAtMs: number;
 };
 
+type StatutoryComplianceRequirement = {
+  statutoryComplianceRequirementId: string;
+  engagementId: string;
+  firmLibraryItemId: string;
+  firmLibraryVersionId: string;
+  requirementName: string;
+  requirementDescription: string | null;
+  versionNumber: number;
+  definitionJson: string;
+  definitionHashHex: string;
+  createdAtMs: number;
+};
+
+type StatutoryComplianceAssessment = {
+  statutoryComplianceAssessmentId: string;
+  statutoryComplianceRequirementId: string;
+  versionNumber: number;
+  supersedesAssessmentId: string | null;
+  applicability: string;
+  dueDate: string | null;
+  actualComplianceDate: string | null;
+  status: string;
+  exceptionText: string | null;
+  conclusion: string | null;
+  evidenceCount: number;
+  assessedAtMs: number;
+};
+
+type StatutoryComplianceEvidence = {
+  statutoryComplianceEvidenceLinkId: string;
+  statutoryComplianceAssessmentId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1178,6 +1216,33 @@ export default function App() {
   const [newFirmLibraryServiceTypeId, setNewFirmLibraryServiceTypeId] = useState("");
   const [newFirmLibraryContent, setNewFirmLibraryContent] = useState("");
   const [firmLibraryDraftContent, setFirmLibraryDraftContent] = useState("");
+  const [statutoryComplianceRequirements, setStatutoryComplianceRequirements] =
+    useState<StatutoryComplianceRequirement[]>([]);
+  const [selectedStatutoryComplianceRequirementId, setSelectedStatutoryComplianceRequirementId] =
+    useState<string | null>(null);
+  const [statutoryComplianceAssessments, setStatutoryComplianceAssessments] =
+    useState<StatutoryComplianceAssessment[]>([]);
+  const [selectedStatutoryComplianceAssessmentId, setSelectedStatutoryComplianceAssessmentId] =
+    useState<string | null>(null);
+  const [statutoryComplianceEvidence, setStatutoryComplianceEvidence] =
+    useState<StatutoryComplianceEvidence[]>([]);
+  const [newComplianceRequirementVersionId, setNewComplianceRequirementVersionId] = useState("");
+  const [complianceStatus, setComplianceStatus] = useState("PENDING");
+  const [complianceDueDate, setComplianceDueDate] = useState("");
+  const [complianceActualDate, setComplianceActualDate] = useState("");
+  const [complianceExceptionText, setComplianceExceptionText] = useState("");
+  const [complianceConclusion, setComplianceConclusion] = useState("");
+  const [complianceEvidenceVersionIds, setComplianceEvidenceVersionIds] = useState<string[]>([]);
+  const [complianceEvidenceSearchQuery, setComplianceEvidenceSearchQuery] = useState("");
+  const [complianceEvidenceSearchResults, setComplianceEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedComplianceEvidenceDocument, setSelectedComplianceEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [complianceEvidenceVersionHistory, setComplianceEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedComplianceControlledVersionId, setSelectedComplianceControlledVersionId] =
+    useState("");
+  const [complianceEvidenceSearchBusy, setComplianceEvidenceSearchBusy] = useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -1585,6 +1650,22 @@ export default function App() {
     setSelectedFsControlledVersionId("");
     setFsLocationKind("PAGE");
     setFsLocationValue("1");
+    setStatutoryComplianceRequirements([]);
+    setSelectedStatutoryComplianceRequirementId(null);
+    setStatutoryComplianceAssessments([]);
+    setSelectedStatutoryComplianceAssessmentId(null);
+    setStatutoryComplianceEvidence([]);
+    setNewComplianceRequirementVersionId("");
+    setComplianceStatus("PENDING");
+    setComplianceDueDate("");
+    setComplianceActualDate("");
+    setComplianceExceptionText("");
+    setComplianceConclusion("");
+    setComplianceEvidenceVersionIds([]);
+    setComplianceEvidenceSearchResults([]);
+    setSelectedComplianceEvidenceDocument(null);
+    setComplianceEvidenceVersionHistory([]);
+    setSelectedComplianceControlledVersionId("");
     try {
       const [
         areas,
@@ -1596,6 +1677,7 @@ export default function App() {
         scheduleRecords,
         statementLinkRecords,
         reconciliationRunRecords,
+        complianceRequirementRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1611,6 +1693,9 @@ export default function App() {
           { engagementId },
         ),
         invoke<ReconciliationRun[]>("list_reconciliation_runs", { engagementId }),
+        invoke<StatutoryComplianceRequirement[]>("list_statutory_compliance_requirements", {
+          engagementId,
+        }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1621,6 +1706,35 @@ export default function App() {
       setFinancialStatementSchedules(scheduleRecords);
       setFinancialStatementScheduleLinks(statementLinkRecords);
       setReconciliationRuns(reconciliationRunRecords);
+      setStatutoryComplianceRequirements(complianceRequirementRecords);
+      const firstComplianceRequirement = complianceRequirementRecords[0] ?? null;
+      setSelectedStatutoryComplianceRequirementId(
+        firstComplianceRequirement?.statutoryComplianceRequirementId ?? null,
+      );
+      if (firstComplianceRequirement) {
+        const assessments = await invoke<StatutoryComplianceAssessment[]>(
+          "list_statutory_compliance_assessments",
+          {
+            statutoryComplianceRequirementId:
+              firstComplianceRequirement.statutoryComplianceRequirementId,
+          },
+        );
+        setStatutoryComplianceAssessments(assessments);
+        const latestAssessment = assessments[0] ?? null;
+        setSelectedStatutoryComplianceAssessmentId(
+          latestAssessment?.statutoryComplianceAssessmentId ?? null,
+        );
+        if (latestAssessment) {
+          const evidence = await invoke<StatutoryComplianceEvidence[]>(
+            "list_statutory_compliance_evidence",
+            {
+              statutoryComplianceAssessmentId:
+                latestAssessment.statutoryComplianceAssessmentId,
+            },
+          );
+          setStatutoryComplianceEvidence(evidence);
+        }
+      }
       const latestTrialBalanceReconciliation =
         reconciliationRunRecords.find(
           (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
@@ -3197,6 +3311,250 @@ export default function App() {
     }
   }
 
+  async function selectStatutoryComplianceRequirement(
+    statutoryComplianceRequirementId: string | null,
+  ) {
+    setSelectedStatutoryComplianceRequirementId(statutoryComplianceRequirementId);
+    setStatutoryComplianceAssessments([]);
+    setSelectedStatutoryComplianceAssessmentId(null);
+    setStatutoryComplianceEvidence([]);
+    setComplianceEvidenceVersionIds([]);
+    setComplianceStatus("PENDING");
+    setComplianceDueDate("");
+    setComplianceActualDate("");
+    setComplianceExceptionText("");
+    setComplianceConclusion("");
+    if (!statutoryComplianceRequirementId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const assessments = await invoke<StatutoryComplianceAssessment[]>(
+        "list_statutory_compliance_assessments",
+        { statutoryComplianceRequirementId },
+      );
+      setStatutoryComplianceAssessments(assessments);
+      const latest = assessments[0] ?? null;
+      setSelectedStatutoryComplianceAssessmentId(
+        latest?.statutoryComplianceAssessmentId ?? null,
+      );
+      if (latest) {
+        const evidence = await invoke<StatutoryComplianceEvidence[]>(
+          "list_statutory_compliance_evidence",
+          { statutoryComplianceAssessmentId: latest.statutoryComplianceAssessmentId },
+        );
+        setStatutoryComplianceEvidence(evidence);
+        setComplianceEvidenceVersionIds(
+          evidence.map((item) => item.controlledEvidenceVersionId),
+        );
+        if (latest.status === "UNASSESSED") {
+          setComplianceStatus("PENDING");
+          setComplianceDueDate("");
+          setComplianceActualDate("");
+          setComplianceExceptionText("");
+          setComplianceConclusion("");
+        } else {
+          setComplianceStatus(latest.status);
+          setComplianceDueDate(latest.dueDate ?? "");
+          setComplianceActualDate(latest.actualComplianceDate ?? "");
+          setComplianceExceptionText(latest.exceptionText ?? "");
+          setComplianceConclusion(latest.conclusion ?? "");
+        }
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function openStatutoryComplianceAssessment(
+    statutoryComplianceAssessmentId: string,
+  ) {
+    setSelectedStatutoryComplianceAssessmentId(
+      statutoryComplianceAssessmentId || null,
+    );
+    setStatutoryComplianceEvidence([]);
+    if (!statutoryComplianceAssessmentId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const evidence = await invoke<StatutoryComplianceEvidence[]>(
+        "list_statutory_compliance_evidence",
+        { statutoryComplianceAssessmentId },
+      );
+      setStatutoryComplianceEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitStatutoryComplianceRequirement(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedEngagementId || !newComplianceRequirementVersionId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<StatutoryComplianceRequirement>(
+        "create_statutory_compliance_requirement",
+        {
+          engagementId: selectedEngagementId,
+          firmLibraryVersionId: newComplianceRequirementVersionId,
+        },
+      );
+      setStatutoryComplianceRequirements((current) => [created, ...current]);
+      setNewComplianceRequirementVersionId("");
+      await selectStatutoryComplianceRequirement(
+        created.statutoryComplianceRequirementId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setWorkspaceBusy(false);
+    }
+  }
+
+  function updateComplianceStatus(status: string) {
+    setComplianceStatus(status);
+    if (status === "UNASSESSED") {
+      setComplianceDueDate("");
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+      setComplianceConclusion("");
+      setComplianceEvidenceVersionIds([]);
+    } else if (status === "PENDING") {
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+    } else if (status === "COMPLIANT") {
+      setComplianceExceptionText("");
+    } else if (status === "EXCEPTION") {
+      // Dates and evidence remain available because they may explain a late or failed compliance.
+    } else if (status === "NOT_APPLICABLE") {
+      setComplianceDueDate("");
+      setComplianceActualDate("");
+      setComplianceExceptionText("");
+      setComplianceEvidenceVersionIds([]);
+    }
+  }
+
+  async function searchComplianceEvidence() {
+    const queryText = complianceEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setComplianceEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setComplianceEvidenceSearchResults(results);
+      setSelectedComplianceEvidenceDocument(null);
+      setComplianceEvidenceVersionHistory([]);
+      setSelectedComplianceControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setComplianceEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectComplianceEvidenceDocument(document: SearchResult) {
+    setComplianceEvidenceSearchBusy(true);
+    setSelectedComplianceEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setComplianceEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedComplianceControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setComplianceEvidenceVersionHistory([]);
+      setSelectedComplianceControlledVersionId("");
+    } finally {
+      setComplianceEvidenceSearchBusy(false);
+    }
+  }
+
+  function addComplianceEvidenceVersion() {
+    if (
+      !selectedComplianceControlledVersionId ||
+      complianceEvidenceVersionIds.includes(selectedComplianceControlledVersionId)
+    ) {
+      return;
+    }
+    setComplianceEvidenceVersionIds((current) => [
+      ...current,
+      selectedComplianceControlledVersionId,
+    ]);
+  }
+
+  async function submitStatutoryComplianceAssessment(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedStatutoryComplianceRequirementId) return;
+
+    const applicability =
+      complianceStatus === "UNASSESSED"
+        ? "UNDETERMINED"
+        : complianceStatus === "NOT_APPLICABLE"
+          ? "NOT_APPLICABLE"
+          : "APPLICABLE";
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<StatutoryComplianceAssessment>(
+        "create_statutory_compliance_assessment",
+        {
+          input: {
+            statutoryComplianceRequirementId:
+              selectedStatutoryComplianceRequirementId,
+            applicability,
+            dueDate: complianceDueDate || null,
+            actualComplianceDate: complianceActualDate || null,
+            status: complianceStatus,
+            exceptionText: complianceExceptionText.trim() || null,
+            conclusion: complianceConclusion.trim() || null,
+            controlledEvidenceVersionIds: complianceEvidenceVersionIds,
+          },
+        },
+      );
+      const [assessments, evidence] = await Promise.all([
+        invoke<StatutoryComplianceAssessment[]>(
+          "list_statutory_compliance_assessments",
+          {
+            statutoryComplianceRequirementId:
+              selectedStatutoryComplianceRequirementId,
+          },
+        ),
+        invoke<StatutoryComplianceEvidence[]>(
+          "list_statutory_compliance_evidence",
+          { statutoryComplianceAssessmentId: created.statutoryComplianceAssessmentId },
+        ),
+      ]);
+      setStatutoryComplianceAssessments(assessments);
+      setSelectedStatutoryComplianceAssessmentId(
+        created.statutoryComplianceAssessmentId,
+      );
+      setStatutoryComplianceEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function submitEngagementArea(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedEngagementId) return;
@@ -4618,6 +4976,35 @@ export default function App() {
         (template) => template.serviceTypeId === selectedEngagement.serviceTypeId,
       )
     : [];
+  const compatibleComplianceLibraryItems = selectedEngagement
+    ? firmLibraryItems.filter(
+        (item) =>
+          item.category === "STATUTORY_COMPLIANCE_REQUIREMENT" &&
+          (item.serviceTypeId === null ||
+            item.serviceTypeId === selectedEngagement.serviceTypeId) &&
+          !statutoryComplianceRequirements.some(
+            (requirement) => requirement.firmLibraryItemId === item.firmLibraryItemId,
+          ),
+      )
+    : [];
+  const selectedStatutoryComplianceRequirement =
+    statutoryComplianceRequirements.find(
+      (item) =>
+        item.statutoryComplianceRequirementId ===
+        selectedStatutoryComplianceRequirementId,
+    ) ?? null;
+  const selectedStatutoryComplianceAssessment =
+    statutoryComplianceAssessments.find(
+      (item) =>
+        item.statutoryComplianceAssessmentId ===
+        selectedStatutoryComplianceAssessmentId,
+    ) ?? null;
+  const complianceControlledEvidenceVersions =
+    complianceEvidenceVersionHistory.filter(
+      (entry) =>
+        entry.controlledEvidenceVersionId &&
+        entry.controlledVerificationState === "HASH_VERIFIED",
+    );
   const selectedLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === selectedLedgerImportId) ?? null;
   const ledgerControlledEvidenceVersions = ledgerEvidenceVersionHistory.filter(
@@ -7038,6 +7425,434 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">STATUTORY COMPLIANCE</span>
+                        <h3>Versioned requirements</h3>
+                      </div>
+                    </div>
+
+                    <form
+                      className="workspace-form compact"
+                      onSubmit={submitStatutoryComplianceRequirement}
+                    >
+                      <label>
+                        <span>Add firm requirement</span>
+                        <select
+                          value={newComplianceRequirementVersionId}
+                          onChange={(event) =>
+                            setNewComplianceRequirementVersionId(event.target.value)
+                          }
+                        >
+                          <option value="">Select latest methodology version</option>
+                          {compatibleComplianceLibraryItems.map((item) => (
+                            <option key={item.firmLibraryItemId} value={item.latestVersionId}>
+                              {item.name} · v{item.latestVersionNumber}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="evidence-integrity-note">
+                        Requirements are copied from an exact immutable firm-library version.
+                        Future methodology updates do not rewrite this engagement record.
+                      </p>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={workspaceBusy || !newComplianceRequirementVersionId}
+                      >
+                        Add compliance requirement
+                      </button>
+                    </form>
+
+                    <div className="workspace-mini-list">
+                      {statutoryComplianceRequirements.length ? (
+                        statutoryComplianceRequirements.map((requirement) => (
+                          <button
+                            className={`workspace-list-row${
+                              selectedStatutoryComplianceRequirementId ===
+                              requirement.statutoryComplianceRequirementId
+                                ? " workspace-list-row-active"
+                                : ""
+                            }`}
+                            type="button"
+                            key={requirement.statutoryComplianceRequirementId}
+                            onClick={() =>
+                              void selectStatutoryComplianceRequirement(
+                                requirement.statutoryComplianceRequirementId,
+                              )
+                            }
+                          >
+                            <span>
+                              <strong>{requirement.requirementName}</strong>
+                              <small>
+                                Methodology v{requirement.versionNumber} · hash{" "}
+                                {requirement.definitionHashHex.slice(0, 16)}…
+                              </small>
+                              {requirement.requirementDescription ? (
+                                <small>{requirement.requirementDescription}</small>
+                              ) : null}
+                            </span>
+                            <span className="workspace-row-action">Review →</span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          Add a statutory-compliance requirement from the firm methodology library.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">COMPLIANCE ASSESSMENT</span>
+                        <h3>
+                          {selectedStatutoryComplianceRequirement
+                            ? selectedStatutoryComplianceRequirement.requirementName
+                            : "Select a requirement"}
+                        </h3>
+                      </div>
+                    </div>
+
+                    {selectedStatutoryComplianceRequirement ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Assessment history</span>
+                          <select
+                            value={selectedStatutoryComplianceAssessmentId ?? ""}
+                            onChange={(event) =>
+                              void openStatutoryComplianceAssessment(event.target.value)
+                            }
+                          >
+                            <option value="">Select immutable assessment</option>
+                            {statutoryComplianceAssessments.map((assessment) => (
+                              <option
+                                key={assessment.statutoryComplianceAssessmentId}
+                                value={assessment.statutoryComplianceAssessmentId}
+                              >
+                                v{assessment.versionNumber} ·{" "}
+                                {assessment.status.replaceAll("_", " ")} ·{" "}
+                                {formatTimestamp(assessment.assessedAtMs)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedStatutoryComplianceAssessment ? (
+                          <div className="workspace-mini-list">
+                            <span>
+                              <strong>
+                                v{selectedStatutoryComplianceAssessment.versionNumber} ·{" "}
+                                {selectedStatutoryComplianceAssessment.status.replaceAll(
+                                  "_",
+                                  " ",
+                                )}
+                              </strong>
+                              <small>
+                                Applicability{" "}
+                                {selectedStatutoryComplianceAssessment.applicability.replaceAll(
+                                  "_",
+                                  " ",
+                                )}{" "}
+                                · due{" "}
+                                {selectedStatutoryComplianceAssessment.dueDate ?? "not set"} ·
+                                actual{" "}
+                                {selectedStatutoryComplianceAssessment.actualComplianceDate ??
+                                  "not set"}
+                              </small>
+                              {selectedStatutoryComplianceAssessment.exceptionText ? (
+                                <small>
+                                  Exception:{" "}
+                                  {selectedStatutoryComplianceAssessment.exceptionText}
+                                </small>
+                              ) : null}
+                              {selectedStatutoryComplianceAssessment.conclusion ? (
+                                <small>
+                                  Conclusion:{" "}
+                                  {selectedStatutoryComplianceAssessment.conclusion}
+                                </small>
+                              ) : null}
+                              <small>
+                                {selectedStatutoryComplianceAssessment.evidenceCount} exact
+                                controlled-evidence link
+                                {selectedStatutoryComplianceAssessment.evidenceCount === 1
+                                  ? ""
+                                  : "s"}{" "}
+                                · assessed{" "}
+                                {formatTimestamp(
+                                  selectedStatutoryComplianceAssessment.assessedAtMs,
+                                )}
+                              </small>
+                            </span>
+                            {statutoryComplianceEvidence.map((evidence) => (
+                              <span key={evidence.statutoryComplianceEvidenceLinkId}>
+                                <strong>
+                                  Controlled evidence{" "}
+                                  {evidence.controlledEvidenceVersionId.slice(0, 18)}…
+                                </strong>
+                                <small>
+                                  Source SHA {evidence.sourceSha256Hex.slice(0, 16)}… · linked{" "}
+                                  {formatTimestamp(evidence.linkedAtMs)}
+                                </small>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitStatutoryComplianceAssessment}
+                        >
+                          <div>
+                            <span className="workspace-label">NEXT IMMUTABLE VERSION</span>
+                            <p className="evidence-integrity-note">
+                              Publishing creates a new assessment version. Earlier status,
+                              evidence, exception and conclusion remain unchanged.
+                            </p>
+                          </div>
+                          <label>
+                            <span>Status</span>
+                            <select
+                              value={complianceStatus}
+                              onChange={(event) => updateComplianceStatus(event.target.value)}
+                            >
+                              <option value="PENDING">Pending</option>
+                              <option value="COMPLIANT">Compliant</option>
+                              <option value="EXCEPTION">Exception</option>
+                              <option value="NOT_APPLICABLE">Not applicable</option>
+                            </select>
+                          </label>
+
+                          {complianceStatus !== "NOT_APPLICABLE" ? (
+                            <label>
+                              <span>Due date</span>
+                              <input
+                                type="date"
+                                value={complianceDueDate}
+                                onChange={(event) => setComplianceDueDate(event.target.value)}
+                              />
+                            </label>
+                          ) : null}
+
+                          {complianceStatus === "COMPLIANT" ||
+                          complianceStatus === "EXCEPTION" ? (
+                            <label>
+                              <span>Actual compliance date</span>
+                              <input
+                                type="date"
+                                value={complianceActualDate}
+                                onChange={(event) =>
+                                  setComplianceActualDate(event.target.value)
+                                }
+                              />
+                            </label>
+                          ) : null}
+
+                          {complianceStatus === "EXCEPTION" ? (
+                            <label>
+                              <span>Exception</span>
+                              <textarea
+                                value={complianceExceptionText}
+                                onChange={(event) =>
+                                  setComplianceExceptionText(event.target.value)
+                                }
+                                rows={3}
+                                placeholder="Describe the statutory compliance exception."
+                                maxLength={10000}
+                              />
+                            </label>
+                          ) : null}
+
+                          <label>
+                            <span>
+                              Conclusion
+                              {complianceStatus === "PENDING" ? " (optional)" : ""}
+                            </span>
+                            <textarea
+                              value={complianceConclusion}
+                              onChange={(event) =>
+                                setComplianceConclusion(event.target.value)
+                              }
+                              rows={3}
+                              placeholder="Record the professional compliance conclusion."
+                              maxLength={10000}
+                            />
+                          </label>
+
+                          {complianceStatus !== "NOT_APPLICABLE" ? (
+                            <div className="workspace-card">
+                              <div className="workspace-card-heading">
+                                <div>
+                                  <span className="workspace-label">EXACT EVIDENCE</span>
+                                  <h3>
+                                    {complianceEvidenceVersionIds.length} selected version
+                                    {complianceEvidenceVersionIds.length === 1 ? "" : "s"}
+                                  </h3>
+                                </div>
+                              </div>
+
+                              <div className="workspace-inline-form">
+                                <label>
+                                  <span>Find supporting document</span>
+                                  <input
+                                    value={complianceEvidenceSearchQuery}
+                                    onChange={(event) =>
+                                      setComplianceEvidenceSearchQuery(event.target.value)
+                                    }
+                                    placeholder="Search filename or path"
+                                  />
+                                </label>
+                                <button
+                                  className="secondary-button"
+                                  type="button"
+                                  disabled={
+                                    complianceEvidenceSearchBusy ||
+                                    !complianceEvidenceSearchQuery.trim()
+                                  }
+                                  onClick={() => void searchComplianceEvidence()}
+                                >
+                                  {complianceEvidenceSearchBusy ? "Searching…" : "Search"}
+                                </button>
+                              </div>
+
+                              {complianceEvidenceSearchResults.length ? (
+                                <div className="workspace-mini-list">
+                                  {complianceEvidenceSearchResults.map((result) => (
+                                    <button
+                                      className={`workspace-list-row${
+                                        selectedComplianceEvidenceDocument?.documentId ===
+                                        result.documentId
+                                          ? " workspace-list-row-active"
+                                          : ""
+                                      }`}
+                                      type="button"
+                                      key={result.fileInstanceId}
+                                      onClick={() =>
+                                        void selectComplianceEvidenceDocument(result)
+                                      }
+                                    >
+                                      <span>
+                                        <strong>{result.name}</strong>
+                                        <small>{result.path}</small>
+                                      </span>
+                                      <span className="workspace-row-action">Versions →</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              {selectedComplianceEvidenceDocument ? (
+                                <>
+                                  <label>
+                                    <span>Hash-verified controlled version</span>
+                                    <select
+                                      value={selectedComplianceControlledVersionId}
+                                      onChange={(event) =>
+                                        setSelectedComplianceControlledVersionId(
+                                          event.target.value,
+                                        )
+                                      }
+                                    >
+                                      <option value="">Select controlled evidence</option>
+                                      {complianceControlledEvidenceVersions.map((entry) => (
+                                        <option
+                                          key={
+                                            entry.controlledEvidenceVersionId ??
+                                            entry.contentVersionId
+                                          }
+                                          value={entry.controlledEvidenceVersionId ?? ""}
+                                        >
+                                          v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                          {formatTimestamp(entry.capturedAtMs)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  {!complianceControlledEvidenceVersions.length ? (
+                                    <p className="evidence-integrity-note">
+                                      No hash-verified controlled version exists for this
+                                      document yet.
+                                    </p>
+                                  ) : null}
+                                  <button
+                                    className="secondary-button"
+                                    type="button"
+                                    disabled={
+                                      !selectedComplianceControlledVersionId ||
+                                      complianceEvidenceVersionIds.includes(
+                                        selectedComplianceControlledVersionId,
+                                      )
+                                    }
+                                    onClick={addComplianceEvidenceVersion}
+                                  >
+                                    Add exact evidence version
+                                  </button>
+                                </>
+                              ) : null}
+
+                              {complianceEvidenceVersionIds.length ? (
+                                <div className="workspace-mini-list">
+                                  {complianceEvidenceVersionIds.map((versionId) => (
+                                    <span key={versionId}>
+                                      <strong>
+                                        Controlled ID {versionId.slice(0, 18)}…
+                                      </strong>
+                                      <button
+                                        className="file-action"
+                                        type="button"
+                                        onClick={() =>
+                                          setComplianceEvidenceVersionIds((current) =>
+                                            current.filter((item) => item !== versionId),
+                                          )
+                                        }
+                                      >
+                                        Remove
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="evidence-integrity-note">
+                                  Compliant status requires at least one exact controlled-evidence
+                                  version. Pending and exception assessments may be published
+                                  without evidence when professionally appropriate.
+                                </p>
+                              )}
+                            </div>
+                          ) : null}
+
+                          <button
+                            className="primary-button"
+                            type="submit"
+                            disabled={
+                              workspaceBusy ||
+                              (complianceStatus === "COMPLIANT" &&
+                                (!complianceActualDate ||
+                                  !complianceConclusion.trim() ||
+                                  complianceEvidenceVersionIds.length === 0)) ||
+                              (complianceStatus === "EXCEPTION" &&
+                                (!complianceExceptionText.trim() ||
+                                  !complianceConclusion.trim())) ||
+                              (complianceStatus === "NOT_APPLICABLE" &&
+                                !complianceConclusion.trim())
+                            }
+                          >
+                            Publish next assessment version
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Select a compliance requirement to review and assess it.
+                      </div>
+                    )}
                   </div>
                 </div>
 
