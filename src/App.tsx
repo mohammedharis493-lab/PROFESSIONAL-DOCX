@@ -1554,6 +1554,9 @@ export default function App() {
     setLedgerTestRuns([]);
     setLedgerTestRun(null);
     setLedgerExceptions([]);
+    setReconciliationRuns([]);
+    setSelectedReconciliationRunId(null);
+    setReconciliationExceptions([]);
     setTrialBalanceImports([]);
     setSelectedTrialBalanceImportId(null);
     setTrialBalanceComparison(null);
@@ -1592,6 +1595,7 @@ export default function App() {
         trialBalanceImportRecords,
         scheduleRecords,
         statementLinkRecords,
+        reconciliationRunRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1606,6 +1610,7 @@ export default function App() {
           "list_current_financial_statement_schedule_links",
           { engagementId },
         ),
+        invoke<ReconciliationRun[]>("list_reconciliation_runs", { engagementId }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1615,6 +1620,21 @@ export default function App() {
       setTrialBalanceImports(trialBalanceImportRecords);
       setFinancialStatementSchedules(scheduleRecords);
       setFinancialStatementScheduleLinks(statementLinkRecords);
+      setReconciliationRuns(reconciliationRunRecords);
+      const latestTrialBalanceReconciliation =
+        reconciliationRunRecords.find(
+          (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
+        ) ?? null;
+      setSelectedReconciliationRunId(
+        latestTrialBalanceReconciliation?.reconciliationRunId ?? null,
+      );
+      if (latestTrialBalanceReconciliation) {
+        const exceptions = await invoke<ReconciliationException[]>(
+          "list_reconciliation_exceptions",
+          { reconciliationRunId: latestTrialBalanceReconciliation.reconciliationRunId },
+        );
+        setReconciliationExceptions(exceptions);
+      }
       const firstScheduleId = scheduleRecords[0]?.financialStatementScheduleId ?? "";
       setSelectedFinancialStatementScheduleId(firstScheduleId);
       setSelectedFsLinkScheduleId(firstScheduleId);
