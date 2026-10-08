@@ -115,6 +115,44 @@ type FirmLibraryVersion = {
   createdAtMs: number;
 };
 
+type StatutoryComplianceRequirement = {
+  statutoryComplianceRequirementId: string;
+  engagementId: string;
+  firmLibraryItemId: string;
+  firmLibraryVersionId: string;
+  requirementName: string;
+  requirementDescription: string | null;
+  versionNumber: number;
+  definitionJson: string;
+  definitionHashHex: string;
+  createdAtMs: number;
+};
+
+type StatutoryComplianceAssessment = {
+  statutoryComplianceAssessmentId: string;
+  statutoryComplianceRequirementId: string;
+  versionNumber: number;
+  supersedesAssessmentId: string | null;
+  applicability: string;
+  dueDate: string | null;
+  actualComplianceDate: string | null;
+  status: string;
+  exceptionText: string | null;
+  conclusion: string | null;
+  evidenceCount: number;
+  assessedAtMs: number;
+};
+
+type StatutoryComplianceEvidence = {
+  statutoryComplianceEvidenceLinkId: string;
+  statutoryComplianceAssessmentId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1178,6 +1216,33 @@ export default function App() {
   const [newFirmLibraryServiceTypeId, setNewFirmLibraryServiceTypeId] = useState("");
   const [newFirmLibraryContent, setNewFirmLibraryContent] = useState("");
   const [firmLibraryDraftContent, setFirmLibraryDraftContent] = useState("");
+  const [statutoryComplianceRequirements, setStatutoryComplianceRequirements] =
+    useState<StatutoryComplianceRequirement[]>([]);
+  const [selectedStatutoryComplianceRequirementId, setSelectedStatutoryComplianceRequirementId] =
+    useState<string | null>(null);
+  const [statutoryComplianceAssessments, setStatutoryComplianceAssessments] =
+    useState<StatutoryComplianceAssessment[]>([]);
+  const [selectedStatutoryComplianceAssessmentId, setSelectedStatutoryComplianceAssessmentId] =
+    useState<string | null>(null);
+  const [statutoryComplianceEvidence, setStatutoryComplianceEvidence] =
+    useState<StatutoryComplianceEvidence[]>([]);
+  const [newComplianceRequirementVersionId, setNewComplianceRequirementVersionId] = useState("");
+  const [complianceStatus, setComplianceStatus] = useState("PENDING");
+  const [complianceDueDate, setComplianceDueDate] = useState("");
+  const [complianceActualDate, setComplianceActualDate] = useState("");
+  const [complianceExceptionText, setComplianceExceptionText] = useState("");
+  const [complianceConclusion, setComplianceConclusion] = useState("");
+  const [complianceEvidenceVersionIds, setComplianceEvidenceVersionIds] = useState<string[]>([]);
+  const [complianceEvidenceSearchQuery, setComplianceEvidenceSearchQuery] = useState("");
+  const [complianceEvidenceSearchResults, setComplianceEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedComplianceEvidenceDocument, setSelectedComplianceEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [complianceEvidenceVersionHistory, setComplianceEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedComplianceControlledVersionId, setSelectedComplianceControlledVersionId] =
+    useState("");
+  const [complianceEvidenceSearchBusy, setComplianceEvidenceSearchBusy] = useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -1585,6 +1650,22 @@ export default function App() {
     setSelectedFsControlledVersionId("");
     setFsLocationKind("PAGE");
     setFsLocationValue("1");
+    setStatutoryComplianceRequirements([]);
+    setSelectedStatutoryComplianceRequirementId(null);
+    setStatutoryComplianceAssessments([]);
+    setSelectedStatutoryComplianceAssessmentId(null);
+    setStatutoryComplianceEvidence([]);
+    setNewComplianceRequirementVersionId("");
+    setComplianceStatus("PENDING");
+    setComplianceDueDate("");
+    setComplianceActualDate("");
+    setComplianceExceptionText("");
+    setComplianceConclusion("");
+    setComplianceEvidenceVersionIds([]);
+    setComplianceEvidenceSearchResults([]);
+    setSelectedComplianceEvidenceDocument(null);
+    setComplianceEvidenceVersionHistory([]);
+    setSelectedComplianceControlledVersionId("");
     try {
       const [
         areas,
@@ -1596,6 +1677,7 @@ export default function App() {
         scheduleRecords,
         statementLinkRecords,
         reconciliationRunRecords,
+        complianceRequirementRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1611,6 +1693,9 @@ export default function App() {
           { engagementId },
         ),
         invoke<ReconciliationRun[]>("list_reconciliation_runs", { engagementId }),
+        invoke<StatutoryComplianceRequirement[]>("list_statutory_compliance_requirements", {
+          engagementId,
+        }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1621,6 +1706,35 @@ export default function App() {
       setFinancialStatementSchedules(scheduleRecords);
       setFinancialStatementScheduleLinks(statementLinkRecords);
       setReconciliationRuns(reconciliationRunRecords);
+      setStatutoryComplianceRequirements(complianceRequirementRecords);
+      const firstComplianceRequirement = complianceRequirementRecords[0] ?? null;
+      setSelectedStatutoryComplianceRequirementId(
+        firstComplianceRequirement?.statutoryComplianceRequirementId ?? null,
+      );
+      if (firstComplianceRequirement) {
+        const assessments = await invoke<StatutoryComplianceAssessment[]>(
+          "list_statutory_compliance_assessments",
+          {
+            statutoryComplianceRequirementId:
+              firstComplianceRequirement.statutoryComplianceRequirementId,
+          },
+        );
+        setStatutoryComplianceAssessments(assessments);
+        const latestAssessment = assessments[0] ?? null;
+        setSelectedStatutoryComplianceAssessmentId(
+          latestAssessment?.statutoryComplianceAssessmentId ?? null,
+        );
+        if (latestAssessment) {
+          const evidence = await invoke<StatutoryComplianceEvidence[]>(
+            "list_statutory_compliance_evidence",
+            {
+              statutoryComplianceAssessmentId:
+                latestAssessment.statutoryComplianceAssessmentId,
+            },
+          );
+          setStatutoryComplianceEvidence(evidence);
+        }
+      }
       const latestTrialBalanceReconciliation =
         reconciliationRunRecords.find(
           (run) => run.reconciliationType === "TRIAL_BALANCE_OPENING_CLOSING",
