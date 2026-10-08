@@ -6054,9 +6054,9 @@ pub fn create_statutory_compliance_requirement(
             related_entity_id: Some(engagement_id),
             occurred_at_ms: now,
             details: json!({
-                "firmLibraryItemId": firm_library_item_id,
+                "firmLibraryItemId": library_version.firm_library_item_id,
                 "firmLibraryVersionId": firm_library_version_id,
-                "versionNumber": version_number,
+                "versionNumber": library_version.version_number,
                 "definitionHash": bytes_to_lower_hex(&library_version.definition_hash),
                 "initialAssessmentId": assessment_id
             }),
@@ -6252,9 +6252,9 @@ pub fn create_statutory_compliance_assessment(
             next_version_number,
             &supersedes_assessment_id,
             &normalized.applicability,
-            due_date.as_deref(),
-            actual_compliance_date.as_deref(),
-            &status,
+            normalized.due_date.as_deref(),
+            normalized.actual_compliance_date.as_deref(),
+            &normalized.status,
             normalized.exception_text.as_deref(),
             normalized.conclusion.as_deref(),
             now
@@ -6304,8 +6304,8 @@ pub fn create_statutory_compliance_assessment(
                 "actualComplianceDate": normalized.actual_compliance_date,
                 "status": normalized.status,
                 "evidenceCount": evidence.len(),
-                "hasException": exception_text.is_some(),
-                "hasConclusion": conclusion.is_some()
+                "hasException": normalized.exception_text.is_some(),
+                "hasConclusion": normalized.conclusion.is_some()
             }),
         },
     )?;
@@ -6318,12 +6318,12 @@ pub fn create_statutory_compliance_assessment(
             .to_string(),
         version_number: next_version_number.max(0) as u64,
         supersedes_assessment_id: Some(supersedes_assessment_id),
-        applicability,
-        due_date,
-        actual_compliance_date,
-        status,
-        exception_text,
-        conclusion,
+        applicability: normalized.applicability,
+        due_date: normalized.due_date,
+        actual_compliance_date: normalized.actual_compliance_date,
+        status: normalized.status,
+        exception_text: normalized.exception_text,
+        conclusion: normalized.conclusion,
         evidence_count: evidence.len() as u64,
         assessed_at_ms: now,
     })
