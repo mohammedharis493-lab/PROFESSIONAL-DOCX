@@ -443,6 +443,118 @@ impl From<persistence::FirmLibraryVersionRecord> for FirmLibraryVersionDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceRequirementDto {
+    statutory_compliance_requirement_id: String,
+    engagement_id: String,
+    firm_library_item_id: String,
+    firm_library_version_id: String,
+    requirement_name: String,
+    requirement_description: Option<String>,
+    version_number: u64,
+    definition_json: String,
+    definition_hash_hex: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceRequirementRecord>
+    for StatutoryComplianceRequirementDto
+{
+    fn from(value: persistence::StatutoryComplianceRequirementRecord) -> Self {
+        Self {
+            statutory_compliance_requirement_id: value.statutory_compliance_requirement_id,
+            engagement_id: value.engagement_id,
+            firm_library_item_id: value.firm_library_item_id,
+            firm_library_version_id: value.firm_library_version_id,
+            requirement_name: value.requirement_name,
+            requirement_description: value.requirement_description,
+            version_number: value.version_number,
+            definition_json: value.definition_json,
+            definition_hash_hex: hex_bytes(&value.definition_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceAssessmentDto {
+    statutory_compliance_assessment_id: String,
+    statutory_compliance_requirement_id: String,
+    version_number: u64,
+    supersedes_assessment_id: Option<String>,
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+    evidence_count: u64,
+    assessed_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceAssessmentRecord>
+    for StatutoryComplianceAssessmentDto
+{
+    fn from(value: persistence::StatutoryComplianceAssessmentRecord) -> Self {
+        Self {
+            statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id: value.statutory_compliance_requirement_id,
+            version_number: value.version_number,
+            supersedes_assessment_id: value.supersedes_assessment_id,
+            applicability: value.applicability,
+            due_date: value.due_date,
+            actual_compliance_date: value.actual_compliance_date,
+            status: value.status,
+            exception_text: value.exception_text,
+            conclusion: value.conclusion,
+            evidence_count: value.evidence_count,
+            assessed_at_ms: value.assessed_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceEvidenceDto {
+    statutory_compliance_evidence_link_id: String,
+    statutory_compliance_assessment_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceEvidenceRecord> for StatutoryComplianceEvidenceDto {
+    fn from(value: persistence::StatutoryComplianceEvidenceRecord) -> Self {
+        Self {
+            statutory_compliance_evidence_link_id: value
+                .statutory_compliance_evidence_link_id,
+            statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceAssessmentInputDto {
+    statutory_compliance_requirement_id: String,
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+    controlled_evidence_version_ids: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LedgerColumnMappingInputDto {
