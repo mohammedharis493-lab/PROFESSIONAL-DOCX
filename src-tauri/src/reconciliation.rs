@@ -85,9 +85,7 @@ fn validate_side(items: &[ExactReconciliationItem], side: &str) -> Result<(), St
     Ok(())
 }
 
-fn bucket_items(
-    items: &[ExactReconciliationItem],
-) -> BTreeMap<(String, i64), Vec<String>> {
+fn bucket_items(items: &[ExactReconciliationItem]) -> BTreeMap<(String, i64), Vec<String>> {
     let mut buckets: BTreeMap<(String, i64), Vec<String>> = BTreeMap::new();
 
     for item in items {
