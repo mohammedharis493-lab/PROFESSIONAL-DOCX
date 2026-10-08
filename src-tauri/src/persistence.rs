@@ -4439,6 +4439,37 @@ fn normalize_domain_label(
     Ok(normalized)
 }
 
+fn normalize_internal_audit_optional_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > max_chars
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain at most {max_chars} printable characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_internal_audit_status(value: &str) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if status.is_empty() || status.chars().count() > 80 {
+        return Err(PersistenceError::Configuration(
+            "internal audit status must contain 1 to 80 normalized characters".to_string(),
+        ));
+    }
+    Ok(status)
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
