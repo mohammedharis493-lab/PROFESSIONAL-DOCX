@@ -443,6 +443,113 @@ impl From<persistence::FirmLibraryVersionRecord> for FirmLibraryVersionDto {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceRequirementDto {
+    statutory_compliance_requirement_id: String,
+    engagement_id: String,
+    firm_library_item_id: String,
+    firm_library_version_id: String,
+    requirement_name: String,
+    requirement_description: Option<String>,
+    version_number: u64,
+    definition_json: String,
+    definition_hash_hex: String,
+    created_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceRequirementRecord> for StatutoryComplianceRequirementDto {
+    fn from(value: persistence::StatutoryComplianceRequirementRecord) -> Self {
+        Self {
+            statutory_compliance_requirement_id: value.statutory_compliance_requirement_id,
+            engagement_id: value.engagement_id,
+            firm_library_item_id: value.firm_library_item_id,
+            firm_library_version_id: value.firm_library_version_id,
+            requirement_name: value.requirement_name,
+            requirement_description: value.requirement_description,
+            version_number: value.version_number,
+            definition_json: value.definition_json,
+            definition_hash_hex: hex_bytes(&value.definition_hash),
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceAssessmentDto {
+    statutory_compliance_assessment_id: String,
+    statutory_compliance_requirement_id: String,
+    version_number: u64,
+    supersedes_assessment_id: Option<String>,
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+    evidence_count: u64,
+    assessed_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceAssessmentRecord> for StatutoryComplianceAssessmentDto {
+    fn from(value: persistence::StatutoryComplianceAssessmentRecord) -> Self {
+        Self {
+            statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id: value.statutory_compliance_requirement_id,
+            version_number: value.version_number,
+            supersedes_assessment_id: value.supersedes_assessment_id,
+            applicability: value.applicability,
+            due_date: value.due_date,
+            actual_compliance_date: value.actual_compliance_date,
+            status: value.status,
+            exception_text: value.exception_text,
+            conclusion: value.conclusion,
+            evidence_count: value.evidence_count,
+            assessed_at_ms: value.assessed_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceEvidenceDto {
+    statutory_compliance_evidence_link_id: String,
+    statutory_compliance_assessment_id: String,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::StatutoryComplianceEvidenceRecord> for StatutoryComplianceEvidenceDto {
+    fn from(value: persistence::StatutoryComplianceEvidenceRecord) -> Self {
+        Self {
+            statutory_compliance_evidence_link_id: value.statutory_compliance_evidence_link_id,
+            statutory_compliance_assessment_id: value.statutory_compliance_assessment_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatutoryComplianceAssessmentInputDto {
+    statutory_compliance_requirement_id: String,
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+    controlled_evidence_version_ids: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LedgerColumnMappingInputDto {
@@ -1649,6 +1756,101 @@ fn list_firm_library_versions(
     persistence::list_firm_library_versions(database.path(), &firm_library_item_id)
         .map(|records| records.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_statutory_compliance_requirement(
+    engagement_id: String,
+    firm_library_version_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<StatutoryComplianceRequirementDto, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    validate_uuid(&firm_library_version_id, "firm-library-version")?;
+    persistence::create_statutory_compliance_requirement(
+        database.path(),
+        &engagement_id,
+        &firm_library_version_id,
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_requirements(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceRequirementDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_statutory_compliance_requirements(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_statutory_compliance_assessment(
+    input: StatutoryComplianceAssessmentInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<StatutoryComplianceAssessmentDto, String> {
+    validate_uuid(
+        &input.statutory_compliance_requirement_id,
+        "statutory-compliance-requirement",
+    )?;
+    for controlled_evidence_version_id in &input.controlled_evidence_version_ids {
+        validate_uuid(
+            controlled_evidence_version_id,
+            "controlled-evidence-version",
+        )?;
+    }
+
+    persistence::create_statutory_compliance_assessment(
+        database.path(),
+        persistence::StatutoryComplianceAssessmentDefinition {
+            statutory_compliance_requirement_id: &input.statutory_compliance_requirement_id,
+            applicability: &input.applicability,
+            due_date: input.due_date.as_deref(),
+            actual_compliance_date: input.actual_compliance_date.as_deref(),
+            status: &input.status,
+            exception_text: input.exception_text.as_deref(),
+            conclusion: input.conclusion.as_deref(),
+            controlled_evidence_version_ids: &input.controlled_evidence_version_ids,
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_assessments(
+    statutory_compliance_requirement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceAssessmentDto>, String> {
+    validate_uuid(
+        &statutory_compliance_requirement_id,
+        "statutory-compliance-requirement",
+    )?;
+    persistence::list_statutory_compliance_assessments(
+        database.path(),
+        &statutory_compliance_requirement_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_statutory_compliance_evidence(
+    statutory_compliance_assessment_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<StatutoryComplianceEvidenceDto>, String> {
+    validate_uuid(
+        &statutory_compliance_assessment_id,
+        "statutory-compliance-assessment",
+    )?;
+    persistence::list_statutory_compliance_evidence(
+        database.path(),
+        &statutory_compliance_assessment_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3201,6 +3403,11 @@ pub fn run() {
             publish_firm_library_version,
             list_firm_library_items,
             list_firm_library_versions,
+            create_statutory_compliance_requirement,
+            list_statutory_compliance_requirements,
+            create_statutory_compliance_assessment,
+            list_statutory_compliance_assessments,
+            list_statutory_compliance_evidence,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,

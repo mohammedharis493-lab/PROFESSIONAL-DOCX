@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 18;
+const LATEST_SCHEMA_VERSION: i64 = 19;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -118,6 +118,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 18,
         name: "reconciliation_framework",
         sql: include_str!("../migrations/0018_reconciliation_framework.sql"),
+    },
+    Migration {
+        version: 19,
+        name: "statutory_compliance",
+        sql: include_str!("../migrations/0019_statutory_compliance.sql"),
     },
 ];
 
@@ -349,6 +354,77 @@ pub struct FirmLibraryVersionRecord {
     pub definition_json: String,
     pub definition_hash: Vec<u8>,
     pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceRequirementRecord {
+    pub statutory_compliance_requirement_id: String,
+    pub engagement_id: String,
+    pub firm_library_item_id: String,
+    pub firm_library_version_id: String,
+    pub requirement_name: String,
+    pub requirement_description: Option<String>,
+    pub version_number: u64,
+    pub definition_json: String,
+    pub definition_hash: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceAssessmentRecord {
+    pub statutory_compliance_assessment_id: String,
+    pub statutory_compliance_requirement_id: String,
+    pub version_number: u64,
+    pub supersedes_assessment_id: Option<String>,
+    pub applicability: String,
+    pub due_date: Option<String>,
+    pub actual_compliance_date: Option<String>,
+    pub status: String,
+    pub exception_text: Option<String>,
+    pub conclusion: Option<String>,
+    pub evidence_count: u64,
+    pub assessed_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatutoryComplianceEvidenceRecord {
+    pub statutory_compliance_evidence_link_id: String,
+    pub statutory_compliance_assessment_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub linked_at_ms: i64,
+}
+
+pub struct StatutoryComplianceAssessmentDefinition<'a> {
+    pub statutory_compliance_requirement_id: &'a str,
+    pub applicability: &'a str,
+    pub due_date: Option<&'a str>,
+    pub actual_compliance_date: Option<&'a str>,
+    pub status: &'a str,
+    pub exception_text: Option<&'a str>,
+    pub conclusion: Option<&'a str>,
+    pub controlled_evidence_version_ids: &'a [String],
+}
+
+struct NormalizedStatutoryComplianceAssessment {
+    applicability: String,
+    due_date: Option<String>,
+    actual_compliance_date: Option<String>,
+    status: String,
+    exception_text: Option<String>,
+    conclusion: Option<String>,
+}
+
+struct StatutoryComplianceLibraryVersionIdentity {
+    firm_library_item_id: String,
+    requirement_name: String,
+    requirement_description: Option<String>,
+    service_type_id: Option<String>,
+    version_number: i64,
+    definition_json: String,
+    definition_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -4371,6 +4447,225 @@ fn normalize_firm_library_definition(
     Ok((canonical, hash))
 }
 
+fn normalize_statutory_compliance_state(
+    value: &str,
+    field_name: &str,
+    allowed: &[&str],
+) -> Result<String, PersistenceError> {
+    let normalized = workflow_state_key(value);
+    if allowed.iter().any(|candidate| *candidate == normalized) {
+        Ok(normalized)
+    } else {
+        Err(PersistenceError::Configuration(format!(
+            "{field_name} is not supported"
+        )))
+    }
+}
+
+fn normalize_statutory_compliance_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > max_chars
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain at most {max_chars} printable characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_statutory_compliance_date(
+    value: Option<&str>,
+    field_name: &str,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes[..4].iter().all(u8::is_ascii_digit)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must use YYYY-MM-DD format"
+        )));
+    }
+
+    let year = value[..4]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} year is invalid")))?;
+    let month = value[5..7]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} month is invalid")))?;
+    let day = value[8..]
+        .parse::<u32>()
+        .map_err(|_| PersistenceError::Configuration(format!("{field_name} day is invalid")))?;
+    if year == 0 || !(1..=12).contains(&month) {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} is not a valid calendar date"
+        )));
+    }
+
+    let leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => unreachable!("month range is validated above"),
+    };
+    if day == 0 || day > max_day {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} is not a valid calendar date"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
+}
+
+fn normalize_statutory_compliance_assessment(
+    applicability: &str,
+    due_date: Option<&str>,
+    actual_compliance_date: Option<&str>,
+    status: &str,
+    exception_text: Option<&str>,
+    conclusion: Option<&str>,
+    controlled_evidence_version_ids: &[String],
+) -> Result<NormalizedStatutoryComplianceAssessment, PersistenceError> {
+    let applicability = normalize_statutory_compliance_state(
+        applicability,
+        "statutory compliance applicability",
+        &["UNDETERMINED", "APPLICABLE", "NOT_APPLICABLE"],
+    )?;
+    let status = normalize_statutory_compliance_state(
+        status,
+        "statutory compliance status",
+        &[
+            "UNASSESSED",
+            "PENDING",
+            "COMPLIANT",
+            "EXCEPTION",
+            "NOT_APPLICABLE",
+        ],
+    )?;
+    let due_date = normalize_statutory_compliance_date(due_date, "statutory compliance due date")?;
+    let actual_compliance_date = normalize_statutory_compliance_date(
+        actual_compliance_date,
+        "statutory compliance actual compliance date",
+    )?;
+    let exception_text = normalize_statutory_compliance_text(
+        exception_text,
+        "statutory compliance exception",
+        10_000,
+    )?;
+    let conclusion =
+        normalize_statutory_compliance_text(conclusion, "statutory compliance conclusion", 10_000)?;
+
+    let mut evidence_ids = controlled_evidence_version_ids.to_vec();
+    evidence_ids.sort();
+    evidence_ids.dedup();
+    if evidence_ids.len() != controlled_evidence_version_ids.len() {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance evidence versions must be unique".to_string(),
+        ));
+    }
+
+    match status.as_str() {
+        "UNASSESSED" => {
+            if applicability != "UNDETERMINED"
+                || due_date.is_some()
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+                || conclusion.is_some()
+                || !controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "UNASSESSED compliance must remain undetermined without dates, evidence, exception, or conclusion"
+                        .to_string(),
+                ));
+            }
+        }
+        "PENDING" => {
+            if applicability != "APPLICABLE"
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+            {
+                return Err(PersistenceError::Configuration(
+                    "PENDING compliance must be applicable, have no actual compliance date, and have no exception"
+                        .to_string(),
+                ));
+            }
+        }
+        "COMPLIANT" => {
+            if applicability != "APPLICABLE"
+                || actual_compliance_date.is_none()
+                || exception_text.is_some()
+                || conclusion.is_none()
+                || controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "COMPLIANT status requires applicable state, actual compliance date, conclusion, exact controlled evidence, and no exception"
+                        .to_string(),
+                ));
+            }
+            if let (Some(due_date), Some(actual_date)) =
+                (due_date.as_deref(), actual_compliance_date.as_deref())
+            {
+                if actual_date > due_date {
+                    return Err(PersistenceError::Configuration(
+                        "late statutory compliance must be recorded as an EXCEPTION rather than COMPLIANT"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        "EXCEPTION" => {
+            if applicability != "APPLICABLE" || exception_text.is_none() || conclusion.is_none() {
+                return Err(PersistenceError::Configuration(
+                    "EXCEPTION status requires applicable state, exception text, and conclusion"
+                        .to_string(),
+                ));
+            }
+        }
+        "NOT_APPLICABLE" => {
+            if applicability != "NOT_APPLICABLE"
+                || due_date.is_some()
+                || actual_compliance_date.is_some()
+                || exception_text.is_some()
+                || conclusion.is_none()
+                || !controlled_evidence_version_ids.is_empty()
+            {
+                return Err(PersistenceError::Configuration(
+                    "NOT_APPLICABLE status requires a conclusion and cannot carry dates, exception text, or evidence"
+                        .to_string(),
+                ));
+            }
+        }
+        _ => unreachable!("status allow-list is validated above"),
+    }
+
+    Ok(NormalizedStatutoryComplianceAssessment {
+        applicability,
+        due_date,
+        actual_compliance_date,
+        status,
+        exception_text,
+        conclusion,
+    })
+}
+
 fn normalize_reconciliation_parameters(parameters_json: &str) -> Result<String, PersistenceError> {
     if parameters_json.len() > RECONCILIATION_PARAMETERS_MAX_BYTES {
         return Err(PersistenceError::Configuration(format!(
@@ -5610,6 +5905,511 @@ pub fn list_firm_library_versions(
         })
     })?;
 
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_statutory_compliance_requirement(
+    database_path: &Path,
+    engagement_id: &str,
+    firm_library_version_id: &str,
+) -> Result<StatutoryComplianceRequirementRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_service_type_id: Option<String> = transaction
+        .query_row(
+            "SELECT service_type_id
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [engagement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let engagement_service_type_id = engagement_service_type_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!("engagement {engagement_id} does not exist"))
+    })?;
+
+    let library_version: Option<StatutoryComplianceLibraryVersionIdentity> = transaction
+        .query_row(
+            "SELECT
+                    i.firm_library_item_id,
+                    i.name,
+                    i.description,
+                    i.service_type_id,
+                    v.version_number,
+                    v.definition_json,
+                    v.definition_hash
+                 FROM firm_library_versions v
+                 JOIN firm_library_items i
+                   ON i.firm_library_item_id = v.firm_library_item_id
+                 WHERE v.firm_library_version_id = ?1
+                   AND i.category = 'STATUTORY_COMPLIANCE_REQUIREMENT'
+                   AND i.archived_at_ms IS NULL",
+            [firm_library_version_id],
+            |row| {
+                Ok(StatutoryComplianceLibraryVersionIdentity {
+                    firm_library_item_id: row.get(0)?,
+                    requirement_name: row.get(1)?,
+                    requirement_description: row.get(2)?,
+                    service_type_id: row.get(3)?,
+                    version_number: row.get(4)?,
+                    definition_json: row.get(5)?,
+                    definition_hash: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(library_version) = library_version else {
+        return Err(PersistenceError::Configuration(format!(
+            "statutory compliance library version {firm_library_version_id} does not exist"
+        )));
+    };
+
+    if library_version
+        .service_type_id
+        .as_deref()
+        .is_some_and(|value| value != engagement_service_type_id)
+    {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance requirement service type does not match the engagement"
+                .to_string(),
+        ));
+    }
+    if library_version.definition_hash.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance requirement definition hash is invalid".to_string(),
+        ));
+    }
+
+    let existing: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM statutory_compliance_requirements
+            WHERE engagement_id = ?1
+              AND firm_library_item_id = ?2
+        )",
+        params![engagement_id, &library_version.firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if existing {
+        return Err(PersistenceError::Configuration(
+            "this statutory compliance requirement is already present in the engagement"
+                .to_string(),
+        ));
+    }
+
+    let requirement_id = Uuid::new_v4().to_string();
+    let assessment_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_requirements (
+            statutory_compliance_requirement_id,
+            engagement_id,
+            firm_library_item_id,
+            firm_library_version_id,
+            requirement_name,
+            requirement_description,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &requirement_id,
+            engagement_id,
+            &library_version.firm_library_item_id,
+            firm_library_version_id,
+            &library_version.requirement_name,
+            library_version.requirement_description.as_deref(),
+            &library_version.definition_hash,
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_assessments (
+            statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id,
+            version_number,
+            supersedes_assessment_id,
+            applicability,
+            due_date,
+            actual_compliance_date,
+            status,
+            exception_text,
+            conclusion,
+            assessed_at_ms
+         ) VALUES (?1, ?2, 1, NULL, 'UNDETERMINED', NULL, NULL, 'UNASSESSED', NULL, NULL, ?3)",
+        params![&assessment_id, &requirement_id, now],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "STATUTORY_COMPLIANCE_REQUIREMENT_ADDED",
+            entity_type: "STATUTORY_COMPLIANCE_REQUIREMENT",
+            entity_id: &requirement_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "firmLibraryItemId": library_version.firm_library_item_id,
+                "firmLibraryVersionId": firm_library_version_id,
+                "versionNumber": library_version.version_number,
+                "definitionHash": bytes_to_lower_hex(&library_version.definition_hash),
+                "initialAssessmentId": assessment_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(StatutoryComplianceRequirementRecord {
+        statutory_compliance_requirement_id: requirement_id,
+        engagement_id: engagement_id.to_string(),
+        firm_library_item_id: library_version.firm_library_item_id,
+        firm_library_version_id: firm_library_version_id.to_string(),
+        requirement_name: library_version.requirement_name,
+        requirement_description: library_version.requirement_description,
+        version_number: library_version.version_number.max(0) as u64,
+        definition_json: library_version.definition_json,
+        definition_hash: library_version.definition_hash,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_statutory_compliance_requirements(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<StatutoryComplianceRequirementRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            r.statutory_compliance_requirement_id,
+            r.engagement_id,
+            r.firm_library_item_id,
+            r.firm_library_version_id,
+            r.requirement_name,
+            r.requirement_description,
+            v.version_number,
+            v.definition_json,
+            r.definition_hash,
+            r.created_at_ms
+         FROM statutory_compliance_requirements r
+         JOIN firm_library_versions v
+           ON v.firm_library_version_id = r.firm_library_version_id
+         WHERE r.engagement_id = ?1
+         ORDER BY r.requirement_name COLLATE NOCASE, r.created_at_ms, r.statutory_compliance_requirement_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let version_number: i64 = row.get(6)?;
+        Ok(StatutoryComplianceRequirementRecord {
+            statutory_compliance_requirement_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            firm_library_item_id: row.get(2)?,
+            firm_library_version_id: row.get(3)?,
+            requirement_name: row.get(4)?,
+            requirement_description: row.get(5)?,
+            version_number: version_number.max(0) as u64,
+            definition_json: row.get(7)?,
+            definition_hash: row.get(8)?,
+            created_at_ms: row.get(9)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_statutory_compliance_assessment(
+    database_path: &Path,
+    definition: StatutoryComplianceAssessmentDefinition<'_>,
+) -> Result<StatutoryComplianceAssessmentRecord, PersistenceError> {
+    let normalized = normalize_statutory_compliance_assessment(
+        definition.applicability,
+        definition.due_date,
+        definition.actual_compliance_date,
+        definition.status,
+        definition.exception_text,
+        definition.conclusion,
+        definition.controlled_evidence_version_ids,
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_id: Option<String> = transaction
+        .query_row(
+            "SELECT engagement_id
+             FROM statutory_compliance_requirements
+             WHERE statutory_compliance_requirement_id = ?1",
+            [definition.statutory_compliance_requirement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let engagement_id = engagement_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!(
+            "statutory compliance requirement {} does not exist",
+            definition.statutory_compliance_requirement_id
+        ))
+    })?;
+
+    let latest: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT statutory_compliance_assessment_id, version_number
+             FROM statutory_compliance_assessments
+             WHERE statutory_compliance_requirement_id = ?1
+             ORDER BY version_number DESC
+             LIMIT 1",
+            [definition.statutory_compliance_requirement_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (supersedes_assessment_id, latest_version_number) = latest.ok_or_else(|| {
+        PersistenceError::Configuration(
+            "statutory compliance requirement has no initial assessment".to_string(),
+        )
+    })?;
+    let next_version_number = latest_version_number.checked_add(1).ok_or_else(|| {
+        PersistenceError::Configuration(
+            "statutory compliance assessment version exceeds supported range".to_string(),
+        )
+    })?;
+
+    let mut evidence = Vec::new();
+    for controlled_evidence_version_id in definition.controlled_evidence_version_ids {
+        let record: Option<(String, String, Vec<u8>, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    document_id,
+                    source_content_version_id,
+                    sha256,
+                    retention_state,
+                    verification_state
+                 FROM controlled_evidence_versions
+                 WHERE controlled_evidence_version_id = ?1",
+                [controlled_evidence_version_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            document_id,
+            source_content_version_id,
+            sha256,
+            retention_state,
+            verification_state,
+        )) = record
+        else {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {controlled_evidence_version_id} does not exist"
+            )));
+        };
+        if retention_state != "RETAINED"
+            || verification_state != "HASH_VERIFIED"
+            || sha256.len() != 32
+        {
+            return Err(PersistenceError::Configuration(format!(
+                "controlled evidence version {controlled_evidence_version_id} is not retained and hash verified"
+            )));
+        }
+        evidence.push((
+            controlled_evidence_version_id.clone(),
+            document_id,
+            source_content_version_id,
+            sha256,
+        ));
+    }
+
+    let assessment_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_assessments (
+            statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id,
+            version_number,
+            supersedes_assessment_id,
+            applicability,
+            due_date,
+            actual_compliance_date,
+            status,
+            exception_text,
+            conclusion,
+            assessed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &assessment_id,
+            definition.statutory_compliance_requirement_id,
+            next_version_number,
+            &supersedes_assessment_id,
+            &normalized.applicability,
+            normalized.due_date.as_deref(),
+            normalized.actual_compliance_date.as_deref(),
+            &normalized.status,
+            normalized.exception_text.as_deref(),
+            normalized.conclusion.as_deref(),
+            now
+        ],
+    )?;
+
+    for (controlled_evidence_version_id, document_id, source_content_version_id, source_sha256) in
+        &evidence
+    {
+        transaction.execute(
+            "INSERT INTO statutory_compliance_evidence_links (
+                statutory_compliance_evidence_link_id,
+                statutory_compliance_assessment_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                linked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                Uuid::new_v4().to_string(),
+                &assessment_id,
+                controlled_evidence_version_id,
+                document_id,
+                source_content_version_id,
+                source_sha256,
+                now
+            ],
+        )?;
+    }
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "STATUTORY_COMPLIANCE_ASSESSMENT_RECORDED",
+            entity_type: "STATUTORY_COMPLIANCE_ASSESSMENT",
+            entity_id: &assessment_id,
+            related_entity_type: Some("STATUTORY_COMPLIANCE_REQUIREMENT"),
+            related_entity_id: Some(definition.statutory_compliance_requirement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "engagementId": engagement_id,
+                "versionNumber": next_version_number,
+                "supersedesAssessmentId": supersedes_assessment_id,
+                "applicability": normalized.applicability,
+                "dueDate": normalized.due_date,
+                "actualComplianceDate": normalized.actual_compliance_date,
+                "status": normalized.status,
+                "evidenceCount": evidence.len(),
+                "hasException": normalized.exception_text.is_some(),
+                "hasConclusion": normalized.conclusion.is_some()
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(StatutoryComplianceAssessmentRecord {
+        statutory_compliance_assessment_id: assessment_id,
+        statutory_compliance_requirement_id: definition
+            .statutory_compliance_requirement_id
+            .to_string(),
+        version_number: next_version_number.max(0) as u64,
+        supersedes_assessment_id: Some(supersedes_assessment_id),
+        applicability: normalized.applicability,
+        due_date: normalized.due_date,
+        actual_compliance_date: normalized.actual_compliance_date,
+        status: normalized.status,
+        exception_text: normalized.exception_text,
+        conclusion: normalized.conclusion,
+        evidence_count: evidence.len() as u64,
+        assessed_at_ms: now,
+    })
+}
+
+pub fn list_statutory_compliance_assessments(
+    database_path: &Path,
+    statutory_compliance_requirement_id: &str,
+) -> Result<Vec<StatutoryComplianceAssessmentRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            a.statutory_compliance_assessment_id,
+            a.statutory_compliance_requirement_id,
+            a.version_number,
+            a.supersedes_assessment_id,
+            a.applicability,
+            a.due_date,
+            a.actual_compliance_date,
+            a.status,
+            a.exception_text,
+            a.conclusion,
+            (
+                SELECT COUNT(*)
+                FROM statutory_compliance_evidence_links e
+                WHERE e.statutory_compliance_assessment_id = a.statutory_compliance_assessment_id
+            ),
+            a.assessed_at_ms
+         FROM statutory_compliance_assessments a
+         WHERE a.statutory_compliance_requirement_id = ?1
+         ORDER BY a.version_number DESC",
+    )?;
+    let rows = statement.query_map([statutory_compliance_requirement_id], |row| {
+        let version_number: i64 = row.get(2)?;
+        let evidence_count: i64 = row.get(10)?;
+        Ok(StatutoryComplianceAssessmentRecord {
+            statutory_compliance_assessment_id: row.get(0)?,
+            statutory_compliance_requirement_id: row.get(1)?,
+            version_number: version_number.max(0) as u64,
+            supersedes_assessment_id: row.get(3)?,
+            applicability: row.get(4)?,
+            due_date: row.get(5)?,
+            actual_compliance_date: row.get(6)?,
+            status: row.get(7)?,
+            exception_text: row.get(8)?,
+            conclusion: row.get(9)?,
+            evidence_count: evidence_count.max(0) as u64,
+            assessed_at_ms: row.get(11)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_statutory_compliance_evidence(
+    database_path: &Path,
+    statutory_compliance_assessment_id: &str,
+) -> Result<Vec<StatutoryComplianceEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            statutory_compliance_evidence_link_id,
+            statutory_compliance_assessment_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            linked_at_ms
+         FROM statutory_compliance_evidence_links
+         WHERE statutory_compliance_assessment_id = ?1
+         ORDER BY linked_at_ms, statutory_compliance_evidence_link_id",
+    )?;
+    let rows = statement.query_map([statutory_compliance_assessment_id], |row| {
+        Ok(StatutoryComplianceEvidenceRecord {
+            statutory_compliance_evidence_link_id: row.get(0)?,
+            statutory_compliance_assessment_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            linked_at_ms: row.get(6)?,
+        })
+    })?;
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
@@ -12027,7 +12827,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 18);
+        assert_eq!(migration_count, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12084,14 +12884,17 @@ mod tests {
                        'reconciliation_runs',
                        'reconciliation_items',
                        'reconciliation_matches',
-                       'reconciliation_exceptions'
+                       'reconciliation_exceptions',
+                       'statutory_compliance_requirements',
+                       'statutory_compliance_assessments',
+                       'statutory_compliance_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 51);
+        assert_eq!(table_count, 54);
     }
 
     #[test]
@@ -12127,7 +12930,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12175,7 +12978,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_exists: i64 = connection
             .query_row(
@@ -12224,7 +13027,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12269,14 +13072,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_exists: bool = connection
             .query_row(
@@ -12318,14 +13121,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12375,14 +13178,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12427,14 +13230,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12479,14 +13282,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12531,14 +13334,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12582,14 +13385,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12633,14 +13436,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12697,14 +13500,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -12756,14 +13559,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12807,14 +13610,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_exists: bool = connection
             .query_row(
@@ -12856,14 +13659,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12907,14 +13710,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_exists: bool = connection
             .query_row(
@@ -12957,14 +13760,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 18");
+        initialize_database(&database.path).expect("database should upgrade to version 19");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 18);
+        assert_eq!(user_version, 19);
 
         let table_count: i64 = connection
             .query_row(
@@ -12981,6 +13784,58 @@ mod tests {
             )
             .expect("reconciliation framework tables should exist");
         assert_eq!(table_count, 4);
+    }
+
+    #[test]
+    fn nineteenth_migration_adds_immutable_statutory_compliance_workflow() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..18] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 18);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 19");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 19);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'statutory_compliance_requirements',
+                       'statutory_compliance_assessments',
+                       'statutory_compliance_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("statutory compliance tables should exist");
+        assert_eq!(table_count, 3);
     }
 
     #[test]
@@ -13801,6 +14656,232 @@ mod tests {
         assert!(trial_balance_mutation_error
             .to_string()
             .contains("trial balance accounts are immutable"));
+    }
+
+    #[test]
+    fn statutory_compliance_is_versioned_scoped_and_state_validated() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Compliance Client").expect("client");
+        let audit_service =
+            create_service_type(&database.path, "Statutory Audit Compliance").expect("service");
+        let other_service =
+            create_service_type(&database.path, "Other Compliance Service").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &audit_service.service_type_id,
+            "FY 2026-27 compliance",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+
+        let requirement_library = create_firm_library_item(
+            &database.path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "GST annual return filing",
+            Some("Annual filing requirement"),
+            Some(&audit_service.service_type_id),
+            r#"{"statute":"CGST","requirement":"File annual return","frequency":"ANNUAL"}"#,
+        )
+        .expect("requirement library item");
+
+        let requirement = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &requirement_library.latest_version_id,
+        )
+        .expect("requirement should be added");
+        assert_eq!(requirement.requirement_name, "GST annual return filing");
+        assert_eq!(
+            requirement.firm_library_version_id,
+            requirement_library.latest_version_id
+        );
+        assert_eq!(requirement.definition_hash.len(), 32);
+
+        let requirements =
+            list_statutory_compliance_requirements(&database.path, &engagement.engagement_id)
+                .expect("requirements");
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(
+            requirements[0].statutory_compliance_requirement_id,
+            requirement.statutory_compliance_requirement_id
+        );
+
+        let initial = list_statutory_compliance_assessments(
+            &database.path,
+            &requirement.statutory_compliance_requirement_id,
+        )
+        .expect("initial assessment");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].version_number, 1);
+        assert_eq!(initial[0].status, "UNASSESSED");
+        assert_eq!(initial[0].applicability, "UNDETERMINED");
+
+        let pending = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "applicable",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: None,
+                status: "pending",
+                exception_text: None,
+                conclusion: Some("Awaiting statutory filing."),
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect("pending assessment");
+        assert_eq!(pending.version_number, 2);
+        assert_eq!(pending.status, "PENDING");
+        assert_eq!(
+            pending.supersedes_assessment_id.as_deref(),
+            Some(initial[0].statutory_compliance_assessment_id.as_str())
+        );
+
+        let exception = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2027-01-05"),
+                status: "EXCEPTION",
+                exception_text: Some("Filed after the statutory due date."),
+                conclusion: Some("Late filing identified for reporting."),
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect("exception assessment");
+        assert_eq!(exception.version_number, 3);
+        assert_eq!(exception.status, "EXCEPTION");
+
+        let history = list_statutory_compliance_assessments(
+            &database.path,
+            &requirement.statutory_compliance_requirement_id,
+        )
+        .expect("assessment history");
+        assert_eq!(
+            history
+                .iter()
+                .map(|assessment| assessment.version_number)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+
+        let invalid_date = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-02-30"),
+                actual_compliance_date: None,
+                status: "PENDING",
+                exception_text: None,
+                conclusion: None,
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect_err("invalid date should fail");
+        assert!(invalid_date.to_string().contains("valid calendar date"));
+
+        let late_compliant = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2027-01-05"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Filed."),
+                controlled_evidence_version_ids: &[Uuid::new_v4().to_string()],
+            },
+        )
+        .expect_err("late compliant state should fail");
+        assert!(late_compliant
+            .to_string()
+            .contains("must be recorded as an EXCEPTION"));
+
+        let missing_evidence_id = Uuid::new_v4().to_string();
+        let missing_evidence = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Filed on time."),
+                controlled_evidence_version_ids: std::slice::from_ref(&missing_evidence_id),
+            },
+        )
+        .expect_err("unknown evidence should fail");
+        assert!(missing_evidence.to_string().contains("does not exist"));
+
+        let duplicate_requirement = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &requirement_library.latest_version_id,
+        )
+        .expect_err("duplicate requirement should fail");
+        assert!(duplicate_requirement
+            .to_string()
+            .contains("already present"));
+
+        let incompatible_library = create_firm_library_item(
+            &database.path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "Other-service requirement",
+            None,
+            Some(&other_service.service_type_id),
+            r#"{"statute":"OTHER","requirement":"Other service only"}"#,
+        )
+        .expect("other-service requirement");
+        let incompatible = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &incompatible_library.latest_version_id,
+        )
+        .expect_err("service mismatch should fail");
+        assert!(incompatible
+            .to_string()
+            .contains("service type does not match"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let assessment_mutation_error = connection
+            .execute(
+                "UPDATE statutory_compliance_assessments
+                 SET status = 'COMPLIANT'
+                 WHERE statutory_compliance_assessment_id = ?1",
+                [&exception.statutory_compliance_assessment_id],
+            )
+            .expect_err("compliance assessments must be immutable");
+        assert!(assessment_mutation_error
+            .to_string()
+            .contains("statutory compliance assessments are immutable"));
+
+        let requirement_mutation_error = connection
+            .execute(
+                "UPDATE statutory_compliance_requirements
+                 SET requirement_name = 'Changed'
+                 WHERE statutory_compliance_requirement_id = ?1",
+                [&requirement.statutory_compliance_requirement_id],
+            )
+            .expect_err("compliance requirements must be immutable");
+        assert!(requirement_mutation_error
+            .to_string()
+            .contains("statutory compliance requirements are immutable"));
     }
 
     #[test]
