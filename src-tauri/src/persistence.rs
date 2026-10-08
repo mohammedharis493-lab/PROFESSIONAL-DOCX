@@ -445,6 +445,16 @@ pub struct InternalAuditProcessRecord {
     pub created_at_ms: i64,
 }
 
+pub struct InternalAuditProcessDefinition<'a> {
+    pub engagement_id: &'a str,
+    pub parent_process_id: Option<&'a str>,
+    pub code: Option<&'a str>,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub display_order: i64,
+    pub status: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct InternalAuditObjectiveRecord {
     pub internal_audit_objective_id: String,
@@ -469,6 +479,16 @@ pub struct InternalAuditRiskRecord {
     pub created_at_ms: i64,
 }
 
+pub struct InternalAuditRiskDefinition<'a> {
+    pub internal_audit_objective_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub risk_classification: Option<&'a str>,
+    pub inherent_rating: Option<&'a str>,
+    pub status: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct InternalAuditControlRecord {
     pub internal_audit_control_id: String,
@@ -483,6 +503,17 @@ pub struct InternalAuditControlRecord {
     pub created_at_ms: i64,
 }
 
+pub struct InternalAuditControlDefinition<'a> {
+    pub internal_audit_risk_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub control_type: Option<&'a str>,
+    pub frequency: Option<&'a str>,
+    pub owner_text: Option<&'a str>,
+    pub status: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct InternalAuditTestRecord {
     pub internal_audit_test_id: String,
@@ -494,6 +525,16 @@ pub struct InternalAuditTestRecord {
     pub expected_result: Option<String>,
     pub status: String,
     pub created_at_ms: i64,
+}
+
+pub struct InternalAuditTestDefinition<'a> {
+    pub internal_audit_control_id: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub procedure_text: &'a str,
+    pub sample_strategy: Option<&'a str>,
+    pub expected_result: Option<&'a str>,
+    pub status: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -6531,14 +6572,17 @@ pub fn list_statutory_compliance_evidence(
 
 pub fn create_internal_audit_process(
     database_path: &Path,
-    engagement_id: &str,
-    parent_process_id: Option<&str>,
-    code: Option<&str>,
-    name: &str,
-    description: Option<&str>,
-    display_order: i64,
-    status: &str,
+    definition: InternalAuditProcessDefinition<'_>,
 ) -> Result<InternalAuditProcessRecord, PersistenceError> {
+    let InternalAuditProcessDefinition {
+        engagement_id,
+        parent_process_id,
+        code,
+        name,
+        description,
+        display_order,
+        status,
+    } = definition;
     let code = normalize_internal_audit_optional_text(code, "internal audit process code", 80)?;
     let name = normalize_domain_label(name, "internal audit process name", 240)?;
     let description = normalize_internal_audit_optional_text(
@@ -6813,14 +6857,17 @@ pub fn list_internal_audit_objectives(
 
 pub fn create_internal_audit_risk(
     database_path: &Path,
-    internal_audit_objective_id: &str,
-    reference: Option<&str>,
-    title: &str,
-    description: Option<&str>,
-    risk_classification: Option<&str>,
-    inherent_rating: Option<&str>,
-    status: &str,
+    definition: InternalAuditRiskDefinition<'_>,
 ) -> Result<InternalAuditRiskRecord, PersistenceError> {
+    let InternalAuditRiskDefinition {
+        internal_audit_objective_id,
+        reference,
+        title,
+        description,
+        risk_classification,
+        inherent_rating,
+        status,
+    } = definition;
     let reference =
         normalize_internal_audit_optional_text(reference, "internal audit risk reference", 100)?;
     let title = normalize_domain_label(title, "internal audit risk title", 500)?;
@@ -6957,15 +7004,18 @@ pub fn list_internal_audit_risks(
 
 pub fn create_internal_audit_control(
     database_path: &Path,
-    internal_audit_risk_id: &str,
-    reference: Option<&str>,
-    title: &str,
-    description: Option<&str>,
-    control_type: Option<&str>,
-    frequency: Option<&str>,
-    owner_text: Option<&str>,
-    status: &str,
+    definition: InternalAuditControlDefinition<'_>,
 ) -> Result<InternalAuditControlRecord, PersistenceError> {
+    let InternalAuditControlDefinition {
+        internal_audit_risk_id,
+        reference,
+        title,
+        description,
+        control_type,
+        frequency,
+        owner_text,
+        status,
+    } = definition;
     let reference =
         normalize_internal_audit_optional_text(reference, "internal audit control reference", 100)?;
     let title = normalize_domain_label(title, "internal audit control title", 500)?;
@@ -7104,14 +7154,17 @@ pub fn list_internal_audit_controls(
 
 pub fn create_internal_audit_test(
     database_path: &Path,
-    internal_audit_control_id: &str,
-    reference: Option<&str>,
-    title: &str,
-    procedure_text: &str,
-    sample_strategy: Option<&str>,
-    expected_result: Option<&str>,
-    status: &str,
+    definition: InternalAuditTestDefinition<'_>,
 ) -> Result<InternalAuditTestRecord, PersistenceError> {
+    let InternalAuditTestDefinition {
+        internal_audit_control_id,
+        reference,
+        title,
+        procedure_text,
+        sample_strategy,
+        expected_result,
+        status,
+    } = definition;
     let reference =
         normalize_internal_audit_optional_text(reference, "internal audit test reference", 100)?;
     let title = normalize_domain_label(title, "internal audit test title", 500)?;
@@ -14932,13 +14985,15 @@ mod tests {
 
         let process = create_internal_audit_process(
             &database.path,
-            &engagement.engagement_id,
-            None,
-            Some("P2P"),
-            "Procure-to-Pay",
-            Some("Configurable end-to-end procurement and payment process."),
-            10,
-            "ACTIVE",
+            InternalAuditProcessDefinition {
+                engagement_id: &engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: Some("Configurable end-to-end procurement and payment process."),
+                display_order: 10,
+                status: "ACTIVE",
+            },
         )
         .expect("process should create");
         assert_eq!(process.name, "Procure-to-Pay");
@@ -14956,38 +15011,47 @@ mod tests {
 
         let risk = create_internal_audit_risk(
             &database.path,
-            &objective.internal_audit_objective_id,
-            Some("R-01"),
-            "Unauthorized purchases",
-            Some("Purchases may be initiated without appropriate approval."),
-            Some("Operational"),
-            Some("High"),
-            "ACTIVE",
+            InternalAuditRiskDefinition {
+                internal_audit_objective_id: &objective.internal_audit_objective_id,
+                reference: Some("R-01"),
+                title: "Unauthorized purchases",
+                description: Some("Purchases may be initiated without appropriate approval."),
+                risk_classification: Some("Operational"),
+                inherent_rating: Some("High"),
+                status: "ACTIVE",
+            },
         )
         .expect("risk should create");
 
         let control = create_internal_audit_control(
             &database.path,
-            &risk.internal_audit_risk_id,
-            Some("C-01"),
-            "Purchase orders require delegated approval",
-            Some("Workflow routes purchase orders to an authorized approver."),
-            Some("Preventive"),
-            Some("Per transaction"),
-            Some("Procurement Manager"),
-            "ACTIVE",
+            InternalAuditControlDefinition {
+                internal_audit_risk_id: &risk.internal_audit_risk_id,
+                reference: Some("C-01"),
+                title: "Purchase orders require delegated approval",
+                description: Some("Workflow routes purchase orders to an authorized approver."),
+                control_type: Some("Preventive"),
+                frequency: Some("Per transaction"),
+                owner_text: Some("Procurement Manager"),
+                status: "ACTIVE",
+            },
         )
         .expect("control should create");
 
         let test = create_internal_audit_test(
             &database.path,
-            &control.internal_audit_control_id,
-            Some("T-01"),
-            "Test purchase order approvals",
-            "Select a sample of purchase orders and inspect evidence of delegated approval.",
-            Some("Auditor-selected sample"),
-            Some("Every sampled purchase order has valid approval before commitment."),
-            "ACTIVE",
+            InternalAuditTestDefinition {
+                internal_audit_control_id: &control.internal_audit_control_id,
+                reference: Some("T-01"),
+                title: "Test purchase order approvals",
+                procedure_text:
+                    "Select a sample of purchase orders and inspect evidence of delegated approval.",
+                sample_strategy: Some("Auditor-selected sample"),
+                expected_result: Some(
+                    "Every sampled purchase order has valid approval before commitment.",
+                ),
+                status: "ACTIVE",
+            },
         )
         .expect("test should create");
 
