@@ -3,6 +3,8 @@ CREATE TABLE statutory_compliance_requirements (
     engagement_id TEXT NOT NULL REFERENCES engagements(engagement_id),
     firm_library_item_id TEXT NOT NULL REFERENCES firm_library_items(firm_library_item_id),
     firm_library_version_id TEXT NOT NULL REFERENCES firm_library_versions(firm_library_version_id),
+    requirement_name TEXT NOT NULL CHECK (length(trim(requirement_name)) > 0),
+    requirement_description TEXT,
     definition_hash BLOB NOT NULL CHECK (length(definition_hash) = 32),
     created_at_ms INTEGER NOT NULL,
     UNIQUE (engagement_id, firm_library_item_id)
