@@ -8088,15 +8088,7 @@ pub fn run_trial_balance_opening_closing_reconciliation(
     trial_balance_import_id: &str,
 ) -> Result<ReconciliationRunRecord, PersistenceError> {
     let connection = open_configured_connection(database_path)?;
-    let import: Option<(
-        String,
-        String,
-        String,
-        String,
-        Vec<u8>,
-        String,
-        u32,
-    )> = connection
+    let import: Option<(String, String, String, String, Vec<u8>, String, u32)> = connection
         .query_row(
             "SELECT
                 engagement_id,
