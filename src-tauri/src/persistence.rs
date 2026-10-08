@@ -14672,6 +14672,234 @@ mod tests {
     }
 
     #[test]
+    fn statutory_compliance_is_versioned_scoped_and_state_validated() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "Compliance Client").expect("client");
+        let audit_service =
+            create_service_type(&database.path, "Statutory Audit Compliance").expect("service");
+        let other_service =
+            create_service_type(&database.path, "Other Compliance Service").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &audit_service.service_type_id,
+            "FY 2026-27 compliance",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+
+        let requirement_library = create_firm_library_item(
+            &database.path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "GST annual return filing",
+            Some("Annual filing requirement"),
+            Some(&audit_service.service_type_id),
+            r#"{"statute":"CGST","requirement":"File annual return","frequency":"ANNUAL"}"#,
+        )
+        .expect("requirement library item");
+
+        let requirement = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &requirement_library.latest_version_id,
+        )
+        .expect("requirement should be added");
+        assert_eq!(requirement.requirement_name, "GST annual return filing");
+        assert_eq!(
+            requirement.firm_library_version_id,
+            requirement_library.latest_version_id
+        );
+        assert_eq!(requirement.definition_hash.len(), 32);
+
+        let requirements =
+            list_statutory_compliance_requirements(&database.path, &engagement.engagement_id)
+                .expect("requirements");
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(
+            requirements[0].statutory_compliance_requirement_id,
+            requirement.statutory_compliance_requirement_id
+        );
+
+        let initial = list_statutory_compliance_assessments(
+            &database.path,
+            &requirement.statutory_compliance_requirement_id,
+        )
+        .expect("initial assessment");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].version_number, 1);
+        assert_eq!(initial[0].status, "UNASSESSED");
+        assert_eq!(initial[0].applicability, "UNDETERMINED");
+
+        let pending = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "applicable",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: None,
+                status: "pending",
+                exception_text: None,
+                conclusion: Some("Awaiting statutory filing."),
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect("pending assessment");
+        assert_eq!(pending.version_number, 2);
+        assert_eq!(pending.status, "PENDING");
+        assert_eq!(
+            pending.supersedes_assessment_id.as_deref(),
+            Some(initial[0].statutory_compliance_assessment_id.as_str())
+        );
+
+        let exception = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2027-01-05"),
+                status: "EXCEPTION",
+                exception_text: Some("Filed after the statutory due date."),
+                conclusion: Some("Late filing identified for reporting."),
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect("exception assessment");
+        assert_eq!(exception.version_number, 3);
+        assert_eq!(exception.status, "EXCEPTION");
+
+        let history = list_statutory_compliance_assessments(
+            &database.path,
+            &requirement.statutory_compliance_requirement_id,
+        )
+        .expect("assessment history");
+        assert_eq!(
+            history
+                .iter()
+                .map(|assessment| assessment.version_number)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+
+        let invalid_date = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-02-30"),
+                actual_compliance_date: None,
+                status: "PENDING",
+                exception_text: None,
+                conclusion: None,
+                controlled_evidence_version_ids: &[],
+            },
+        )
+        .expect_err("invalid date should fail");
+        assert!(invalid_date.to_string().contains("valid calendar date"));
+
+        let late_compliant = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2027-01-05"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Filed."),
+                controlled_evidence_version_ids: &[Uuid::new_v4().to_string()],
+            },
+        )
+        .expect_err("late compliant state should fail");
+        assert!(late_compliant
+            .to_string()
+            .contains("must be recorded as an EXCEPTION"));
+
+        let missing_evidence_id = Uuid::new_v4().to_string();
+        let missing_evidence = create_statutory_compliance_assessment(
+            &database.path,
+            StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Filed on time."),
+                controlled_evidence_version_ids: std::slice::from_ref(&missing_evidence_id),
+            },
+        )
+        .expect_err("unknown evidence should fail");
+        assert!(missing_evidence
+            .to_string()
+            .contains("does not exist"));
+
+        let duplicate_requirement = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &requirement_library.latest_version_id,
+        )
+        .expect_err("duplicate requirement should fail");
+        assert!(duplicate_requirement
+            .to_string()
+            .contains("already present"));
+
+        let incompatible_library = create_firm_library_item(
+            &database.path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "Other-service requirement",
+            None,
+            Some(&other_service.service_type_id),
+            r#"{"statute":"OTHER","requirement":"Other service only"}"#,
+        )
+        .expect("other-service requirement");
+        let incompatible = create_statutory_compliance_requirement(
+            &database.path,
+            &engagement.engagement_id,
+            &incompatible_library.latest_version_id,
+        )
+        .expect_err("service mismatch should fail");
+        assert!(incompatible
+            .to_string()
+            .contains("service type does not match"));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let assessment_mutation_error = connection
+            .execute(
+                "UPDATE statutory_compliance_assessments
+                 SET status = 'COMPLIANT'
+                 WHERE statutory_compliance_assessment_id = ?1",
+                [&exception.statutory_compliance_assessment_id],
+            )
+            .expect_err("compliance assessments must be immutable");
+        assert!(assessment_mutation_error
+            .to_string()
+            .contains("statutory compliance assessments are immutable"));
+
+        let requirement_mutation_error = connection
+            .execute(
+                "UPDATE statutory_compliance_requirements
+                 SET requirement_name = 'Changed'
+                 WHERE statutory_compliance_requirement_id = ?1",
+                [&requirement.statutory_compliance_requirement_id],
+            )
+            .expect_err("compliance requirements must be immutable");
+        assert!(requirement_mutation_error
+            .to_string()
+            .contains("statutory compliance requirements are immutable"));
+    }
+
+    #[test]
     fn firm_library_versions_are_exact_immutable_and_scoped() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
