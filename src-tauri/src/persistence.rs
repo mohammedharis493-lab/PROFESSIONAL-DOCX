@@ -6529,6 +6529,901 @@ pub fn list_statutory_compliance_evidence(
     Ok(result)
 }
 
+pub fn create_internal_audit_process(
+    database_path: &Path,
+    engagement_id: &str,
+    parent_process_id: Option<&str>,
+    code: Option<&str>,
+    name: &str,
+    description: Option<&str>,
+    display_order: i64,
+    status: &str,
+) -> Result<InternalAuditProcessRecord, PersistenceError> {
+    let code = normalize_internal_audit_optional_text(code, "internal audit process code", 80)?;
+    let name = normalize_domain_label(name, "internal audit process name", 240)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit process description",
+        10_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM engagements
+            WHERE engagement_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if !engagement_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    }
+
+    if let Some(parent_process_id) = parent_process_id {
+        let parent_engagement_id: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM internal_audit_processes
+                 WHERE internal_audit_process_id = ?1",
+                [parent_process_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(parent_engagement_id) = parent_engagement_id else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit parent process {parent_process_id} does not exist"
+            )));
+        };
+        if parent_engagement_id != engagement_id {
+            return Err(PersistenceError::Configuration(
+                "internal audit parent process must belong to the same engagement".to_string(),
+            ));
+        }
+    }
+
+    let internal_audit_process_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_processes (
+            internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code,
+            name,
+            description,
+            display_order,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code.as_deref(),
+            &name,
+            description.as_deref(),
+            display_order,
+            &status,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_PROCESS_CREATED",
+            entity_type: "INTERNAL_AUDIT_PROCESS",
+            entity_id: &internal_audit_process_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "parentProcessId": parent_process_id,
+                "code": code,
+                "name": name,
+                "displayOrder": display_order,
+                "status": status
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(InternalAuditProcessRecord {
+        internal_audit_process_id,
+        engagement_id: engagement_id.to_string(),
+        parent_process_id: parent_process_id.map(str::to_string),
+        code,
+        name,
+        description,
+        display_order,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_processes(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<InternalAuditProcessRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_process_id,
+            engagement_id,
+            parent_process_id,
+            code,
+            name,
+            description,
+            display_order,
+            status,
+            created_at_ms
+         FROM internal_audit_processes
+         WHERE engagement_id = ?1
+         ORDER BY display_order, created_at_ms, internal_audit_process_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        Ok(InternalAuditProcessRecord {
+            internal_audit_process_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            parent_process_id: row.get(2)?,
+            code: row.get(3)?,
+            name: row.get(4)?,
+            description: row.get(5)?,
+            display_order: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_objective(
+    database_path: &Path,
+    internal_audit_process_id: &str,
+    reference: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+    status: &str,
+) -> Result<InternalAuditObjectiveRecord, PersistenceError> {
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit objective reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit objective title", 500)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit objective description",
+        10_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let process_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_processes
+            WHERE internal_audit_process_id = ?1
+        )",
+        [internal_audit_process_id],
+        |row| row.get(0),
+    )?;
+    if !process_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit process {internal_audit_process_id} does not exist"
+        )));
+    }
+
+    let internal_audit_objective_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_objectives (
+            internal_audit_objective_id,
+            internal_audit_process_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &internal_audit_objective_id,
+            internal_audit_process_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_OBJECTIVE_CREATED",
+            entity_type: "INTERNAL_AUDIT_OBJECTIVE",
+            entity_id: &internal_audit_objective_id,
+            related_entity_type: Some("INTERNAL_AUDIT_PROCESS"),
+            related_entity_id: Some(internal_audit_process_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditObjectiveRecord {
+        internal_audit_objective_id,
+        internal_audit_process_id: internal_audit_process_id.to_string(),
+        reference,
+        title,
+        description,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_objectives(
+    database_path: &Path,
+    internal_audit_process_id: &str,
+) -> Result<Vec<InternalAuditObjectiveRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_objective_id,
+            internal_audit_process_id,
+            reference,
+            title,
+            description,
+            status,
+            created_at_ms
+         FROM internal_audit_objectives
+         WHERE internal_audit_process_id = ?1
+         ORDER BY created_at_ms, internal_audit_objective_id",
+    )?;
+    let rows = statement.query_map([internal_audit_process_id], |row| {
+        Ok(InternalAuditObjectiveRecord {
+            internal_audit_objective_id: row.get(0)?,
+            internal_audit_process_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            status: row.get(5)?,
+            created_at_ms: row.get(6)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_risk(
+    database_path: &Path,
+    internal_audit_objective_id: &str,
+    reference: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+    risk_classification: Option<&str>,
+    inherent_rating: Option<&str>,
+    status: &str,
+) -> Result<InternalAuditRiskRecord, PersistenceError> {
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit risk reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit risk title", 500)?;
+    let description =
+        normalize_internal_audit_optional_text(description, "internal audit risk description", 10_000)?;
+    let risk_classification = normalize_internal_audit_optional_text(
+        risk_classification,
+        "internal audit risk classification",
+        120,
+    )?;
+    let inherent_rating = normalize_internal_audit_optional_text(
+        inherent_rating,
+        "internal audit inherent risk rating",
+        120,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let objective_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_objectives
+            WHERE internal_audit_objective_id = ?1
+        )",
+        [internal_audit_objective_id],
+        |row| row.get(0),
+    )?;
+    if !objective_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit objective {internal_audit_objective_id} does not exist"
+        )));
+    }
+
+    let internal_audit_risk_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_risks (
+            internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference,
+            title,
+            description,
+            risk_classification,
+            inherent_rating,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            risk_classification.as_deref(),
+            inherent_rating.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_RISK_CREATED",
+            entity_type: "INTERNAL_AUDIT_RISK",
+            entity_id: &internal_audit_risk_id,
+            related_entity_type: Some("INTERNAL_AUDIT_OBJECTIVE"),
+            related_entity_id: Some(internal_audit_objective_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "riskClassification": risk_classification,
+                "inherentRating": inherent_rating,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditRiskRecord {
+        internal_audit_risk_id,
+        internal_audit_objective_id: internal_audit_objective_id.to_string(),
+        reference,
+        title,
+        description,
+        risk_classification,
+        inherent_rating,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_risks(
+    database_path: &Path,
+    internal_audit_objective_id: &str,
+) -> Result<Vec<InternalAuditRiskRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_risk_id,
+            internal_audit_objective_id,
+            reference,
+            title,
+            description,
+            risk_classification,
+            inherent_rating,
+            status,
+            created_at_ms
+         FROM internal_audit_risks
+         WHERE internal_audit_objective_id = ?1
+         ORDER BY created_at_ms, internal_audit_risk_id",
+    )?;
+    let rows = statement.query_map([internal_audit_objective_id], |row| {
+        Ok(InternalAuditRiskRecord {
+            internal_audit_risk_id: row.get(0)?,
+            internal_audit_objective_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            risk_classification: row.get(5)?,
+            inherent_rating: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_control(
+    database_path: &Path,
+    internal_audit_risk_id: &str,
+    reference: Option<&str>,
+    title: &str,
+    description: Option<&str>,
+    control_type: Option<&str>,
+    frequency: Option<&str>,
+    owner_text: Option<&str>,
+    status: &str,
+) -> Result<InternalAuditControlRecord, PersistenceError> {
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit control reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit control title", 500)?;
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit control description",
+        10_000,
+    )?;
+    let control_type =
+        normalize_internal_audit_optional_text(control_type, "internal audit control type", 120)?;
+    let frequency =
+        normalize_internal_audit_optional_text(frequency, "internal audit control frequency", 120)?;
+    let owner_text =
+        normalize_internal_audit_optional_text(owner_text, "internal audit control owner", 240)?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let risk_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_risks
+            WHERE internal_audit_risk_id = ?1
+        )",
+        [internal_audit_risk_id],
+        |row| row.get(0),
+    )?;
+    if !risk_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit risk {internal_audit_risk_id} does not exist"
+        )));
+    }
+
+    let internal_audit_control_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_controls (
+            internal_audit_control_id,
+            internal_audit_risk_id,
+            reference,
+            title,
+            description,
+            control_type,
+            frequency,
+            owner_text,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &internal_audit_control_id,
+            internal_audit_risk_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            control_type.as_deref(),
+            frequency.as_deref(),
+            owner_text.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_CONTROL_CREATED",
+            entity_type: "INTERNAL_AUDIT_CONTROL",
+            entity_id: &internal_audit_control_id,
+            related_entity_type: Some("INTERNAL_AUDIT_RISK"),
+            related_entity_id: Some(internal_audit_risk_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "controlType": control_type,
+                "frequency": frequency,
+                "owner": owner_text,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditControlRecord {
+        internal_audit_control_id,
+        internal_audit_risk_id: internal_audit_risk_id.to_string(),
+        reference,
+        title,
+        description,
+        control_type,
+        frequency,
+        owner_text,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_controls(
+    database_path: &Path,
+    internal_audit_risk_id: &str,
+) -> Result<Vec<InternalAuditControlRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_control_id,
+            internal_audit_risk_id,
+            reference,
+            title,
+            description,
+            control_type,
+            frequency,
+            owner_text,
+            status,
+            created_at_ms
+         FROM internal_audit_controls
+         WHERE internal_audit_risk_id = ?1
+         ORDER BY created_at_ms, internal_audit_control_id",
+    )?;
+    let rows = statement.query_map([internal_audit_risk_id], |row| {
+        Ok(InternalAuditControlRecord {
+            internal_audit_control_id: row.get(0)?,
+            internal_audit_risk_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            description: row.get(4)?,
+            control_type: row.get(5)?,
+            frequency: row.get(6)?,
+            owner_text: row.get(7)?,
+            status: row.get(8)?,
+            created_at_ms: row.get(9)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_test(
+    database_path: &Path,
+    internal_audit_control_id: &str,
+    reference: Option<&str>,
+    title: &str,
+    procedure_text: &str,
+    sample_strategy: Option<&str>,
+    expected_result: Option<&str>,
+    status: &str,
+) -> Result<InternalAuditTestRecord, PersistenceError> {
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit test reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit test title", 500)?;
+    let procedure_text = normalize_internal_audit_optional_text(
+        Some(procedure_text),
+        "internal audit test procedure",
+        20_000,
+    )?
+    .ok_or_else(|| {
+        PersistenceError::Configuration("internal audit test procedure is required".to_string())
+    })?;
+    let sample_strategy = normalize_internal_audit_optional_text(
+        sample_strategy,
+        "internal audit test sample strategy",
+        5_000,
+    )?;
+    let expected_result = normalize_internal_audit_optional_text(
+        expected_result,
+        "internal audit test expected result",
+        5_000,
+    )?;
+    let status = normalize_internal_audit_status(status)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let control_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_controls
+            WHERE internal_audit_control_id = ?1
+        )",
+        [internal_audit_control_id],
+        |row| row.get(0),
+    )?;
+    if !control_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit control {internal_audit_control_id} does not exist"
+        )));
+    }
+
+    let internal_audit_test_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_tests (
+            internal_audit_test_id,
+            internal_audit_control_id,
+            reference,
+            title,
+            procedure_text,
+            sample_strategy,
+            expected_result,
+            status,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &internal_audit_test_id,
+            internal_audit_control_id,
+            reference.as_deref(),
+            &title,
+            &procedure_text,
+            sample_strategy.as_deref(),
+            expected_result.as_deref(),
+            &status,
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_TEST_CREATED",
+            entity_type: "INTERNAL_AUDIT_TEST",
+            entity_id: &internal_audit_test_id,
+            related_entity_type: Some("INTERNAL_AUDIT_CONTROL"),
+            related_entity_id: Some(internal_audit_control_id),
+            occurred_at_ms: now,
+            details: json!({
+                "reference": reference,
+                "title": title,
+                "status": status
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditTestRecord {
+        internal_audit_test_id,
+        internal_audit_control_id: internal_audit_control_id.to_string(),
+        reference,
+        title,
+        procedure_text,
+        sample_strategy,
+        expected_result,
+        status,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_tests(
+    database_path: &Path,
+    internal_audit_control_id: &str,
+) -> Result<Vec<InternalAuditTestRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_test_id,
+            internal_audit_control_id,
+            reference,
+            title,
+            procedure_text,
+            sample_strategy,
+            expected_result,
+            status,
+            created_at_ms
+         FROM internal_audit_tests
+         WHERE internal_audit_control_id = ?1
+         ORDER BY created_at_ms, internal_audit_test_id",
+    )?;
+    let rows = statement.query_map([internal_audit_control_id], |row| {
+        Ok(InternalAuditTestRecord {
+            internal_audit_test_id: row.get(0)?,
+            internal_audit_control_id: row.get(1)?,
+            reference: row.get(2)?,
+            title: row.get(3)?,
+            procedure_text: row.get(4)?,
+            sample_strategy: row.get(5)?,
+            expected_result: row.get(6)?,
+            status: row.get(7)?,
+            created_at_ms: row.get(8)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_test_evidence_link(
+    database_path: &Path,
+    internal_audit_test_id: &str,
+    controlled_evidence_version_id: &str,
+    description: Option<&str>,
+) -> Result<InternalAuditTestEvidenceRecord, PersistenceError> {
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit test evidence description",
+        2_000,
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let test_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_tests
+            WHERE internal_audit_test_id = ?1
+        )",
+        [internal_audit_test_id],
+        |row| row.get(0),
+    )?;
+    if !test_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit test {internal_audit_test_id} does not exist"
+        )));
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "internal audit test evidence must be retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "internal audit test evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let duplicate: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_test_evidence_links
+            WHERE internal_audit_test_id = ?1
+              AND controlled_evidence_version_id = ?2
+        )",
+        params![internal_audit_test_id, controlled_evidence_version_id],
+        |row| row.get(0),
+    )?;
+    if duplicate {
+        return Err(PersistenceError::Configuration(
+            "this controlled evidence version is already linked to the internal audit test"
+                .to_string(),
+        ));
+    }
+
+    let internal_audit_test_evidence_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_test_evidence_links (
+            internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            description.as_deref(),
+            now
+        ],
+    )?;
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_TEST_EVIDENCE_LINKED",
+            entity_type: "INTERNAL_AUDIT_TEST_EVIDENCE",
+            entity_id: &internal_audit_test_evidence_link_id,
+            related_entity_type: Some("INTERNAL_AUDIT_TEST"),
+            related_entity_id: Some(internal_audit_test_id),
+            occurred_at_ms: now,
+            details: json!({
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256)
+            }),
+        },
+    )?;
+    transaction.commit()?;
+    Ok(InternalAuditTestEvidenceRecord {
+        internal_audit_test_evidence_link_id,
+        internal_audit_test_id: internal_audit_test_id.to_string(),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        description,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_test_evidence(
+    database_path: &Path,
+    internal_audit_test_id: &str,
+) -> Result<Vec<InternalAuditTestEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_test_evidence_link_id,
+            internal_audit_test_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         FROM internal_audit_test_evidence_links
+         WHERE internal_audit_test_id = ?1
+         ORDER BY linked_at_ms, internal_audit_test_evidence_link_id",
+    )?;
+    let rows = statement.query_map([internal_audit_test_id], |row| {
+        Ok(InternalAuditTestEvidenceRecord {
+            internal_audit_test_evidence_link_id: row.get(0)?,
+            internal_audit_test_id: row.get(1)?,
+            controlled_evidence_version_id: row.get(2)?,
+            document_id: row.get(3)?,
+            source_content_version_id: row.get(4)?,
+            source_sha256: row.get(5)?,
+            description: row.get(6)?,
+            linked_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_ledger_import(
     database_path: &Path,
     definition: LedgerImportDefinition<'_>,
