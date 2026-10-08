@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 19;
+const LATEST_SCHEMA_VERSION: i64 = 20;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -123,6 +123,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 19,
         name: "statutory_compliance",
         sql: include_str!("../migrations/0019_statutory_compliance.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "internal_audit",
+        sql: include_str!("../migrations/0020_internal_audit.sql"),
     },
 ];
 
@@ -425,6 +430,82 @@ struct StatutoryComplianceLibraryVersionIdentity {
     version_number: i64,
     definition_json: String,
     definition_hash: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditProcessRecord {
+    pub internal_audit_process_id: String,
+    pub engagement_id: String,
+    pub parent_process_id: Option<String>,
+    pub code: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub display_order: i64,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditObjectiveRecord {
+    pub internal_audit_objective_id: String,
+    pub internal_audit_process_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditRiskRecord {
+    pub internal_audit_risk_id: String,
+    pub internal_audit_objective_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub risk_classification: Option<String>,
+    pub inherent_rating: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditControlRecord {
+    pub internal_audit_control_id: String,
+    pub internal_audit_risk_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub control_type: Option<String>,
+    pub frequency: Option<String>,
+    pub owner_text: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditTestRecord {
+    pub internal_audit_test_id: String,
+    pub internal_audit_control_id: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub procedure_text: String,
+    pub sample_strategy: Option<String>,
+    pub expected_result: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditTestEvidenceRecord {
+    pub internal_audit_test_evidence_link_id: String,
+    pub internal_audit_test_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
