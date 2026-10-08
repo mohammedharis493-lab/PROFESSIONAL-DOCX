@@ -640,10 +640,7 @@ mod tests {
             parse_controlled_pdf_preview_evidence_id(&format!("/controlled-pdf/{id}")),
             Some(id.to_string())
         );
-        assert!(parse_controlled_pdf_preview_evidence_id(
-            "/controlled-pdf/not-a-uuid"
-        )
-        .is_none());
+        assert!(parse_controlled_pdf_preview_evidence_id("/controlled-pdf/not-a-uuid").is_none());
         assert!(parse_controlled_pdf_preview_evidence_id("/controlled-pdf/a/b").is_none());
         assert!(parse_controlled_pdf_preview_evidence_id("/pdf/value").is_none());
     }
