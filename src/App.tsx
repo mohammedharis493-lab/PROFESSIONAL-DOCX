@@ -7429,6 +7429,436 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">STATUTORY COMPLIANCE</span>
+                        <h3>Versioned requirements</h3>
+                      </div>
+                    </div>
+
+                    <form
+                      className="workspace-form compact"
+                      onSubmit={submitStatutoryComplianceRequirement}
+                    >
+                      <label>
+                        <span>Add firm requirement</span>
+                        <select
+                          value={newComplianceRequirementVersionId}
+                          onChange={(event) =>
+                            setNewComplianceRequirementVersionId(event.target.value)
+                          }
+                        >
+                          <option value="">Select latest methodology version</option>
+                          {compatibleComplianceLibraryItems.map((item) => (
+                            <option key={item.firmLibraryItemId} value={item.latestVersionId}>
+                              {item.name} · v{item.latestVersionNumber}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="evidence-integrity-note">
+                        Requirements are copied from an exact immutable firm-library version.
+                        Future methodology updates do not rewrite this engagement record.
+                      </p>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={workspaceBusy || !newComplianceRequirementVersionId}
+                      >
+                        Add compliance requirement
+                      </button>
+                    </form>
+
+                    <div className="workspace-mini-list">
+                      {statutoryComplianceRequirements.length ? (
+                        statutoryComplianceRequirements.map((requirement) => (
+                          <button
+                            className={`workspace-list-row${
+                              selectedStatutoryComplianceRequirementId ===
+                              requirement.statutoryComplianceRequirementId
+                                ? " workspace-list-row-active"
+                                : ""
+                            }`}
+                            type="button"
+                            key={requirement.statutoryComplianceRequirementId}
+                            onClick={() =>
+                              void selectStatutoryComplianceRequirement(
+                                requirement.statutoryComplianceRequirementId,
+                              )
+                            }
+                          >
+                            <span>
+                              <strong>{requirement.requirementName}</strong>
+                              <small>
+                                Methodology v{requirement.versionNumber} · hash{" "}
+                                {requirement.definitionHashHex.slice(0, 16)}…
+                              </small>
+                              {requirement.requirementDescription ? (
+                                <small>{requirement.requirementDescription}</small>
+                              ) : null}
+                            </span>
+                            <span className="workspace-row-action">Review →</span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          Add a statutory-compliance requirement from the firm methodology library.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">COMPLIANCE ASSESSMENT</span>
+                        <h3>
+                          {selectedStatutoryComplianceRequirement
+                            ? selectedStatutoryComplianceRequirement.requirementName
+                            : "Select a requirement"}
+                        </h3>
+                      </div>
+                    </div>
+
+                    {selectedStatutoryComplianceRequirement ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Assessment history</span>
+                          <select
+                            value={selectedStatutoryComplianceAssessmentId ?? ""}
+                            onChange={(event) =>
+                              void openStatutoryComplianceAssessment(event.target.value)
+                            }
+                          >
+                            <option value="">Select immutable assessment</option>
+                            {statutoryComplianceAssessments.map((assessment) => (
+                              <option
+                                key={assessment.statutoryComplianceAssessmentId}
+                                value={assessment.statutoryComplianceAssessmentId}
+                              >
+                                v{assessment.versionNumber} ·{" "}
+                                {assessment.status.replaceAll("_", " ")} ·{" "}
+                                {formatTimestamp(assessment.assessedAtMs)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedStatutoryComplianceAssessment ? (
+                          <div className="workspace-mini-list">
+                            <span>
+                              <strong>
+                                v{selectedStatutoryComplianceAssessment.versionNumber} ·{" "}
+                                {selectedStatutoryComplianceAssessment.status.replaceAll(
+                                  "_",
+                                  " ",
+                                )}
+                              </strong>
+                              <small>
+                                Applicability{" "}
+                                {selectedStatutoryComplianceAssessment.applicability.replaceAll(
+                                  "_",
+                                  " ",
+                                )}{" "}
+                                · due{" "}
+                                {selectedStatutoryComplianceAssessment.dueDate ?? "not set"} ·
+                                actual{" "}
+                                {selectedStatutoryComplianceAssessment.actualComplianceDate ??
+                                  "not set"}
+                              </small>
+                              {selectedStatutoryComplianceAssessment.exceptionText ? (
+                                <small>
+                                  Exception:{" "}
+                                  {selectedStatutoryComplianceAssessment.exceptionText}
+                                </small>
+                              ) : null}
+                              {selectedStatutoryComplianceAssessment.conclusion ? (
+                                <small>
+                                  Conclusion:{" "}
+                                  {selectedStatutoryComplianceAssessment.conclusion}
+                                </small>
+                              ) : null}
+                              <small>
+                                {selectedStatutoryComplianceAssessment.evidenceCount} exact
+                                controlled-evidence link
+                                {selectedStatutoryComplianceAssessment.evidenceCount === 1
+                                  ? ""
+                                  : "s"}{" "}
+                                · assessed{" "}
+                                {formatTimestamp(
+                                  selectedStatutoryComplianceAssessment.assessedAtMs,
+                                )}
+                              </small>
+                            </span>
+                            {statutoryComplianceEvidence.map((evidence) => (
+                              <span key={evidence.statutoryComplianceEvidenceLinkId}>
+                                <strong>
+                                  Controlled evidence{" "}
+                                  {evidence.controlledEvidenceVersionId.slice(0, 18)}…
+                                </strong>
+                                <small>
+                                  Source SHA {evidence.sourceSha256Hex.slice(0, 16)}… · linked{" "}
+                                  {formatTimestamp(evidence.linkedAtMs)}
+                                </small>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitStatutoryComplianceAssessment}
+                        >
+                          <div>
+                            <span className="workspace-label">NEXT IMMUTABLE VERSION</span>
+                            <p className="evidence-integrity-note">
+                              Publishing creates a new assessment version. Earlier status,
+                              evidence, exception and conclusion remain unchanged.
+                            </p>
+                          </div>
+                          <label>
+                            <span>Status</span>
+                            <select
+                              value={complianceStatus}
+                              onChange={(event) => updateComplianceStatus(event.target.value)}
+                            >
+                              <option value="PENDING">Pending</option>
+                              <option value="COMPLIANT">Compliant</option>
+                              <option value="EXCEPTION">Exception</option>
+                              <option value="NOT_APPLICABLE">Not applicable</option>
+                            </select>
+                          </label>
+
+                          {complianceStatus !== "NOT_APPLICABLE" ? (
+                            <label>
+                              <span>Due date</span>
+                              <input
+                                type="date"
+                                value={complianceDueDate}
+                                onChange={(event) => setComplianceDueDate(event.target.value)}
+                              />
+                            </label>
+                          ) : null}
+
+                          {complianceStatus === "COMPLIANT" ||
+                          complianceStatus === "EXCEPTION" ? (
+                            <label>
+                              <span>Actual compliance date</span>
+                              <input
+                                type="date"
+                                value={complianceActualDate}
+                                onChange={(event) =>
+                                  setComplianceActualDate(event.target.value)
+                                }
+                              />
+                            </label>
+                          ) : null}
+
+                          {complianceStatus === "EXCEPTION" ? (
+                            <label>
+                              <span>Exception</span>
+                              <textarea
+                                value={complianceExceptionText}
+                                onChange={(event) =>
+                                  setComplianceExceptionText(event.target.value)
+                                }
+                                rows={3}
+                                placeholder="Describe the statutory compliance exception."
+                                maxLength={10000}
+                              />
+                            </label>
+                          ) : null}
+
+                          <label>
+                            <span>
+                              Conclusion
+                              {complianceStatus === "PENDING" ? " (optional)" : ""}
+                            </span>
+                            <textarea
+                              value={complianceConclusion}
+                              onChange={(event) =>
+                                setComplianceConclusion(event.target.value)
+                              }
+                              rows={3}
+                              placeholder="Record the professional compliance conclusion."
+                              maxLength={10000}
+                            />
+                          </label>
+
+                          {complianceStatus !== "NOT_APPLICABLE" ? (
+                            <div className="workspace-card">
+                              <div className="workspace-card-heading">
+                                <div>
+                                  <span className="workspace-label">EXACT EVIDENCE</span>
+                                  <h3>
+                                    {complianceEvidenceVersionIds.length} selected version
+                                    {complianceEvidenceVersionIds.length === 1 ? "" : "s"}
+                                  </h3>
+                                </div>
+                              </div>
+
+                              <form
+                                className="workspace-inline-form"
+                                onSubmit={searchComplianceEvidence}
+                              >
+                                <label>
+                                  <span>Find supporting document</span>
+                                  <input
+                                    value={complianceEvidenceSearchQuery}
+                                    onChange={(event) =>
+                                      setComplianceEvidenceSearchQuery(event.target.value)
+                                    }
+                                    placeholder="Search filename or path"
+                                  />
+                                </label>
+                                <button
+                                  className="secondary-button"
+                                  type="submit"
+                                  disabled={
+                                    complianceEvidenceSearchBusy ||
+                                    !complianceEvidenceSearchQuery.trim()
+                                  }
+                                >
+                                  {complianceEvidenceSearchBusy ? "Searching…" : "Search"}
+                                </button>
+                              </form>
+
+                              {complianceEvidenceSearchResults.length ? (
+                                <div className="workspace-mini-list">
+                                  {complianceEvidenceSearchResults.map((result) => (
+                                    <button
+                                      className={`workspace-list-row${
+                                        selectedComplianceEvidenceDocument?.documentId ===
+                                        result.documentId
+                                          ? " workspace-list-row-active"
+                                          : ""
+                                      }`}
+                                      type="button"
+                                      key={result.fileInstanceId}
+                                      onClick={() =>
+                                        void selectComplianceEvidenceDocument(result)
+                                      }
+                                    >
+                                      <span>
+                                        <strong>{result.name}</strong>
+                                        <small>{result.path}</small>
+                                      </span>
+                                      <span className="workspace-row-action">Versions →</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              {selectedComplianceEvidenceDocument ? (
+                                <>
+                                  <label>
+                                    <span>Hash-verified controlled version</span>
+                                    <select
+                                      value={selectedComplianceControlledVersionId}
+                                      onChange={(event) =>
+                                        setSelectedComplianceControlledVersionId(
+                                          event.target.value,
+                                        )
+                                      }
+                                    >
+                                      <option value="">Select controlled evidence</option>
+                                      {complianceControlledEvidenceVersions.map((entry) => (
+                                        <option
+                                          key={
+                                            entry.controlledEvidenceVersionId ??
+                                            entry.contentVersionId
+                                          }
+                                          value={entry.controlledEvidenceVersionId ?? ""}
+                                        >
+                                          v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                          {formatTimestamp(entry.capturedAtMs)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  {!complianceControlledEvidenceVersions.length ? (
+                                    <p className="evidence-integrity-note">
+                                      No hash-verified controlled version exists for this
+                                      document yet.
+                                    </p>
+                                  ) : null}
+                                  <button
+                                    className="secondary-button"
+                                    type="button"
+                                    disabled={
+                                      !selectedComplianceControlledVersionId ||
+                                      complianceEvidenceVersionIds.includes(
+                                        selectedComplianceControlledVersionId,
+                                      )
+                                    }
+                                    onClick={addComplianceEvidenceVersion}
+                                  >
+                                    Add exact evidence version
+                                  </button>
+                                </>
+                              ) : null}
+
+                              {complianceEvidenceVersionIds.length ? (
+                                <div className="workspace-mini-list">
+                                  {complianceEvidenceVersionIds.map((versionId) => (
+                                    <span key={versionId}>
+                                      <strong>
+                                        Controlled ID {versionId.slice(0, 18)}…
+                                      </strong>
+                                      <button
+                                        className="file-action"
+                                        type="button"
+                                        onClick={() =>
+                                          setComplianceEvidenceVersionIds((current) =>
+                                            current.filter((item) => item !== versionId),
+                                          )
+                                        }
+                                      >
+                                        Remove
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="evidence-integrity-note">
+                                  Compliant status requires at least one exact controlled-evidence
+                                  version. Pending and exception assessments may be published
+                                  without evidence when professionally appropriate.
+                                </p>
+                              )}
+                            </div>
+                          ) : null}
+
+                          <button
+                            className="primary-button"
+                            type="submit"
+                            disabled={
+                              workspaceBusy ||
+                              (complianceStatus === "COMPLIANT" &&
+                                (!complianceActualDate ||
+                                  !complianceConclusion.trim() ||
+                                  complianceEvidenceVersionIds.length === 0)) ||
+                              (complianceStatus === "EXCEPTION" &&
+                                (!complianceExceptionText.trim() ||
+                                  !complianceConclusion.trim())) ||
+                              (complianceStatus === "NOT_APPLICABLE" &&
+                                !complianceConclusion.trim())
+                            }
+                          >
+                            Publish next assessment version
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Select a compliance requirement to review and assess it.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="workspace-grid workspace-grid-three">
                   <div className="workspace-card">
                     <div className="workspace-card-heading">
