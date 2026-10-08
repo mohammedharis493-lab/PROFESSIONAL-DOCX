@@ -5,6 +5,7 @@ mod launcher;
 mod ledger;
 mod persistence;
 mod preview;
+mod reconciliation;
 mod search;
 mod spreadsheet;
 mod trial_balance;
