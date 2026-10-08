@@ -4587,7 +4587,7 @@ fn normalize_statutory_compliance_assessment(
             if applicability != "UNDETERMINED"
                 || due_date.is_some()
                 || actual_compliance_date.is_some()
-                || normalized.exception_text.is_some()
+                || exception_text.is_some()
                 || conclusion.is_some()
                 || !controlled_evidence_version_ids.is_empty()
             {
