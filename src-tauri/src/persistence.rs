@@ -5909,6 +5909,226 @@ pub fn list_firm_library_versions(
     Ok(result)
 }
 
+pub fn create_statutory_compliance_requirement(
+    database_path: &Path,
+    engagement_id: &str,
+    firm_library_version_id: &str,
+) -> Result<StatutoryComplianceRequirementRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_service_type_id: Option<String> = transaction
+        .query_row(
+            "SELECT service_type_id
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [engagement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let engagement_service_type_id = engagement_service_type_id.ok_or_else(|| {
+        PersistenceError::Configuration(format!("engagement {engagement_id} does not exist"))
+    })?;
+
+    let library_version: Option<(String, String, Option<String>, Option<String>, i64, String, Vec<u8>)> =
+        transaction
+            .query_row(
+                "SELECT
+                    i.firm_library_item_id,
+                    i.name,
+                    i.description,
+                    i.service_type_id,
+                    v.version_number,
+                    v.definition_json,
+                    v.definition_hash
+                 FROM firm_library_versions v
+                 JOIN firm_library_items i
+                   ON i.firm_library_item_id = v.firm_library_item_id
+                 WHERE v.firm_library_version_id = ?1
+                   AND i.category = 'STATUTORY_COMPLIANCE_REQUIREMENT'
+                   AND i.archived_at_ms IS NULL",
+                [firm_library_version_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+    let Some((
+        firm_library_item_id,
+        requirement_name,
+        requirement_description,
+        requirement_service_type_id,
+        version_number,
+        definition_json,
+        definition_hash,
+    )) = library_version
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "statutory compliance library version {firm_library_version_id} does not exist"
+        )));
+    };
+
+    if requirement_service_type_id
+        .as_deref()
+        .is_some_and(|value| value != engagement_service_type_id)
+    {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance requirement service type does not match the engagement"
+                .to_string(),
+        ));
+    }
+    if definition_hash.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "statutory compliance requirement definition hash is invalid".to_string(),
+        ));
+    }
+
+    let existing: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM statutory_compliance_requirements
+            WHERE engagement_id = ?1
+              AND firm_library_item_id = ?2
+        )",
+        params![engagement_id, &firm_library_item_id],
+        |row| row.get(0),
+    )?;
+    if existing {
+        return Err(PersistenceError::Configuration(
+            "this statutory compliance requirement is already present in the engagement"
+                .to_string(),
+        ));
+    }
+
+    let requirement_id = Uuid::new_v4().to_string();
+    let assessment_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_requirements (
+            statutory_compliance_requirement_id,
+            engagement_id,
+            firm_library_item_id,
+            firm_library_version_id,
+            requirement_name,
+            requirement_description,
+            definition_hash,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &requirement_id,
+            engagement_id,
+            &firm_library_item_id,
+            firm_library_version_id,
+            &requirement_name,
+            requirement_description.as_deref(),
+            &definition_hash,
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO statutory_compliance_assessments (
+            statutory_compliance_assessment_id,
+            statutory_compliance_requirement_id,
+            version_number,
+            supersedes_assessment_id,
+            applicability,
+            due_date,
+            actual_compliance_date,
+            status,
+            exception_text,
+            conclusion,
+            assessed_at_ms
+         ) VALUES (?1, ?2, 1, NULL, 'UNDETERMINED', NULL, NULL, 'UNASSESSED', NULL, NULL, ?3)",
+        params![&assessment_id, &requirement_id, now],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "STATUTORY_COMPLIANCE_REQUIREMENT_ADDED",
+            entity_type: "STATUTORY_COMPLIANCE_REQUIREMENT",
+            entity_id: &requirement_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({
+                "firmLibraryItemId": firm_library_item_id,
+                "firmLibraryVersionId": firm_library_version_id,
+                "versionNumber": version_number,
+                "definitionHash": bytes_to_lower_hex(&definition_hash),
+                "initialAssessmentId": assessment_id
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(StatutoryComplianceRequirementRecord {
+        statutory_compliance_requirement_id: requirement_id,
+        engagement_id: engagement_id.to_string(),
+        firm_library_item_id,
+        firm_library_version_id: firm_library_version_id.to_string(),
+        requirement_name,
+        requirement_description,
+        version_number: version_number.max(0) as u64,
+        definition_json,
+        definition_hash,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_statutory_compliance_requirements(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<StatutoryComplianceRequirementRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            r.statutory_compliance_requirement_id,
+            r.engagement_id,
+            r.firm_library_item_id,
+            r.firm_library_version_id,
+            r.requirement_name,
+            r.requirement_description,
+            v.version_number,
+            v.definition_json,
+            r.definition_hash,
+            r.created_at_ms
+         FROM statutory_compliance_requirements r
+         JOIN firm_library_versions v
+           ON v.firm_library_version_id = r.firm_library_version_id
+         WHERE r.engagement_id = ?1
+         ORDER BY r.requirement_name COLLATE NOCASE, r.created_at_ms, r.statutory_compliance_requirement_id",
+    )?;
+    let rows = statement.query_map([engagement_id], |row| {
+        let version_number: i64 = row.get(6)?;
+        Ok(StatutoryComplianceRequirementRecord {
+            statutory_compliance_requirement_id: row.get(0)?,
+            engagement_id: row.get(1)?,
+            firm_library_item_id: row.get(2)?,
+            firm_library_version_id: row.get(3)?,
+            requirement_name: row.get(4)?,
+            requirement_description: row.get(5)?,
+            version_number: version_number.max(0) as u64,
+            definition_json: row.get(7)?,
+            definition_hash: row.get(8)?,
+            created_at_ms: row.get(9)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
 pub fn create_ledger_import(
     database_path: &Path,
     definition: LedgerImportDefinition<'_>,
