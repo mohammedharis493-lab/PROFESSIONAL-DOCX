@@ -396,6 +396,54 @@ type DueDiligenceIssueEvidence = {
   linkedAtMs: number;
 };
 
+type DueDiligenceReport = {
+  dueDiligenceReportId: string;
+  dueDiligenceWorkspaceId: string;
+  latestVersionId: string;
+  latestVersionNumber: number;
+  latestTitle: string;
+  latestExecutiveSummary: string | null;
+  latestScopeSummary: string | null;
+  latestOverallConclusion: string | null;
+  latestIssueCount: number;
+  latestIssueSnapshotHashHex: string;
+  latestCreatedBy: string | null;
+  latestCreatedAtMs: number;
+  createdAtMs: number;
+};
+
+type DueDiligenceReportVersion = {
+  dueDiligenceReportVersionId: string;
+  dueDiligenceReportId: string;
+  versionNumber: number;
+  title: string;
+  executiveSummary: string | null;
+  scopeSummary: string | null;
+  overallConclusion: string | null;
+  issueCount: number;
+  issueSnapshotHashHex: string;
+  createdBy: string | null;
+  createdAtMs: number;
+};
+
+type DueDiligenceReportIssue = {
+  dueDiligenceReportIssueLinkId: string;
+  dueDiligenceReportVersionId: string;
+  dueDiligenceIssueId: string;
+  dueDiligenceIssueEventId: string;
+  issueType: string;
+  reference: string | null;
+  title: string;
+  category: string | null;
+  severity: string | null;
+  sequenceNumber: number;
+  status: string;
+  internalConclusion: string | null;
+  dealImpact: string | null;
+  recommendation: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1653,6 +1701,22 @@ export default function App() {
     useState("");
   const [dueDiligenceIssueEvidenceSearchBusy, setDueDiligenceIssueEvidenceSearchBusy] =
     useState(false);
+  const [dueDiligenceReports, setDueDiligenceReports] = useState<DueDiligenceReport[]>([]);
+  const [selectedDueDiligenceReportId, setSelectedDueDiligenceReportId] =
+    useState<string | null>(null);
+  const [dueDiligenceReportVersions, setDueDiligenceReportVersions] =
+    useState<DueDiligenceReportVersion[]>([]);
+  const [selectedDueDiligenceReportVersionId, setSelectedDueDiligenceReportVersionId] =
+    useState<string | null>(null);
+  const [dueDiligenceReportVersionIssues, setDueDiligenceReportVersionIssues] =
+    useState<DueDiligenceReportIssue[]>([]);
+  const [dueDiligenceReportTitle, setDueDiligenceReportTitle] = useState("");
+  const [dueDiligenceReportExecutiveSummary, setDueDiligenceReportExecutiveSummary] =
+    useState("");
+  const [dueDiligenceReportScopeSummary, setDueDiligenceReportScopeSummary] = useState("");
+  const [dueDiligenceReportOverallConclusion, setDueDiligenceReportOverallConclusion] =
+    useState("");
+  const [dueDiligenceReportIssueIds, setDueDiligenceReportIssueIds] = useState<string[]>([]);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -2121,6 +2185,16 @@ export default function App() {
     setDueDiligenceIssueEvidenceVersionHistory([]);
     setSelectedDueDiligenceIssueControlledVersionId("");
     setDueDiligenceIssueEvidenceEventId("");
+    setDueDiligenceReports([]);
+    setSelectedDueDiligenceReportId(null);
+    setDueDiligenceReportVersions([]);
+    setSelectedDueDiligenceReportVersionId(null);
+    setDueDiligenceReportVersionIssues([]);
+    setDueDiligenceReportTitle("");
+    setDueDiligenceReportExecutiveSummary("");
+    setDueDiligenceReportScopeSummary("");
+    setDueDiligenceReportOverallConclusion("");
+    setDueDiligenceReportIssueIds([]);
     try {
       const [
         areas,
@@ -2188,6 +2262,9 @@ export default function App() {
       setDueDiligenceWorkspace(dueDiligenceWorkspaceRecord);
       if (dueDiligenceWorkspaceRecord) {
         await refreshDueDiligenceWorkspaceDetails(
+          dueDiligenceWorkspaceRecord.dueDiligenceWorkspaceId,
+        );
+        await refreshDueDiligenceReports(
           dueDiligenceWorkspaceRecord.dueDiligenceWorkspaceId,
         );
       }
@@ -4791,6 +4868,173 @@ export default function App() {
     );
   }
 
+  function clearDueDiligenceReportDraft() {
+    setDueDiligenceReportTitle("");
+    setDueDiligenceReportExecutiveSummary("");
+    setDueDiligenceReportScopeSummary("");
+    setDueDiligenceReportOverallConclusion("");
+    setDueDiligenceReportIssueIds([]);
+  }
+
+  async function loadDueDiligenceReportVersion(
+    version: DueDiligenceReportVersion,
+  ) {
+    const issueSnapshots = await invoke<DueDiligenceReportIssue[]>(
+      "list_due_diligence_report_version_issues",
+      { dueDiligenceReportVersionId: version.dueDiligenceReportVersionId },
+    );
+    setSelectedDueDiligenceReportVersionId(version.dueDiligenceReportVersionId);
+    setDueDiligenceReportVersionIssues(issueSnapshots);
+    setDueDiligenceReportTitle(version.title);
+    setDueDiligenceReportExecutiveSummary(version.executiveSummary ?? "");
+    setDueDiligenceReportScopeSummary(version.scopeSummary ?? "");
+    setDueDiligenceReportOverallConclusion(version.overallConclusion ?? "");
+    setDueDiligenceReportIssueIds(
+      issueSnapshots.map((snapshot) => snapshot.dueDiligenceIssueId),
+    );
+  }
+
+  async function loadDueDiligenceReportDetails(
+    dueDiligenceReportId: string,
+    preferredVersionId?: string | null,
+  ) {
+    const versions = await invoke<DueDiligenceReportVersion[]>(
+      "list_due_diligence_report_versions",
+      { dueDiligenceReportId },
+    );
+    setDueDiligenceReportVersions(versions);
+    const requestedVersion = preferredVersionId
+      ? versions.find(
+          (version) =>
+            version.dueDiligenceReportVersionId === preferredVersionId,
+        )
+      : undefined;
+    const version = requestedVersion || versions[versions.length - 1] || null;
+    if (version) {
+      await loadDueDiligenceReportVersion(version);
+    } else {
+      setSelectedDueDiligenceReportVersionId(null);
+      setDueDiligenceReportVersionIssues([]);
+      clearDueDiligenceReportDraft();
+    }
+  }
+
+  async function refreshDueDiligenceReports(
+    dueDiligenceWorkspaceId: string,
+    preferredReportId?: string | null,
+  ) {
+    const reports = await invoke<DueDiligenceReport[]>(
+      "list_due_diligence_reports",
+      { dueDiligenceWorkspaceId },
+    );
+    setDueDiligenceReports(reports);
+    const requestedReportId = preferredReportId ?? selectedDueDiligenceReportId;
+    const reportId =
+      requestedReportId &&
+      reports.some((report) => report.dueDiligenceReportId === requestedReportId)
+        ? requestedReportId
+        : reports[0]?.dueDiligenceReportId ?? null;
+    setSelectedDueDiligenceReportId(reportId);
+    if (reportId) {
+      await loadDueDiligenceReportDetails(reportId);
+    } else {
+      setDueDiligenceReportVersions([]);
+      setSelectedDueDiligenceReportVersionId(null);
+      setDueDiligenceReportVersionIssues([]);
+      clearDueDiligenceReportDraft();
+    }
+  }
+
+  async function selectDueDiligenceReport(
+    dueDiligenceReportId: string | null,
+  ) {
+    setSelectedDueDiligenceReportId(dueDiligenceReportId);
+    setDueDiligenceReportVersions([]);
+    setSelectedDueDiligenceReportVersionId(null);
+    setDueDiligenceReportVersionIssues([]);
+    if (!dueDiligenceReportId) {
+      clearDueDiligenceReportDraft();
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceReportDetails(dueDiligenceReportId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceReportVersion(
+    dueDiligenceReportVersionId: string,
+  ) {
+    const version = dueDiligenceReportVersions.find(
+      (item) =>
+        item.dueDiligenceReportVersionId === dueDiligenceReportVersionId,
+    );
+    if (!version) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceReportVersion(version);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  function toggleDueDiligenceReportIssue(dueDiligenceIssueId: string) {
+    setDueDiligenceReportIssueIds((current) =>
+      current.includes(dueDiligenceIssueId)
+        ? current.filter((item) => item !== dueDiligenceIssueId)
+        : [...current, dueDiligenceIssueId],
+    );
+  }
+
+  async function submitDueDiligenceReportVersion(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!dueDiligenceWorkspace || !dueDiligenceReportTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const input = {
+        title: dueDiligenceReportTitle.trim(),
+        executiveSummary: dueDiligenceReportExecutiveSummary.trim() || null,
+        scopeSummary: dueDiligenceReportScopeSummary.trim() || null,
+        overallConclusion: dueDiligenceReportOverallConclusion.trim() || null,
+        issueIds: dueDiligenceReportIssueIds,
+        createdBy: null,
+      };
+      const report = selectedDueDiligenceReportId
+        ? await invoke<DueDiligenceReport>(
+            "publish_due_diligence_report_version",
+            {
+              dueDiligenceReportId: selectedDueDiligenceReportId,
+              input,
+            },
+          )
+        : await invoke<DueDiligenceReport>("create_due_diligence_report", {
+            dueDiligenceWorkspaceId:
+              dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+            input,
+          });
+
+      await refreshDueDiligenceReports(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        report.dueDiligenceReportId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function refreshDueDiligenceWorkspaceDetails(
     dueDiligenceWorkspaceId: string,
     preferredRequestId?: string | null,
@@ -4855,6 +5099,7 @@ export default function App() {
       setDueDiligenceWorkspace(workspace);
       setNewDueDiligenceWorkspaceName("");
       await refreshDueDiligenceWorkspaceDetails(workspace.dueDiligenceWorkspaceId);
+      await refreshDueDiligenceReports(workspace.dueDiligenceWorkspaceId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -6863,6 +7108,16 @@ export default function App() {
   const selectedDueDiligenceIssue =
     dueDiligenceIssues.find(
       (item) => item.dueDiligenceIssueId === selectedDueDiligenceIssueId,
+    ) ?? null;
+  const selectedDueDiligenceReport =
+    dueDiligenceReports.find(
+      (item) => item.dueDiligenceReportId === selectedDueDiligenceReportId,
+    ) ?? null;
+  const selectedDueDiligenceReportVersion =
+    dueDiligenceReportVersions.find(
+      (item) =>
+        item.dueDiligenceReportVersionId ===
+        selectedDueDiligenceReportVersionId,
     ) ?? null;
   const dueDiligenceIssueControlledEvidenceVersions =
     dueDiligenceIssueEvidenceVersionHistory.filter(
@@ -11555,6 +11810,290 @@ export default function App() {
                     ) : (
                       <div className="empty-result">
                         Create the internal DD workspace before reviewing issues.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">DD REPORT BUILDER · INTERNAL ONLY</span>
+                        <h3>Immutable report versions</h3>
+                      </div>
+                    </div>
+
+                    {dueDiligenceWorkspace ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Report</span>
+                          <select
+                            value={selectedDueDiligenceReportId ?? ""}
+                            onChange={(event) =>
+                              void selectDueDiligenceReport(
+                                event.target.value || null,
+                              )
+                            }
+                          >
+                            <option value="">New internal report</option>
+                            {dueDiligenceReports.map((report) => (
+                              <option
+                                key={report.dueDiligenceReportId}
+                                value={report.dueDiligenceReportId}
+                              >
+                                {report.latestTitle} · v{report.latestVersionNumber}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedDueDiligenceReport ? (
+                          <label className="workspace-form compact">
+                            <span>Base draft on immutable version</span>
+                            <select
+                              value={selectedDueDiligenceReportVersionId ?? ""}
+                              onChange={(event) =>
+                                void selectDueDiligenceReportVersion(
+                                  event.target.value,
+                                )
+                              }
+                              disabled={workspaceBusy}
+                            >
+                              {dueDiligenceReportVersions.map((version) => (
+                                <option
+                                  key={version.dueDiligenceReportVersionId}
+                                  value={version.dueDiligenceReportVersionId}
+                                >
+                                  v{version.versionNumber} · {version.issueCount} issue(s) ·{" "}
+                                  {formatTimestamp(version.createdAtMs)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitDueDiligenceReportVersion}
+                        >
+                          <label>
+                            <span>Report title</span>
+                            <input
+                              value={dueDiligenceReportTitle}
+                              onChange={(event) =>
+                                setDueDiligenceReportTitle(event.target.value)
+                              }
+                              placeholder="Financial due diligence report"
+                              maxLength={500}
+                            />
+                          </label>
+                          <label>
+                            <span>Executive summary</span>
+                            <textarea
+                              value={dueDiligenceReportExecutiveSummary}
+                              onChange={(event) =>
+                                setDueDiligenceReportExecutiveSummary(
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Internal executive summary"
+                              maxLength={32000}
+                            />
+                          </label>
+                          <label>
+                            <span>Scope summary</span>
+                            <textarea
+                              value={dueDiligenceReportScopeSummary}
+                              onChange={(event) =>
+                                setDueDiligenceReportScopeSummary(event.target.value)
+                              }
+                              placeholder="Scope, limitations, and work performed"
+                              maxLength={32000}
+                            />
+                          </label>
+                          <label>
+                            <span>Overall conclusion</span>
+                            <textarea
+                              value={dueDiligenceReportOverallConclusion}
+                              onChange={(event) =>
+                                setDueDiligenceReportOverallConclusion(
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Internal overall conclusion"
+                              maxLength={32000}
+                            />
+                          </label>
+
+                          <div className="workspace-mini-list">
+                            <span>
+                              <strong>
+                                Issue snapshot · {dueDiligenceReportIssueIds.length} selected
+                              </strong>
+                              <small>
+                                On save, the backend resolves each selected issue to its latest
+                                immutable issue-event ID and hashes the exact snapshot set.
+                              </small>
+                            </span>
+                            {dueDiligenceIssues.length ? (
+                              dueDiligenceIssues.map((issue) => (
+                                <label
+                                  key={issue.dueDiligenceIssueId}
+                                  className="evidence-integrity-note"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={dueDiligenceReportIssueIds.includes(
+                                      issue.dueDiligenceIssueId,
+                                    )}
+                                    onChange={() =>
+                                      toggleDueDiligenceReportIssue(
+                                        issue.dueDiligenceIssueId,
+                                      )
+                                    }
+                                  />{" "}
+                                  {issue.reference ? issue.reference + " · " : ""}
+                                  {issue.title} ·{" "}
+                                  {issue.latestStatus.replaceAll("_", " ")} · event #
+                                  {issue.latestSequenceNumber}
+                                </label>
+                              ))
+                            ) : (
+                              <div className="empty-result">
+                                Record internal findings or deal issues before adding report
+                                snapshots.
+                              </div>
+                            )}
+                          </div>
+
+                          <p className="evidence-integrity-note">
+                            Saving creates an immutable internal report version. It does not publish
+                            externally and it never rewrites prior report versions or issue
+                            snapshots.
+                          </p>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !dueDiligenceReportTitle.trim()}
+                          >
+                            {selectedDueDiligenceReport
+                              ? "Save new immutable report version"
+                              : "Create immutable internal report"}
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Create the internal DD workspace before building a report.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">REPORT SNAPSHOT REVIEW</span>
+                        <h3>Exact issue-event snapshot</h3>
+                      </div>
+                    </div>
+
+                    {selectedDueDiligenceReportVersion ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              v{selectedDueDiligenceReportVersion.versionNumber} ·{" "}
+                              {selectedDueDiligenceReportVersion.title}
+                            </strong>
+                            <small>
+                              {selectedDueDiligenceReportVersion.issueCount} issue(s) · snapshot
+                              SHA{" "}
+                              {selectedDueDiligenceReportVersion.issueSnapshotHashHex.slice(
+                                0,
+                                20,
+                              )}…
+                            </small>
+                            <small>
+                              {formatTimestamp(
+                                selectedDueDiligenceReportVersion.createdAtMs,
+                              )}
+                              {selectedDueDiligenceReportVersion.createdBy
+                                ? " · " + selectedDueDiligenceReportVersion.createdBy
+                                : ""}
+                            </small>
+                            {selectedDueDiligenceReportVersion.executiveSummary ? (
+                              <small>
+                                Executive summary:{" "}
+                                {selectedDueDiligenceReportVersion.executiveSummary}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceReportVersion.scopeSummary ? (
+                              <small>
+                                Scope: {selectedDueDiligenceReportVersion.scopeSummary}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceReportVersion.overallConclusion ? (
+                              <small>
+                                Conclusion:{" "}
+                                {selectedDueDiligenceReportVersion.overallConclusion}
+                              </small>
+                            ) : null}
+                          </span>
+                        </div>
+
+                        <div className="workspace-mini-list">
+                          {dueDiligenceReportVersionIssues.length ? (
+                            dueDiligenceReportVersionIssues.map((snapshot) => (
+                              <span
+                                key={snapshot.dueDiligenceReportIssueLinkId}
+                              >
+                                <strong>
+                                  {snapshot.reference ? snapshot.reference + " · " : ""}
+                                  {snapshot.title}
+                                </strong>
+                                <small>
+                                  {snapshot.issueType.replaceAll("_", " ")} ·{" "}
+                                  {snapshot.status.replaceAll("_", " ")} · snapshotted event #
+                                  {snapshot.sequenceNumber}
+                                </small>
+                                <small>
+                                  Issue ID {snapshot.dueDiligenceIssueId.slice(0, 18)}… · event ID{" "}
+                                  {snapshot.dueDiligenceIssueEventId.slice(0, 18)}…
+                                </small>
+                                {snapshot.category || snapshot.severity ? (
+                                  <small>
+                                    {snapshot.category ?? "Uncategorized"}
+                                    {snapshot.severity
+                                      ? " · severity: " + snapshot.severity
+                                      : ""}
+                                  </small>
+                                ) : null}
+                                {snapshot.internalConclusion ? (
+                                  <small>
+                                    Conclusion: {snapshot.internalConclusion}
+                                  </small>
+                                ) : null}
+                                {snapshot.dealImpact ? (
+                                  <small>Deal impact: {snapshot.dealImpact}</small>
+                                ) : null}
+                                {snapshot.recommendation ? (
+                                  <small>
+                                    Recommendation: {snapshot.recommendation}
+                                  </small>
+                                ) : null}
+                              </span>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              This immutable report version contains no issue snapshots.
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Select or create an internal report to review an immutable snapshot.
                       </div>
                     )}
                   </div>
