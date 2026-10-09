@@ -4242,7 +4242,13 @@ export default function App() {
       engagementFindings.find(
         (item) => item.internalAuditFindingId === focusFindingId,
       ) ??
+      clientFindings.find(
+        (item) => item.internalAuditFindingId === focusFindingId,
+      ) ??
       engagementFindings.find(
+        (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
+      ) ??
+      clientFindings.find(
         (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
       ) ??
       engagementFindings[0] ??
@@ -6130,7 +6136,11 @@ export default function App() {
   const selectedInternalAuditFinding =
     internalAuditFindings.find(
       (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
-    ) ?? null;
+    ) ??
+    clientInternalAuditFindings.find(
+      (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
+    ) ??
+    null;
   const findingControlledEvidenceVersions = findingEvidenceVersionHistory.filter(
     (entry) =>
       entry.controlledEvidenceVersionId &&
@@ -9188,6 +9198,580 @@ export default function App() {
                         </div>
                       </div>
                     ) : null}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">INTERNAL AUDIT FINDINGS</span>
+                        <h3>Condition, cause, effect & recommendation</h3>
+                      </div>
+                    </div>
+
+                    <label className="workspace-form compact">
+                      <span>Current finding</span>
+                      <select
+                        value={selectedInternalAuditFindingId ?? ""}
+                        onChange={(event) =>
+                          void selectInternalAuditFinding(event.target.value || null)
+                        }
+                      >
+                        <option value="">Select finding</option>
+                        {internalAuditFindings.map((finding) => (
+                          <option
+                            key={finding.internalAuditFindingId}
+                            value={finding.internalAuditFindingId}
+                          >
+                            {finding.reference ? `${finding.reference} · ` : ""}
+                            {finding.title} · {finding.latestStatus.replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <form className="workspace-form compact" onSubmit={submitInternalAuditFinding}>
+                      <p className="evidence-integrity-note">
+                        New findings are anchored to the selected process and may also bind the
+                        selected risk, control, test, workpaper, and a prior-period repeated finding.
+                        The initial follow-up is created immutably as OPEN.
+                      </p>
+                      <div className="workspace-grid workspace-grid-two">
+                        <label>
+                          <span>Reference</span>
+                          <input
+                            value={newInternalAuditFindingReference}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingReference(event.target.value)
+                            }
+                            placeholder="F-01"
+                            maxLength={100}
+                          />
+                        </label>
+                        <label>
+                          <span>Risk classification</span>
+                          <input
+                            value={newInternalAuditFindingRiskClassification}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingRiskClassification(event.target.value)
+                            }
+                            placeholder={selectedInternalAuditRisk?.riskClassification ?? "High"}
+                            maxLength={160}
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        <span>Finding title</span>
+                        <input
+                          value={newInternalAuditFindingTitle}
+                          onChange={(event) => setNewInternalAuditFindingTitle(event.target.value)}
+                          placeholder="Purchase approvals exceeded delegated authority"
+                          maxLength={300}
+                        />
+                      </label>
+                      <label>
+                        <span>Condition</span>
+                        <textarea
+                          value={newInternalAuditFindingCondition}
+                          onChange={(event) =>
+                            setNewInternalAuditFindingCondition(event.target.value)
+                          }
+                          placeholder="What was observed?"
+                          maxLength={8000}
+                        />
+                      </label>
+                      <label>
+                        <span>Criteria</span>
+                        <textarea
+                          value={newInternalAuditFindingCriteria}
+                          onChange={(event) =>
+                            setNewInternalAuditFindingCriteria(event.target.value)
+                          }
+                          placeholder="What should have happened?"
+                          maxLength={8000}
+                        />
+                      </label>
+                      <div className="workspace-grid workspace-grid-two">
+                        <label>
+                          <span>Cause</span>
+                          <textarea
+                            value={newInternalAuditFindingCause}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingCause(event.target.value)
+                            }
+                            placeholder="Why did it happen?"
+                            maxLength={8000}
+                          />
+                        </label>
+                        <label>
+                          <span>Risk / effect</span>
+                          <textarea
+                            value={newInternalAuditFindingRiskEffect}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingRiskEffect(event.target.value)
+                            }
+                            placeholder="What is the consequence or exposure?"
+                            maxLength={8000}
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        <span>Recommendation</span>
+                        <textarea
+                          value={newInternalAuditFindingRecommendation}
+                          onChange={(event) =>
+                            setNewInternalAuditFindingRecommendation(event.target.value)
+                          }
+                          placeholder="Recommended corrective action"
+                          maxLength={8000}
+                        />
+                      </label>
+                      <div className="workspace-grid workspace-grid-two">
+                        <label>
+                          <span>Linked workpaper</span>
+                          <select
+                            value={newInternalAuditFindingWorkpaperId}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingWorkpaperId(event.target.value)
+                            }
+                          >
+                            <option value="">No workpaper link</option>
+                            {workpapers.map((workpaper) => (
+                              <option key={workpaper.workpaperId} value={workpaper.workpaperId}>
+                                {workpaper.reference} · {workpaper.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Repeated from</span>
+                          <select
+                            value={newInternalAuditFindingRepeatedFromId}
+                            onChange={(event) =>
+                              setNewInternalAuditFindingRepeatedFromId(event.target.value)
+                            }
+                          >
+                            <option value="">Not a repeated finding</option>
+                            {clientInternalAuditFindings.map((finding) => (
+                              <option
+                                key={finding.internalAuditFindingId}
+                                value={finding.internalAuditFindingId}
+                              >
+                                {finding.originEngagementName} ·{" "}
+                                {finding.reference ? `${finding.reference} · ` : ""}
+                                {finding.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <p className="evidence-integrity-note">
+                        Chain: {selectedInternalAuditProcess?.name ?? "select process"}
+                        {selectedInternalAuditRisk ? ` → ${selectedInternalAuditRisk.title}` : ""}
+                        {selectedInternalAuditControl
+                          ? ` → ${selectedInternalAuditControl.title}`
+                          : ""}
+                        {selectedInternalAuditTest ? ` → ${selectedInternalAuditTest.title}` : ""}
+                      </p>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={
+                          workspaceBusy ||
+                          !selectedInternalAuditProcessId ||
+                          !newInternalAuditFindingTitle.trim() ||
+                          !newInternalAuditFindingCondition.trim()
+                        }
+                      >
+                        Create immutable finding
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">FOLLOW-UP</span>
+                        <h3>Append-only management action history</h3>
+                      </div>
+                    </div>
+
+                    {selectedInternalAuditFinding ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              {selectedInternalAuditFinding.reference
+                                ? selectedInternalAuditFinding.reference + " · "
+                                : ""}
+                              {selectedInternalAuditFinding.title}
+                            </strong>
+                            <small>
+                              {selectedInternalAuditFinding.processName} ·{" "}
+                              {selectedInternalAuditFinding.latestStatus.replaceAll("_", " ")} ·
+                              sequence {selectedInternalAuditFinding.latestSequenceNumber}
+                            </small>
+                            <small>
+                              Origin {selectedInternalAuditFinding.originEngagementName} · tracking{" "}
+                              {selectedInternalAuditFinding.latestTrackingEngagementName}
+                            </small>
+                          </span>
+                        </div>
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitInternalAuditFindingFollowup}
+                        >
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Tracking engagement</span>
+                              <select
+                                value={findingFollowupTrackingEngagementId}
+                                onChange={(event) =>
+                                  setFindingFollowupTrackingEngagementId(event.target.value)
+                                }
+                              >
+                                <option value="">Select same-client engagement</option>
+                                {internalAuditClientEngagements.map((engagement) => (
+                                  <option
+                                    key={engagement.engagementId}
+                                    value={engagement.engagementId}
+                                  >
+                                    {engagement.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Status</span>
+                              <select
+                                value={findingFollowupStatus}
+                                onChange={(event) =>
+                                  setFindingFollowupStatus(event.target.value)
+                                }
+                              >
+                                <option value="OPEN">Open</option>
+                                <option value="MANAGEMENT_RESPONDED">
+                                  Management responded
+                                </option>
+                                <option value="ACTION_IN_PROGRESS">
+                                  Action in progress
+                                </option>
+                                <option value="IMPLEMENTED_PENDING_VERIFICATION">
+                                  Implemented pending verification
+                                </option>
+                                <option value="CLOSED">Closed</option>
+                                <option value="RISK_ACCEPTED">Risk accepted</option>
+                              </select>
+                            </label>
+                          </div>
+                          <label>
+                            <span>Management response</span>
+                            <textarea
+                              value={findingManagementResponse}
+                              onChange={(event) =>
+                                setFindingManagementResponse(event.target.value)
+                              }
+                              placeholder="Management response and agreed action"
+                              maxLength={8000}
+                            />
+                          </label>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Action owner</span>
+                              <input
+                                value={findingActionOwner}
+                                onChange={(event) => setFindingActionOwner(event.target.value)}
+                                placeholder="Process owner"
+                                maxLength={240}
+                              />
+                            </label>
+                            <label>
+                              <span>Target date</span>
+                              <input
+                                type="date"
+                                value={findingTargetDate}
+                                onChange={(event) => setFindingTargetDate(event.target.value)}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            <span>Follow-up details</span>
+                            <textarea
+                              value={findingFollowupText}
+                              onChange={(event) => setFindingFollowupText(event.target.value)}
+                              placeholder="Implementation evidence, progress, and follow-up work performed"
+                              maxLength={8000}
+                            />
+                          </label>
+                          <label>
+                            <span>Verification conclusion</span>
+                            <textarea
+                              value={findingVerificationConclusion}
+                              onChange={(event) =>
+                                setFindingVerificationConclusion(event.target.value)
+                              }
+                              placeholder="Required before closing the finding"
+                              maxLength={8000}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={
+                              workspaceBusy || !findingFollowupTrackingEngagementId
+                            }
+                          >
+                            Append follow-up version
+                          </button>
+                        </form>
+
+                        <div className="workspace-mini-list">
+                          {internalAuditFindingFollowups.map((followup) => (
+                            <span key={followup.internalAuditFindingFollowupId}>
+                              <strong>
+                                v{followup.sequenceNumber} ·{" "}
+                                {followup.status.replaceAll("_", " ")}
+                              </strong>
+                              <small>
+                                {followup.trackingEngagementName} ·{" "}
+                                {formatTimestamp(followup.occurredAtMs)}
+                              </small>
+                              {followup.managementResponse ? (
+                                <small>Management: {followup.managementResponse}</small>
+                              ) : null}
+                              {followup.actionOwner || followup.targetDate ? (
+                                <small>
+                                  Owner {followup.actionOwner ?? "Not set"} · target{" "}
+                                  {followup.targetDate ?? "Not set"}
+                                </small>
+                              ) : null}
+                              {followup.followUpText ? (
+                                <small>Follow-up: {followup.followUpText}</small>
+                              ) : null}
+                              {followup.verificationConclusion ? (
+                                <small>
+                                  Verification: {followup.verificationConclusion}
+                                </small>
+                              ) : null}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Select or create a finding to append management follow-up.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">FINDING EVIDENCE</span>
+                        <h3>Exact controlled support</h3>
+                      </div>
+                    </div>
+
+                    {selectedInternalAuditFinding ? (
+                      <div className="workspace-form compact">
+                        <label>
+                          <span>Evidence scope</span>
+                          <select
+                            value={findingEvidenceFollowupId}
+                            onChange={(event) =>
+                              setFindingEvidenceFollowupId(event.target.value)
+                            }
+                          >
+                            <option value="">Finding-level evidence</option>
+                            {internalAuditFindingFollowups.map((followup) => (
+                              <option
+                                key={followup.internalAuditFindingFollowupId}
+                                value={followup.internalAuditFindingFollowupId}
+                              >
+                                Follow-up v{followup.sequenceNumber} ·{" "}
+                                {followup.status.replaceAll("_", " ")}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Search evidence</span>
+                          <input
+                            value={findingEvidenceSearchQuery}
+                            onChange={(event) =>
+                              setFindingEvidenceSearchQuery(event.target.value)
+                            }
+                            placeholder="Search indexed finding support"
+                          />
+                        </label>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={
+                            findingEvidenceSearchBusy || !findingEvidenceSearchQuery.trim()
+                          }
+                          onClick={() => void searchFindingEvidence()}
+                        >
+                          {findingEvidenceSearchBusy ? "Searching…" : "Search evidence"}
+                        </button>
+
+                        {findingEvidenceSearchResults.length ? (
+                          <div className="workspace-mini-list">
+                            {findingEvidenceSearchResults.map((result) => (
+                              <button
+                                className={`workspace-list-row${selectedFindingEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                                type="button"
+                                key={result.documentId}
+                                onClick={() => void selectFindingEvidenceDocument(result)}
+                              >
+                                <span>
+                                  <strong>{result.name}</strong>
+                                  <small>{result.path}</small>
+                                </span>
+                                <span className="workspace-row-action">Select →</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {selectedFindingEvidenceDocument ? (
+                          <>
+                            <label>
+                              <span>Hash-verified controlled version</span>
+                              <select
+                                value={selectedFindingControlledVersionId}
+                                onChange={(event) =>
+                                  setSelectedFindingControlledVersionId(event.target.value)
+                                }
+                              >
+                                <option value="">Select controlled evidence</option>
+                                {findingControlledEvidenceVersions.map((entry) => (
+                                  <option
+                                    key={
+                                      entry.controlledEvidenceVersionId ??
+                                      entry.contentVersionId
+                                    }
+                                    value={entry.controlledEvidenceVersionId ?? ""}
+                                  >
+                                    v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                    {formatTimestamp(entry.capturedAtMs)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Description</span>
+                              <input
+                                value={findingEvidenceDescription}
+                                onChange={(event) =>
+                                  setFindingEvidenceDescription(event.target.value)
+                                }
+                                placeholder="Evidence supporting condition or follow-up"
+                                maxLength={1000}
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              disabled={
+                                workspaceBusy || !selectedFindingControlledVersionId
+                              }
+                              onClick={() => void linkInternalAuditFindingEvidence()}
+                            >
+                              Link exact evidence
+                            </button>
+                          </>
+                        ) : null}
+
+                        <div className="workspace-mini-list">
+                          {internalAuditFindingEvidence.length ? (
+                            internalAuditFindingEvidence.map((evidence) => (
+                              <span key={evidence.internalAuditFindingEvidenceLinkId}>
+                                <strong>
+                                  {evidence.internalAuditFindingFollowupId
+                                    ? "Follow-up evidence"
+                                    : "Finding evidence"}
+                                </strong>
+                                <small>
+                                  Controlled ID{" "}
+                                  {evidence.controlledEvidenceVersionId.slice(0, 18)}… · source
+                                  SHA {evidence.sourceSha256Hex.slice(0, 16)}…
+                                </small>
+                                <small>{formatTimestamp(evidence.linkedAtMs)}</small>
+                                {evidence.description ? (
+                                  <small>{evidence.description}</small>
+                                ) : null}
+                              </span>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              No exact controlled evidence is linked to this finding yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="empty-result">
+                        Select a finding before linking exact controlled evidence.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">CLIENT FINDING PORTFOLIO</span>
+                        <h3>
+                          {unresolvedClientInternalAuditFindings.length} unresolved ·{" "}
+                          {repeatedClientInternalAuditFindings.length} repeated
+                        </h3>
+                      </div>
+                    </div>
+                    <p className="evidence-integrity-note">
+                      Client-wide findings retain origin engagement, latest tracking engagement,
+                      repeated-finding lineage, and append-only follow-up across periods.
+                    </p>
+                    <div className="workspace-mini-list">
+                      {clientInternalAuditFindings.length ? (
+                        clientInternalAuditFindings.map((finding) => (
+                          <button
+                            className={`workspace-list-row${selectedInternalAuditFindingId === finding.internalAuditFindingId ? " workspace-list-row-active" : ""}`}
+                            type="button"
+                            key={finding.internalAuditFindingId}
+                            onClick={() =>
+                              void selectInternalAuditFinding(
+                                finding.internalAuditFindingId,
+                              )
+                            }
+                          >
+                            <span>
+                              <strong>
+                                {finding.reference ? finding.reference + " · " : ""}
+                                {finding.title}
+                              </strong>
+                              <small>
+                                {finding.processName} ·{" "}
+                                {finding.latestStatus.replaceAll("_", " ")}
+                              </small>
+                              <small>
+                                Origin {finding.originEngagementName} · tracking{" "}
+                                {finding.latestTrackingEngagementName}
+                                {finding.repeatedFromFindingId ? " · repeated" : ""}
+                              </small>
+                            </span>
+                            <span className="workspace-row-action">Review →</span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="empty-result">
+                          No internal-audit findings exist for this client yet.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
