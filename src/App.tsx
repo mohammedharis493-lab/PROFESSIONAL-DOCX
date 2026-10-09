@@ -223,6 +223,68 @@ type InternalAuditTestEvidence = {
   linkedAtMs: number;
 };
 
+type InternalAuditFinding = {
+  internalAuditFindingId: string;
+  originEngagementId: string;
+  originEngagementName: string;
+  internalAuditProcessId: string;
+  processName: string;
+  internalAuditRiskId: string | null;
+  internalAuditControlId: string | null;
+  internalAuditTestId: string | null;
+  workpaperId: string | null;
+  repeatedFromFindingId: string | null;
+  reference: string | null;
+  title: string;
+  conditionText: string;
+  criteriaText: string | null;
+  causeText: string | null;
+  riskEffectText: string | null;
+  recommendationText: string | null;
+  riskClassification: string | null;
+  createdAtMs: number;
+  latestFollowupId: string;
+  latestTrackingEngagementId: string;
+  latestTrackingEngagementName: string;
+  latestSequenceNumber: number;
+  latestStatus: string;
+  latestManagementResponse: string | null;
+  latestActionOwner: string | null;
+  latestTargetDate: string | null;
+  latestFollowUpText: string | null;
+  latestVerificationConclusion: string | null;
+  latestActorId: string | null;
+  latestOccurredAtMs: number;
+};
+
+type InternalAuditFindingFollowup = {
+  internalAuditFindingFollowupId: string;
+  internalAuditFindingId: string;
+  trackingEngagementId: string;
+  trackingEngagementName: string;
+  sequenceNumber: number;
+  status: string;
+  managementResponse: string | null;
+  actionOwner: string | null;
+  targetDate: string | null;
+  followUpText: string | null;
+  verificationConclusion: string | null;
+  actorId: string | null;
+  occurredAtMs: number;
+};
+
+type InternalAuditFindingEvidence = {
+  internalAuditFindingEvidenceLinkId: string;
+  internalAuditFindingId: string;
+  internalAuditFindingFollowupId: string | null;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  description: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1365,6 +1427,48 @@ export default function App() {
     useState("");
   const [internalAuditEvidenceDescription, setInternalAuditEvidenceDescription] = useState("");
   const [internalAuditEvidenceSearchBusy, setInternalAuditEvidenceSearchBusy] = useState(false);
+  const [internalAuditFindings, setInternalAuditFindings] = useState<InternalAuditFinding[]>([]);
+  const [clientInternalAuditFindings, setClientInternalAuditFindings] =
+    useState<InternalAuditFinding[]>([]);
+  const [selectedInternalAuditFindingId, setSelectedInternalAuditFindingId] =
+    useState<string | null>(null);
+  const [internalAuditFindingFollowups, setInternalAuditFindingFollowups] =
+    useState<InternalAuditFindingFollowup[]>([]);
+  const [internalAuditFindingEvidence, setInternalAuditFindingEvidence] =
+    useState<InternalAuditFindingEvidence[]>([]);
+  const [newInternalAuditFindingReference, setNewInternalAuditFindingReference] = useState("");
+  const [newInternalAuditFindingTitle, setNewInternalAuditFindingTitle] = useState("");
+  const [newInternalAuditFindingCondition, setNewInternalAuditFindingCondition] = useState("");
+  const [newInternalAuditFindingCriteria, setNewInternalAuditFindingCriteria] = useState("");
+  const [newInternalAuditFindingCause, setNewInternalAuditFindingCause] = useState("");
+  const [newInternalAuditFindingRiskEffect, setNewInternalAuditFindingRiskEffect] = useState("");
+  const [newInternalAuditFindingRecommendation, setNewInternalAuditFindingRecommendation] =
+    useState("");
+  const [newInternalAuditFindingRiskClassification, setNewInternalAuditFindingRiskClassification] =
+    useState("");
+  const [newInternalAuditFindingWorkpaperId, setNewInternalAuditFindingWorkpaperId] = useState("");
+  const [newInternalAuditFindingRepeatedFromId, setNewInternalAuditFindingRepeatedFromId] =
+    useState("");
+  const [findingFollowupTrackingEngagementId, setFindingFollowupTrackingEngagementId] =
+    useState("");
+  const [findingFollowupStatus, setFindingFollowupStatus] = useState("OPEN");
+  const [findingManagementResponse, setFindingManagementResponse] = useState("");
+  const [findingActionOwner, setFindingActionOwner] = useState("");
+  const [findingTargetDate, setFindingTargetDate] = useState("");
+  const [findingFollowupText, setFindingFollowupText] = useState("");
+  const [findingVerificationConclusion, setFindingVerificationConclusion] = useState("");
+  const [findingEvidenceSearchQuery, setFindingEvidenceSearchQuery] = useState("");
+  const [findingEvidenceSearchResults, setFindingEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedFindingEvidenceDocument, setSelectedFindingEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [findingEvidenceVersionHistory, setFindingEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedFindingControlledVersionId, setSelectedFindingControlledVersionId] =
+    useState("");
+  const [findingEvidenceDescription, setFindingEvidenceDescription] = useState("");
+  const [findingEvidenceFollowupId, setFindingEvidenceFollowupId] = useState("");
+  const [findingEvidenceSearchBusy, setFindingEvidenceSearchBusy] = useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -1803,6 +1907,16 @@ export default function App() {
     setSelectedInternalAuditEvidenceDocument(null);
     setInternalAuditEvidenceVersionHistory([]);
     setSelectedInternalAuditControlledVersionId("");
+    setInternalAuditFindings([]);
+    setClientInternalAuditFindings([]);
+    setSelectedInternalAuditFindingId(null);
+    setInternalAuditFindingFollowups([]);
+    setInternalAuditFindingEvidence([]);
+    setFindingEvidenceSearchResults([]);
+    setSelectedFindingEvidenceDocument(null);
+    setFindingEvidenceVersionHistory([]);
+    setSelectedFindingControlledVersionId("");
+    setFindingEvidenceFollowupId("");
     try {
       const [
         areas,
@@ -1816,6 +1930,8 @@ export default function App() {
         reconciliationRunRecords,
         complianceRequirementRecords,
         internalAuditProcessRecords,
+        internalAuditFindingRecords,
+        clientInternalAuditFindingRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1835,6 +1951,17 @@ export default function App() {
           engagementId,
         }),
         invoke<InternalAuditProcess[]>("list_internal_audit_processes", { engagementId }),
+        invoke<InternalAuditFinding[]>("list_internal_audit_findings_for_engagement", {
+          engagementId,
+        }),
+        (engagements.find((item) => item.engagementId === engagementId)?.clientId ??
+        selectedClientId)
+          ? invoke<InternalAuditFinding[]>("list_internal_audit_findings_for_client", {
+              clientId:
+                engagements.find((item) => item.engagementId === engagementId)?.clientId ??
+                selectedClientId,
+            })
+          : Promise.resolve([] as InternalAuditFinding[]),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1847,6 +1974,40 @@ export default function App() {
       setReconciliationRuns(reconciliationRunRecords);
       setStatutoryComplianceRequirements(complianceRequirementRecords);
       setInternalAuditProcesses(internalAuditProcessRecords);
+      setInternalAuditFindings(internalAuditFindingRecords);
+      setClientInternalAuditFindings(clientInternalAuditFindingRecords);
+      const firstInternalAuditFinding = internalAuditFindingRecords[0] ?? null;
+      setSelectedInternalAuditFindingId(
+        firstInternalAuditFinding?.internalAuditFindingId ?? null,
+      );
+      if (firstInternalAuditFinding) {
+        const [followups, evidence] = await Promise.all([
+          invoke<InternalAuditFindingFollowup[]>(
+            "list_internal_audit_finding_followups",
+            { internalAuditFindingId: firstInternalAuditFinding.internalAuditFindingId },
+          ),
+          invoke<InternalAuditFindingEvidence[]>(
+            "list_internal_audit_finding_evidence",
+            { internalAuditFindingId: firstInternalAuditFinding.internalAuditFindingId },
+          ),
+        ]);
+        setInternalAuditFindingFollowups(followups);
+        setInternalAuditFindingEvidence(evidence);
+        setFindingFollowupTrackingEngagementId(
+          firstInternalAuditFinding.latestTrackingEngagementId,
+        );
+        setFindingFollowupStatus(firstInternalAuditFinding.latestStatus);
+        setFindingManagementResponse(
+          firstInternalAuditFinding.latestManagementResponse ?? "",
+        );
+        setFindingActionOwner(firstInternalAuditFinding.latestActionOwner ?? "");
+        setFindingTargetDate(firstInternalAuditFinding.latestTargetDate ?? "");
+        setFindingFollowupText(firstInternalAuditFinding.latestFollowUpText ?? "");
+        setFindingVerificationConclusion(
+          firstInternalAuditFinding.latestVerificationConclusion ?? "",
+        );
+        setFindingEvidenceFollowupId(firstInternalAuditFinding.latestFollowupId);
+      }
       const firstInternalAuditProcess = internalAuditProcessRecords[0] ?? null;
       setSelectedInternalAuditProcessId(
         firstInternalAuditProcess?.internalAuditProcessId ?? null,
@@ -5650,6 +5811,24 @@ export default function App() {
         entry.controlledEvidenceVersionId &&
         entry.controlledVerificationState === "HASH_VERIFIED",
     );
+  const selectedInternalAuditFinding =
+    internalAuditFindings.find(
+      (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
+    ) ?? null;
+  const findingControlledEvidenceVersions = findingEvidenceVersionHistory.filter(
+    (entry) =>
+      entry.controlledEvidenceVersionId &&
+      entry.controlledVerificationState === "HASH_VERIFIED",
+  );
+  const internalAuditClientEngagements = selectedEngagement
+    ? engagements.filter((item) => item.clientId === selectedEngagement.clientId)
+    : [];
+  const unresolvedClientInternalAuditFindings = clientInternalAuditFindings.filter(
+    (item) => !["CLOSED", "RISK_ACCEPTED"].includes(item.latestStatus),
+  );
+  const repeatedClientInternalAuditFindings = clientInternalAuditFindings.filter(
+    (item) => item.repeatedFromFindingId,
+  );
   const selectedLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === selectedLedgerImportId) ?? null;
   const ledgerControlledEvidenceVersions = ledgerEvidenceVersionHistory.filter(
