@@ -101,22 +101,45 @@ fn valid_month(period: &str) -> bool {
         && b[4] == b'-'
         && b[..4].iter().chain(&b[5..7]).all(u8::is_ascii_digit)
         && &period[..4] != "0000"
-        && matches!(&period[5..7], "01" | "02" | "03" | "04"
-            | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12")
+        && matches!(
+            &period[5..7],
+            "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+        )
 }
 
 fn invoice_month(value: &str) -> Result<String, String> {
     let b = value.as_bytes();
-    if b.len() != 10 || b[7] != b'-' || !valid_month(&value[..7])
+    if b.len() != 10
+        || b[7] != b'-'
+        || !valid_month(&value[..7])
         || !b[8..10].iter().all(u8::is_ascii_digit)
     {
         return Err("invoice date must be an ISO YYYY-MM-DD date".into());
     }
-    let year = value[..4].parse::<u32>().map_err(|_| "invalid invoice year")?;
-    let month = value[5..7].parse::<usize>().map_err(|_| "invalid invoice month")?;
-    let day = value[8..10].parse::<usize>().map_err(|_| "invalid invoice day")?;
+    let year = value[..4]
+        .parse::<u32>()
+        .map_err(|_| "invalid invoice year")?;
+    let month = value[5..7]
+        .parse::<usize>()
+        .map_err(|_| "invalid invoice month")?;
+    let day = value[8..10]
+        .parse::<usize>()
+        .map_err(|_| "invalid invoice day")?;
     let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     if day == 0 || day > days[month - 1] {
         return Err("invoice date is not a valid calendar day".into());
     }
@@ -124,7 +147,9 @@ fn invoice_month(value: &str) -> Result<String, String> {
 }
 
 fn header_index(headers: &[String], name: &str) -> Result<usize, String> {
-    headers.iter().position(|value| value.eq_ignore_ascii_case(name))
+    headers
+        .iter()
+        .position(|value| value.eq_ignore_ascii_case(name))
         .ok_or_else(|| format!("declared CSV column '{name}' does not exist"))
 }
 
@@ -134,13 +159,18 @@ pub fn parse_normalized_csv(
 ) -> Result<Vec<CompareRow>, String> {
     let mut records = csv_records(bytes)?.into_iter();
     let headers = records.next().ok_or("CSV header is missing")?;
-    if headers.is_empty() || headers.iter().any(|name| {
-        name.is_empty() || name.trim() != name || name.chars().any(char::is_control)
-    }) {
+    if headers.is_empty()
+        || headers.iter().any(|name| {
+            name.is_empty() || name.trim() != name || name.chars().any(char::is_control)
+        })
+    {
         return Err("CSV header contains blank, padded, or control-character names".into());
     }
     for (i, name) in headers.iter().enumerate() {
-        if headers[..i].iter().any(|other| other.eq_ignore_ascii_case(name)) {
+        if headers[..i]
+            .iter()
+            .any(|other| other.eq_ignore_ascii_case(name))
+        {
             return Err("CSV header contains duplicate names".into());
         }
     }
@@ -157,14 +187,20 @@ pub fn parse_normalized_csv(
     let mut normalized = Vec::new();
     for (row_number, record) in records.enumerate() {
         if record.len() != headers.len() {
-            return Err(format!("CSV row {} has a different column count", row_number + 2));
+            return Err(format!(
+                "CSV row {} has a different column count",
+                row_number + 2
+            ));
         }
         let period = record[period_index].as_str();
         let period = match layout.period_basis {
             PeriodBasis::InvoiceMonth => invoice_month(period)?,
             _ => {
                 if !valid_month(period) {
-                    return Err(format!("CSV row {} has invalid YYYY-MM period", row_number + 2));
+                    return Err(format!(
+                        "CSV row {} has invalid YYYY-MM period",
+                        row_number + 2
+                    ));
                 }
                 period.to_string()
             }
@@ -172,9 +208,15 @@ pub fn parse_normalized_csv(
         let mut numeric_values = BTreeMap::new();
         for (name, index) in &numeric {
             let raw = &record[*index];
-            if raw.trim() != raw || raw.is_empty() ||
-                !raw.trim_start_matches(|ch| ch == '-' || ch == '+').chars().all(|ch| ch.is_ascii_digit()) ||
-                raw.trim_start_matches(|ch| ch == '-' || ch == '+').is_empty()
+            if raw.trim() != raw
+                || raw.is_empty()
+                || !raw
+                    .trim_start_matches(|ch| ch == '-' || ch == '+')
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit())
+                || raw
+                    .trim_start_matches(|ch| ch == '-' || ch == '+')
+                    .is_empty()
             {
                 return Err(format!(
                     "CSV row {} column '{}' must be signed integer minor units; no rounding or decimal-scale inference",
@@ -182,7 +224,11 @@ pub fn parse_normalized_csv(
                 ));
             }
             let amount = raw.parse::<i64>().map_err(|_| {
-                format!("CSV row {} column '{}' overflows signed integer minor units", row_number + 2, name)
+                format!(
+                    "CSV row {} column '{}' overflows signed integer minor units",
+                    row_number + 2,
+                    name
+                )
             })?;
             numeric_values.insert((*name).clone(), amount);
         }
@@ -223,7 +269,8 @@ mod tests {
         let rows = parse_normalized_csv(
             b"Key,Period,Amount\r\n\"A,1\",2026-08,100\r\n\"B\"\"2\",2026-09,-42\r\n",
             &layout(&amounts, PeriodBasis::FilingPeriod),
-        ).expect("valid CSV");
+        )
+        .expect("valid CSV");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].business_key, "A,1");
         assert_eq!(rows[1].business_key, "B\"2");
@@ -232,18 +279,27 @@ mod tests {
     #[test]
     fn date_basis_uses_invoice_calendar_month_and_validates_day() {
         let amounts = ["Amount".to_string()];
-        let rows = parse_normalized_csv(b"Key,Period,Amount\nA,2026-07-29,200\n",
-            &layout(&amounts, PeriodBasis::InvoiceMonth)).expect("date source");
+        let rows = parse_normalized_csv(
+            b"Key,Period,Amount\nA,2026-07-29,200\n",
+            &layout(&amounts, PeriodBasis::InvoiceMonth),
+        )
+        .expect("date source");
         assert_eq!(rows[0].invoice_month.as_deref(), Some("2026-07"));
-        assert!(parse_normalized_csv(b"Key,Period,Amount\nA,2026-02-30,200\n",
-            &layout(&amounts, PeriodBasis::InvoiceMonth)).is_err());
+        assert!(parse_normalized_csv(
+            b"Key,Period,Amount\nA,2026-02-30,200\n",
+            &layout(&amounts, PeriodBasis::InvoiceMonth)
+        )
+        .is_err());
     }
     #[test]
     fn unsupported_decimals_and_ambiguous_headers_are_rejected() {
         let amounts = ["Amount".to_string()];
         let selected = layout(&amounts, PeriodBasis::FilingPeriod);
         assert!(parse_normalized_csv(b"Key,Period,Amount\nA,2026-08,1.23\n", &selected).is_err());
-        assert!(parse_normalized_csv(b"Key,Period,Amount,amount\nA,2026-08,100,100\n", &selected).is_err());
+        assert!(
+            parse_normalized_csv(b"Key,Period,Amount,amount\nA,2026-08,100,100\n", &selected)
+                .is_err()
+        );
         assert!(parse_normalized_csv(b"Key,Period,Amount\n\"A,2026-08,100\n", &selected).is_err());
     }
     #[test]
@@ -251,7 +307,8 @@ mod tests {
         let amounts = ["Amount".to_string()];
         let selected = layout(&amounts, PeriodBasis::FilingPeriod);
         assert!(parse_normalized_csv(b"Key,Period,Amount\nA,2026-07-29,100\n", &selected).is_err());
-        let rows = parse_normalized_csv(b"Key,Period,Amount\nA,2026-08,100\n", &selected).expect("valid");
+        let rows =
+            parse_normalized_csv(b"Key,Period,Amount\nA,2026-08,100\n", &selected).expect("valid");
         assert_eq!(rows[0].filing_period.as_deref(), Some("2026-08"));
         assert_eq!(rows[0].invoice_month, None);
     }
