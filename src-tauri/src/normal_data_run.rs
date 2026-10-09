@@ -343,6 +343,10 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_declared_keys(true)
+        }
+
+        fn with_declared_keys(declare_keys: bool) -> Self {
             let folder = std::env::temp_dir()
                 .join(format!("pdox-comparison-run-{}", Uuid::new_v4()));
             fs::create_dir_all(&folder).expect("create fixture directory");
@@ -366,7 +370,7 @@ mod tests {
                 ("a.csv", b"Key,Period,Amount\nINV-100,2026-08,10000\n".as_slice()),
                 ("b.csv", b"Key,Period,Amount\nINV-100,2026-09,10250\n".as_slice()),
             ];
-            for (filename, bytes) in sources {
+            for (source_index, (filename, bytes)) in sources.into_iter().enumerate() {
                 let source = directory.join(filename);
                 fs::write(&source, bytes).expect("write source bytes");
                 let document_id = Uuid::new_v4().to_string();
@@ -410,6 +414,9 @@ mod tests {
                     ("Period", "FILING_PERIOD", "PERIOD"),
                     ("Amount", "NUMERIC_VALUE", "DECIMAL"),
                 ] {
+                    if !declare_keys && source_index == 1 && role == "BUSINESS_KEY" {
+                        continue;
+                    }
                     normal_data_datasets::declare_column(
                         &path, &dataset.normal_data_dataset_version_id, name, role, data_type,
                     ).expect("declare source semantic column");
@@ -500,7 +507,7 @@ mod tests {
 
     #[test]
     fn unconfirmed_business_key_cannot_generate_a_run() {
-        let fixture = Fixture::new();
+        let fixture = Fixture::with_declared_keys(false);
         let connection = persistence::open_configured_connection(&fixture.path)
             .expect("open database");
         let all: i64 = connection.query_row(
@@ -508,8 +515,8 @@ mod tests {
              WHERE semantic_role = 'BUSINESS_KEY'",
             [], |row| row.get(0),
         ).expect("declared keys");
-        assert_eq!(all, 2);
-        assert!(execute_comparison(&fixture.path, &Uuid::new_v4().to_string()).is_err());
+        assert_eq!(all, 1);
+        assert!(execute_comparison(&fixture.path, &fixture.recipe_version_id).is_err());
         assert!(list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
             .expect("no runs").is_empty());
     }
