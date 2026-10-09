@@ -153,6 +153,76 @@ type StatutoryComplianceEvidence = {
   linkedAtMs: number;
 };
 
+type InternalAuditProcess = {
+  internalAuditProcessId: string;
+  engagementId: string;
+  parentProcessId: string | null;
+  code: string | null;
+  name: string;
+  description: string | null;
+  displayOrder: number;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditObjective = {
+  internalAuditObjectiveId: string;
+  internalAuditProcessId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditRisk = {
+  internalAuditRiskId: string;
+  internalAuditObjectiveId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  riskClassification: string | null;
+  inherentRating: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditControl = {
+  internalAuditControlId: string;
+  internalAuditRiskId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  controlType: string | null;
+  frequency: string | null;
+  ownerText: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditTest = {
+  internalAuditTestId: string;
+  internalAuditControlId: string;
+  reference: string | null;
+  title: string;
+  procedureText: string;
+  sampleStrategy: string | null;
+  expectedResult: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditTestEvidence = {
+  internalAuditTestEvidenceLinkId: string;
+  internalAuditTestId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  description: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1243,6 +1313,58 @@ export default function App() {
   const [selectedComplianceControlledVersionId, setSelectedComplianceControlledVersionId] =
     useState("");
   const [complianceEvidenceSearchBusy, setComplianceEvidenceSearchBusy] = useState(false);
+  const [internalAuditProcesses, setInternalAuditProcesses] = useState<InternalAuditProcess[]>([]);
+  const [selectedInternalAuditProcessId, setSelectedInternalAuditProcessId] =
+    useState<string | null>(null);
+  const [internalAuditObjectives, setInternalAuditObjectives] =
+    useState<InternalAuditObjective[]>([]);
+  const [selectedInternalAuditObjectiveId, setSelectedInternalAuditObjectiveId] =
+    useState<string | null>(null);
+  const [internalAuditRisks, setInternalAuditRisks] = useState<InternalAuditRisk[]>([]);
+  const [selectedInternalAuditRiskId, setSelectedInternalAuditRiskId] =
+    useState<string | null>(null);
+  const [internalAuditControls, setInternalAuditControls] = useState<InternalAuditControl[]>([]);
+  const [selectedInternalAuditControlId, setSelectedInternalAuditControlId] =
+    useState<string | null>(null);
+  const [internalAuditTests, setInternalAuditTests] = useState<InternalAuditTest[]>([]);
+  const [selectedInternalAuditTestId, setSelectedInternalAuditTestId] =
+    useState<string | null>(null);
+  const [internalAuditTestEvidence, setInternalAuditTestEvidence] =
+    useState<InternalAuditTestEvidence[]>([]);
+  const [newInternalAuditProcessName, setNewInternalAuditProcessName] = useState("");
+  const [newInternalAuditProcessCode, setNewInternalAuditProcessCode] = useState("");
+  const [newInternalAuditProcessDescription, setNewInternalAuditProcessDescription] = useState("");
+  const [newInternalAuditProcessParentId, setNewInternalAuditProcessParentId] = useState("");
+  const [newInternalAuditObjectiveReference, setNewInternalAuditObjectiveReference] = useState("");
+  const [newInternalAuditObjectiveTitle, setNewInternalAuditObjectiveTitle] = useState("");
+  const [newInternalAuditObjectiveDescription, setNewInternalAuditObjectiveDescription] = useState("");
+  const [newInternalAuditRiskReference, setNewInternalAuditRiskReference] = useState("");
+  const [newInternalAuditRiskTitle, setNewInternalAuditRiskTitle] = useState("");
+  const [newInternalAuditRiskDescription, setNewInternalAuditRiskDescription] = useState("");
+  const [newInternalAuditRiskClassification, setNewInternalAuditRiskClassification] = useState("");
+  const [newInternalAuditRiskRating, setNewInternalAuditRiskRating] = useState("");
+  const [newInternalAuditControlReference, setNewInternalAuditControlReference] = useState("");
+  const [newInternalAuditControlTitle, setNewInternalAuditControlTitle] = useState("");
+  const [newInternalAuditControlDescription, setNewInternalAuditControlDescription] = useState("");
+  const [newInternalAuditControlType, setNewInternalAuditControlType] = useState("");
+  const [newInternalAuditControlFrequency, setNewInternalAuditControlFrequency] = useState("");
+  const [newInternalAuditControlOwner, setNewInternalAuditControlOwner] = useState("");
+  const [newInternalAuditTestReference, setNewInternalAuditTestReference] = useState("");
+  const [newInternalAuditTestTitle, setNewInternalAuditTestTitle] = useState("");
+  const [newInternalAuditTestProcedure, setNewInternalAuditTestProcedure] = useState("");
+  const [newInternalAuditTestSampleStrategy, setNewInternalAuditTestSampleStrategy] = useState("");
+  const [newInternalAuditTestExpectedResult, setNewInternalAuditTestExpectedResult] = useState("");
+  const [internalAuditEvidenceSearchQuery, setInternalAuditEvidenceSearchQuery] = useState("");
+  const [internalAuditEvidenceSearchResults, setInternalAuditEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedInternalAuditEvidenceDocument, setSelectedInternalAuditEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [internalAuditEvidenceVersionHistory, setInternalAuditEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedInternalAuditControlledVersionId, setSelectedInternalAuditControlledVersionId] =
+    useState("");
+  const [internalAuditEvidenceDescription, setInternalAuditEvidenceDescription] = useState("");
+  const [internalAuditEvidenceSearchBusy, setInternalAuditEvidenceSearchBusy] = useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -1666,6 +1788,21 @@ export default function App() {
     setSelectedComplianceEvidenceDocument(null);
     setComplianceEvidenceVersionHistory([]);
     setSelectedComplianceControlledVersionId("");
+    setInternalAuditProcesses([]);
+    setSelectedInternalAuditProcessId(null);
+    setInternalAuditObjectives([]);
+    setSelectedInternalAuditObjectiveId(null);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    setInternalAuditEvidenceSearchResults([]);
+    setSelectedInternalAuditEvidenceDocument(null);
+    setInternalAuditEvidenceVersionHistory([]);
+    setSelectedInternalAuditControlledVersionId("");
     try {
       const [
         areas,
@@ -1678,6 +1815,7 @@ export default function App() {
         statementLinkRecords,
         reconciliationRunRecords,
         complianceRequirementRecords,
+        internalAuditProcessRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1696,6 +1834,7 @@ export default function App() {
         invoke<StatutoryComplianceRequirement[]>("list_statutory_compliance_requirements", {
           engagementId,
         }),
+        invoke<InternalAuditProcess[]>("list_internal_audit_processes", { engagementId }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1707,6 +1846,56 @@ export default function App() {
       setFinancialStatementScheduleLinks(statementLinkRecords);
       setReconciliationRuns(reconciliationRunRecords);
       setStatutoryComplianceRequirements(complianceRequirementRecords);
+      setInternalAuditProcesses(internalAuditProcessRecords);
+      const firstInternalAuditProcess = internalAuditProcessRecords[0] ?? null;
+      setSelectedInternalAuditProcessId(
+        firstInternalAuditProcess?.internalAuditProcessId ?? null,
+      );
+      if (firstInternalAuditProcess) {
+        const objectives = await invoke<InternalAuditObjective[]>(
+          "list_internal_audit_objectives",
+          { internalAuditProcessId: firstInternalAuditProcess.internalAuditProcessId },
+        );
+        setInternalAuditObjectives(objectives);
+        const firstObjective = objectives[0] ?? null;
+        setSelectedInternalAuditObjectiveId(
+          firstObjective?.internalAuditObjectiveId ?? null,
+        );
+        if (firstObjective) {
+          const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+            internalAuditObjectiveId: firstObjective.internalAuditObjectiveId,
+          });
+          setInternalAuditRisks(risks);
+          const firstRisk = risks[0] ?? null;
+          setSelectedInternalAuditRiskId(firstRisk?.internalAuditRiskId ?? null);
+          if (firstRisk) {
+            const controls = await invoke<InternalAuditControl[]>(
+              "list_internal_audit_controls",
+              { internalAuditRiskId: firstRisk.internalAuditRiskId },
+            );
+            setInternalAuditControls(controls);
+            const firstControl = controls[0] ?? null;
+            setSelectedInternalAuditControlId(
+              firstControl?.internalAuditControlId ?? null,
+            );
+            if (firstControl) {
+              const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+                internalAuditControlId: firstControl.internalAuditControlId,
+              });
+              setInternalAuditTests(tests);
+              const firstTest = tests[0] ?? null;
+              setSelectedInternalAuditTestId(firstTest?.internalAuditTestId ?? null);
+              if (firstTest) {
+                const evidence = await invoke<InternalAuditTestEvidence[]>(
+                  "list_internal_audit_test_evidence",
+                  { internalAuditTestId: firstTest.internalAuditTestId },
+                );
+                setInternalAuditTestEvidence(evidence);
+              }
+            }
+          }
+        }
+      }
       const firstComplianceRequirement = complianceRequirementRecords[0] ?? null;
       setSelectedStatutoryComplianceRequirementId(
         firstComplianceRequirement?.statutoryComplianceRequirementId ?? null,
@@ -3439,6 +3628,436 @@ export default function App() {
     }
   }
 
+  async function selectInternalAuditProcess(internalAuditProcessId: string | null) {
+    setSelectedInternalAuditProcessId(internalAuditProcessId);
+    setInternalAuditObjectives([]);
+    setSelectedInternalAuditObjectiveId(null);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditProcessId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const objectives = await invoke<InternalAuditObjective[]>(
+        "list_internal_audit_objectives",
+        { internalAuditProcessId },
+      );
+      setInternalAuditObjectives(objectives);
+      const firstObjective = objectives[0] ?? null;
+      setSelectedInternalAuditObjectiveId(firstObjective?.internalAuditObjectiveId ?? null);
+      if (firstObjective) {
+        await loadInternalAuditObjectiveDescendants(firstObjective.internalAuditObjectiveId);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditObjectiveDescendants(internalAuditObjectiveId: string) {
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+      internalAuditObjectiveId,
+    });
+    setInternalAuditRisks(risks);
+    const firstRisk = risks[0] ?? null;
+    setSelectedInternalAuditRiskId(firstRisk?.internalAuditRiskId ?? null);
+    if (firstRisk) {
+      await loadInternalAuditRiskDescendants(firstRisk.internalAuditRiskId);
+    }
+  }
+
+  async function selectInternalAuditObjective(internalAuditObjectiveId: string | null) {
+    setSelectedInternalAuditObjectiveId(internalAuditObjectiveId);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditObjectiveId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditObjectiveDescendants(internalAuditObjectiveId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditRiskDescendants(internalAuditRiskId: string) {
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const controls = await invoke<InternalAuditControl[]>("list_internal_audit_controls", {
+      internalAuditRiskId,
+    });
+    setInternalAuditControls(controls);
+    const firstControl = controls[0] ?? null;
+    setSelectedInternalAuditControlId(firstControl?.internalAuditControlId ?? null);
+    if (firstControl) {
+      await loadInternalAuditControlDescendants(firstControl.internalAuditControlId);
+    }
+  }
+
+  async function selectInternalAuditRisk(internalAuditRiskId: string | null) {
+    setSelectedInternalAuditRiskId(internalAuditRiskId);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditRiskId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditRiskDescendants(internalAuditRiskId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditControlDescendants(internalAuditControlId: string) {
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+      internalAuditControlId,
+    });
+    setInternalAuditTests(tests);
+    const firstTest = tests[0] ?? null;
+    setSelectedInternalAuditTestId(firstTest?.internalAuditTestId ?? null);
+    if (firstTest) {
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId: firstTest.internalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+    }
+  }
+
+  async function selectInternalAuditControl(internalAuditControlId: string | null) {
+    setSelectedInternalAuditControlId(internalAuditControlId);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditControlId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditControlDescendants(internalAuditControlId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectInternalAuditTest(internalAuditTestId: string | null) {
+    setSelectedInternalAuditTestId(internalAuditTestId);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditTestId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditProcess(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId || !newInternalAuditProcessName.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditProcess>("create_internal_audit_process", {
+        input: {
+          engagementId: selectedEngagementId,
+          parentProcessId: newInternalAuditProcessParentId || null,
+          code: newInternalAuditProcessCode.trim() || null,
+          name: newInternalAuditProcessName.trim(),
+          description: newInternalAuditProcessDescription.trim() || null,
+          displayOrder: internalAuditProcesses.length * 10,
+          status: "ACTIVE",
+        },
+      });
+      const processes = await invoke<InternalAuditProcess[]>("list_internal_audit_processes", {
+        engagementId: selectedEngagementId,
+      });
+      setInternalAuditProcesses(processes);
+      setSelectedInternalAuditProcessId(created.internalAuditProcessId);
+      setInternalAuditObjectives([]);
+      setSelectedInternalAuditObjectiveId(null);
+      setInternalAuditRisks([]);
+      setSelectedInternalAuditRiskId(null);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditProcessName("");
+      setNewInternalAuditProcessCode("");
+      setNewInternalAuditProcessDescription("");
+      setNewInternalAuditProcessParentId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditObjective(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditProcessId || !newInternalAuditObjectiveTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditObjective>("create_internal_audit_objective", {
+        internalAuditProcessId: selectedInternalAuditProcessId,
+        reference: newInternalAuditObjectiveReference.trim() || null,
+        title: newInternalAuditObjectiveTitle.trim(),
+        description: newInternalAuditObjectiveDescription.trim() || null,
+        status: "ACTIVE",
+      });
+      const objectives = await invoke<InternalAuditObjective[]>(
+        "list_internal_audit_objectives",
+        { internalAuditProcessId: selectedInternalAuditProcessId },
+      );
+      setInternalAuditObjectives(objectives);
+      setSelectedInternalAuditObjectiveId(created.internalAuditObjectiveId);
+      setInternalAuditRisks([]);
+      setSelectedInternalAuditRiskId(null);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditObjectiveReference("");
+      setNewInternalAuditObjectiveTitle("");
+      setNewInternalAuditObjectiveDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditRisk(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditObjectiveId || !newInternalAuditRiskTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditRisk>("create_internal_audit_risk", {
+        input: {
+          internalAuditObjectiveId: selectedInternalAuditObjectiveId,
+          reference: newInternalAuditRiskReference.trim() || null,
+          title: newInternalAuditRiskTitle.trim(),
+          description: newInternalAuditRiskDescription.trim() || null,
+          riskClassification: newInternalAuditRiskClassification.trim() || null,
+          inherentRating: newInternalAuditRiskRating.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+        internalAuditObjectiveId: selectedInternalAuditObjectiveId,
+      });
+      setInternalAuditRisks(risks);
+      setSelectedInternalAuditRiskId(created.internalAuditRiskId);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditRiskReference("");
+      setNewInternalAuditRiskTitle("");
+      setNewInternalAuditRiskDescription("");
+      setNewInternalAuditRiskClassification("");
+      setNewInternalAuditRiskRating("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditControl(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditRiskId || !newInternalAuditControlTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditControl>("create_internal_audit_control", {
+        input: {
+          internalAuditRiskId: selectedInternalAuditRiskId,
+          reference: newInternalAuditControlReference.trim() || null,
+          title: newInternalAuditControlTitle.trim(),
+          description: newInternalAuditControlDescription.trim() || null,
+          controlType: newInternalAuditControlType.trim() || null,
+          frequency: newInternalAuditControlFrequency.trim() || null,
+          ownerText: newInternalAuditControlOwner.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const controls = await invoke<InternalAuditControl[]>("list_internal_audit_controls", {
+        internalAuditRiskId: selectedInternalAuditRiskId,
+      });
+      setInternalAuditControls(controls);
+      setSelectedInternalAuditControlId(created.internalAuditControlId);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditControlReference("");
+      setNewInternalAuditControlTitle("");
+      setNewInternalAuditControlDescription("");
+      setNewInternalAuditControlType("");
+      setNewInternalAuditControlFrequency("");
+      setNewInternalAuditControlOwner("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditTest(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !selectedInternalAuditControlId ||
+      !newInternalAuditTestTitle.trim() ||
+      !newInternalAuditTestProcedure.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditTest>("create_internal_audit_test", {
+        input: {
+          internalAuditControlId: selectedInternalAuditControlId,
+          reference: newInternalAuditTestReference.trim() || null,
+          title: newInternalAuditTestTitle.trim(),
+          procedureText: newInternalAuditTestProcedure.trim(),
+          sampleStrategy: newInternalAuditTestSampleStrategy.trim() || null,
+          expectedResult: newInternalAuditTestExpectedResult.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+        internalAuditControlId: selectedInternalAuditControlId,
+      });
+      setInternalAuditTests(tests);
+      setSelectedInternalAuditTestId(created.internalAuditTestId);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditTestReference("");
+      setNewInternalAuditTestTitle("");
+      setNewInternalAuditTestProcedure("");
+      setNewInternalAuditTestSampleStrategy("");
+      setNewInternalAuditTestExpectedResult("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchInternalAuditEvidence() {
+    const queryText = internalAuditEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setInternalAuditEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setInternalAuditEvidenceSearchResults(results);
+      setSelectedInternalAuditEvidenceDocument(null);
+      setInternalAuditEvidenceVersionHistory([]);
+      setSelectedInternalAuditControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setInternalAuditEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectInternalAuditEvidenceDocument(document: SearchResult) {
+    setInternalAuditEvidenceSearchBusy(true);
+    setSelectedInternalAuditEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setInternalAuditEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedInternalAuditControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setInternalAuditEvidenceVersionHistory([]);
+      setSelectedInternalAuditControlledVersionId("");
+    } finally {
+      setInternalAuditEvidenceSearchBusy(false);
+    }
+  }
+
+  async function linkInternalAuditTestEvidence() {
+    if (!selectedInternalAuditTestId || !selectedInternalAuditControlledVersionId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<InternalAuditTestEvidence>("create_internal_audit_test_evidence_link", {
+        internalAuditTestId: selectedInternalAuditTestId,
+        controlledEvidenceVersionId: selectedInternalAuditControlledVersionId,
+        description: internalAuditEvidenceDescription.trim() || null,
+      });
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId: selectedInternalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+      setInternalAuditEvidenceDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function searchComplianceEvidence() {
     const queryText = complianceEvidenceSearchQuery.trim();
     if (!queryText) return;
@@ -5001,6 +5620,32 @@ export default function App() {
     ) ?? null;
   const complianceControlledEvidenceVersions =
     complianceEvidenceVersionHistory.filter(
+      (entry) =>
+        entry.controlledEvidenceVersionId &&
+        entry.controlledVerificationState === "HASH_VERIFIED",
+    );
+  const selectedInternalAuditProcess =
+    internalAuditProcesses.find(
+      (item) => item.internalAuditProcessId === selectedInternalAuditProcessId,
+    ) ?? null;
+  const selectedInternalAuditObjective =
+    internalAuditObjectives.find(
+      (item) => item.internalAuditObjectiveId === selectedInternalAuditObjectiveId,
+    ) ?? null;
+  const selectedInternalAuditRisk =
+    internalAuditRisks.find(
+      (item) => item.internalAuditRiskId === selectedInternalAuditRiskId,
+    ) ?? null;
+  const selectedInternalAuditControl =
+    internalAuditControls.find(
+      (item) => item.internalAuditControlId === selectedInternalAuditControlId,
+    ) ?? null;
+  const selectedInternalAuditTest =
+    internalAuditTests.find(
+      (item) => item.internalAuditTestId === selectedInternalAuditTestId,
+    ) ?? null;
+  const internalAuditControlledEvidenceVersions =
+    internalAuditEvidenceVersionHistory.filter(
       (entry) =>
         entry.controlledEvidenceVersionId &&
         entry.controlledVerificationState === "HASH_VERIFIED",
@@ -7425,6 +8070,629 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-three">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">INTERNAL AUDIT PROCESS</span>
+                        <h3>Process & objective</h3>
+                      </div>
+                    </div>
+
+                    <label className="workspace-form compact">
+                      <span>Current process</span>
+                      <select
+                        value={selectedInternalAuditProcessId ?? ""}
+                        onChange={(event) =>
+                          void selectInternalAuditProcess(event.target.value || null)
+                        }
+                      >
+                        <option value="">Select process</option>
+                        {internalAuditProcesses.map((process) => (
+                          <option
+                            key={process.internalAuditProcessId}
+                            value={process.internalAuditProcessId}
+                          >
+                            {process.code ? `${process.code} · ` : ""}
+                            {process.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <form className="workspace-form compact" onSubmit={submitInternalAuditProcess}>
+                      <div className="workspace-grid workspace-grid-two">
+                        <label>
+                          <span>Parent process</span>
+                          <select
+                            value={newInternalAuditProcessParentId}
+                            onChange={(event) =>
+                              setNewInternalAuditProcessParentId(event.target.value)
+                            }
+                          >
+                            <option value="">Top level</option>
+                            {internalAuditProcesses.map((process) => (
+                              <option
+                                key={process.internalAuditProcessId}
+                                value={process.internalAuditProcessId}
+                              >
+                                {process.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Code</span>
+                          <input
+                            value={newInternalAuditProcessCode}
+                            onChange={(event) =>
+                              setNewInternalAuditProcessCode(event.target.value)
+                            }
+                            placeholder="P2P"
+                            maxLength={80}
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        <span>Process name</span>
+                        <input
+                          value={newInternalAuditProcessName}
+                          onChange={(event) =>
+                            setNewInternalAuditProcessName(event.target.value)
+                          }
+                          placeholder="Procure-to-Pay"
+                          maxLength={240}
+                        />
+                      </label>
+                      <label>
+                        <span>Description</span>
+                        <textarea
+                          value={newInternalAuditProcessDescription}
+                          onChange={(event) =>
+                            setNewInternalAuditProcessDescription(event.target.value)
+                          }
+                          placeholder="Scope and boundaries of this process"
+                          maxLength={4000}
+                        />
+                      </label>
+                      <button
+                        className="secondary-button"
+                        type="submit"
+                        disabled={workspaceBusy || !newInternalAuditProcessName.trim()}
+                      >
+                        Add process
+                      </button>
+                    </form>
+
+                    {selectedInternalAuditProcess ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Current objective</span>
+                          <select
+                            value={selectedInternalAuditObjectiveId ?? ""}
+                            onChange={(event) =>
+                              void selectInternalAuditObjective(event.target.value || null)
+                            }
+                          >
+                            <option value="">Select objective</option>
+                            {internalAuditObjectives.map((objective) => (
+                              <option
+                                key={objective.internalAuditObjectiveId}
+                                value={objective.internalAuditObjectiveId}
+                              >
+                                {objective.reference ? `${objective.reference} · ` : ""}
+                                {objective.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitInternalAuditObjective}
+                        >
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Reference</span>
+                              <input
+                                value={newInternalAuditObjectiveReference}
+                                onChange={(event) =>
+                                  setNewInternalAuditObjectiveReference(event.target.value)
+                                }
+                                placeholder="OBJ-01"
+                                maxLength={100}
+                              />
+                            </label>
+                            <label>
+                              <span>Objective</span>
+                              <input
+                                value={newInternalAuditObjectiveTitle}
+                                onChange={(event) =>
+                                  setNewInternalAuditObjectiveTitle(event.target.value)
+                                }
+                                placeholder="Purchases are properly authorized"
+                                maxLength={300}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            <span>Description</span>
+                            <textarea
+                              value={newInternalAuditObjectiveDescription}
+                              onChange={(event) =>
+                                setNewInternalAuditObjectiveDescription(event.target.value)
+                              }
+                              placeholder="What this objective is intended to achieve"
+                              maxLength={4000}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !newInternalAuditObjectiveTitle.trim()}
+                          >
+                            Add objective
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <p className="evidence-integrity-note">
+                        Select or create a process before defining objectives.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">RISK & CONTROL</span>
+                        <h3>Risk-control design</h3>
+                      </div>
+                    </div>
+
+                    {selectedInternalAuditObjective ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Current risk</span>
+                          <select
+                            value={selectedInternalAuditRiskId ?? ""}
+                            onChange={(event) =>
+                              void selectInternalAuditRisk(event.target.value || null)
+                            }
+                          >
+                            <option value="">Select risk</option>
+                            {internalAuditRisks.map((risk) => (
+                              <option key={risk.internalAuditRiskId} value={risk.internalAuditRiskId}>
+                                {risk.reference ? `${risk.reference} · ` : ""}
+                                {risk.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <form className="workspace-form compact" onSubmit={submitInternalAuditRisk}>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Reference</span>
+                              <input
+                                value={newInternalAuditRiskReference}
+                                onChange={(event) =>
+                                  setNewInternalAuditRiskReference(event.target.value)
+                                }
+                                placeholder="R-01"
+                                maxLength={100}
+                              />
+                            </label>
+                            <label>
+                              <span>Classification</span>
+                              <input
+                                value={newInternalAuditRiskClassification}
+                                onChange={(event) =>
+                                  setNewInternalAuditRiskClassification(event.target.value)
+                                }
+                                placeholder="Financial / Operational"
+                                maxLength={160}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            <span>Risk title</span>
+                            <input
+                              value={newInternalAuditRiskTitle}
+                              onChange={(event) =>
+                                setNewInternalAuditRiskTitle(event.target.value)
+                              }
+                              placeholder="Unauthorized purchase commitments"
+                              maxLength={300}
+                            />
+                          </label>
+                          <label>
+                            <span>Risk description</span>
+                            <textarea
+                              value={newInternalAuditRiskDescription}
+                              onChange={(event) =>
+                                setNewInternalAuditRiskDescription(event.target.value)
+                              }
+                              placeholder="Risk event, cause and potential effect"
+                              maxLength={4000}
+                            />
+                          </label>
+                          <label>
+                            <span>Inherent rating</span>
+                            <input
+                              value={newInternalAuditRiskRating}
+                              onChange={(event) =>
+                                setNewInternalAuditRiskRating(event.target.value)
+                              }
+                              placeholder="High"
+                              maxLength={120}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !newInternalAuditRiskTitle.trim()}
+                          >
+                            Add risk
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <p className="evidence-integrity-note">
+                        Select an objective before defining risks.
+                      </p>
+                    )}
+
+                    {selectedInternalAuditRisk ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Current control</span>
+                          <select
+                            value={selectedInternalAuditControlId ?? ""}
+                            onChange={(event) =>
+                              void selectInternalAuditControl(event.target.value || null)
+                            }
+                          >
+                            <option value="">Select control</option>
+                            {internalAuditControls.map((control) => (
+                              <option
+                                key={control.internalAuditControlId}
+                                value={control.internalAuditControlId}
+                              >
+                                {control.reference ? `${control.reference} · ` : ""}
+                                {control.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitInternalAuditControl}
+                        >
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Reference</span>
+                              <input
+                                value={newInternalAuditControlReference}
+                                onChange={(event) =>
+                                  setNewInternalAuditControlReference(event.target.value)
+                                }
+                                placeholder="C-01"
+                                maxLength={100}
+                              />
+                            </label>
+                            <label>
+                              <span>Control type</span>
+                              <input
+                                value={newInternalAuditControlType}
+                                onChange={(event) =>
+                                  setNewInternalAuditControlType(event.target.value)
+                                }
+                                placeholder="Preventive / Detective"
+                                maxLength={120}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            <span>Control title</span>
+                            <input
+                              value={newInternalAuditControlTitle}
+                              onChange={(event) =>
+                                setNewInternalAuditControlTitle(event.target.value)
+                              }
+                              placeholder="PO approval per delegation matrix"
+                              maxLength={300}
+                            />
+                          </label>
+                          <label>
+                            <span>Description</span>
+                            <textarea
+                              value={newInternalAuditControlDescription}
+                              onChange={(event) =>
+                                setNewInternalAuditControlDescription(event.target.value)
+                              }
+                              placeholder="How the control operates"
+                              maxLength={4000}
+                            />
+                          </label>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Frequency</span>
+                              <input
+                                value={newInternalAuditControlFrequency}
+                                onChange={(event) =>
+                                  setNewInternalAuditControlFrequency(event.target.value)
+                                }
+                                placeholder="Per transaction"
+                                maxLength={120}
+                              />
+                            </label>
+                            <label>
+                              <span>Owner</span>
+                              <input
+                                value={newInternalAuditControlOwner}
+                                onChange={(event) =>
+                                  setNewInternalAuditControlOwner(event.target.value)
+                                }
+                                placeholder="Procurement Head"
+                                maxLength={240}
+                              />
+                            </label>
+                          </div>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !newInternalAuditControlTitle.trim()}
+                          >
+                            Add control
+                          </button>
+                        </form>
+                      </>
+                    ) : null}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">CONTROL TESTING</span>
+                        <h3>Test & exact evidence</h3>
+                      </div>
+                    </div>
+
+                    {selectedInternalAuditControl ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Current test</span>
+                          <select
+                            value={selectedInternalAuditTestId ?? ""}
+                            onChange={(event) =>
+                              void selectInternalAuditTest(event.target.value || null)
+                            }
+                          >
+                            <option value="">Select test</option>
+                            {internalAuditTests.map((test) => (
+                              <option key={test.internalAuditTestId} value={test.internalAuditTestId}>
+                                {test.reference ? `${test.reference} · ` : ""}
+                                {test.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <form className="workspace-form compact" onSubmit={submitInternalAuditTest}>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Reference</span>
+                              <input
+                                value={newInternalAuditTestReference}
+                                onChange={(event) =>
+                                  setNewInternalAuditTestReference(event.target.value)
+                                }
+                                placeholder="T-01"
+                                maxLength={100}
+                              />
+                            </label>
+                            <label>
+                              <span>Test title</span>
+                              <input
+                                value={newInternalAuditTestTitle}
+                                onChange={(event) =>
+                                  setNewInternalAuditTestTitle(event.target.value)
+                                }
+                                placeholder="Test PO approval"
+                                maxLength={300}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            <span>Procedure</span>
+                            <textarea
+                              value={newInternalAuditTestProcedure}
+                              onChange={(event) =>
+                                setNewInternalAuditTestProcedure(event.target.value)
+                              }
+                              placeholder="Select a sample and inspect approval against the delegation matrix."
+                              maxLength={8000}
+                            />
+                          </label>
+                          <label>
+                            <span>Sample strategy</span>
+                            <input
+                              value={newInternalAuditTestSampleStrategy}
+                              onChange={(event) =>
+                                setNewInternalAuditTestSampleStrategy(event.target.value)
+                              }
+                              placeholder="25 transactions across the audit period"
+                              maxLength={1000}
+                            />
+                          </label>
+                          <label>
+                            <span>Expected result</span>
+                            <textarea
+                              value={newInternalAuditTestExpectedResult}
+                              onChange={(event) =>
+                                setNewInternalAuditTestExpectedResult(event.target.value)
+                              }
+                              placeholder="Every selected PO is approved by an authorized approver."
+                              maxLength={4000}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={
+                              workspaceBusy ||
+                              !newInternalAuditTestTitle.trim() ||
+                              !newInternalAuditTestProcedure.trim()
+                            }
+                          >
+                            Add control test
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <p className="evidence-integrity-note">
+                        Select a control before defining tests.
+                      </p>
+                    )}
+
+                    {selectedInternalAuditTest ? (
+                      <div className="workspace-form compact">
+                        <div>
+                          <span className="workspace-label">EXACT TEST EVIDENCE</span>
+                          <p className="evidence-integrity-note">
+                            Evidence links use retained, hash-verified controlled versions only.
+                          </p>
+                        </div>
+                        <label>
+                          <span>Search evidence</span>
+                          <input
+                            value={internalAuditEvidenceSearchQuery}
+                            onChange={(event) =>
+                              setInternalAuditEvidenceSearchQuery(event.target.value)
+                            }
+                            placeholder="Search indexed evidence"
+                          />
+                        </label>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={
+                            internalAuditEvidenceSearchBusy ||
+                            !internalAuditEvidenceSearchQuery.trim()
+                          }
+                          onClick={() => void searchInternalAuditEvidence()}
+                        >
+                          {internalAuditEvidenceSearchBusy ? "Searching…" : "Search evidence"}
+                        </button>
+
+                        {internalAuditEvidenceSearchResults.length ? (
+                          <div className="workspace-mini-list">
+                            {internalAuditEvidenceSearchResults.map((result) => (
+                              <button
+                                className={`workspace-list-row${selectedInternalAuditEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                                type="button"
+                                key={result.documentId}
+                                onClick={() =>
+                                  void selectInternalAuditEvidenceDocument(result)
+                                }
+                              >
+                                <span>
+                                  <strong>{result.name}</strong>
+                                  <small>{result.path}</small>
+                                </span>
+                                <span className="workspace-row-action">Select →</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {selectedInternalAuditEvidenceDocument ? (
+                          <>
+                            <label>
+                              <span>Hash-verified controlled version</span>
+                              <select
+                                value={selectedInternalAuditControlledVersionId}
+                                onChange={(event) =>
+                                  setSelectedInternalAuditControlledVersionId(
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value="">Select controlled evidence</option>
+                                {internalAuditControlledEvidenceVersions.map((entry) => (
+                                  <option
+                                    key={
+                                      entry.controlledEvidenceVersionId ??
+                                      entry.contentVersionId
+                                    }
+                                    value={entry.controlledEvidenceVersionId ?? ""}
+                                  >
+                                    v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                    {formatTimestamp(entry.capturedAtMs)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {!internalAuditControlledEvidenceVersions.length ? (
+                              <p className="evidence-integrity-note">
+                                No hash-verified controlled version exists for this document yet.
+                              </p>
+                            ) : null}
+                            <label>
+                              <span>Evidence description</span>
+                              <input
+                                value={internalAuditEvidenceDescription}
+                                onChange={(event) =>
+                                  setInternalAuditEvidenceDescription(event.target.value)
+                                }
+                                placeholder="Approval evidence for sampled purchase orders"
+                                maxLength={1000}
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              disabled={
+                                workspaceBusy ||
+                                !selectedInternalAuditControlledVersionId
+                              }
+                              onClick={() => void linkInternalAuditTestEvidence()}
+                            >
+                              Link exact evidence
+                            </button>
+                          </>
+                        ) : null}
+
+                        <div className="workspace-mini-list">
+                          {internalAuditTestEvidence.length ? (
+                            internalAuditTestEvidence.map((evidence) => (
+                              <span key={evidence.internalAuditTestEvidenceLinkId}>
+                                <strong>
+                                  Controlled evidence{" "}
+                                  {evidence.controlledEvidenceVersionId.slice(0, 18)}…
+                                </strong>
+                                <small>
+                                  Source SHA {evidence.sourceSha256Hex.slice(0, 16)}… · linked{" "}
+                                  {formatTimestamp(evidence.linkedAtMs)}
+                                </small>
+                                {evidence.description ? (
+                                  <small>{evidence.description}</small>
+                                ) : null}
+                              </span>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              No exact controlled evidence is linked to this test yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
