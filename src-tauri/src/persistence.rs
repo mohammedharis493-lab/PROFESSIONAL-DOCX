@@ -4835,6 +4835,31 @@ fn normalize_due_diligence_request_status(value: &str) -> Result<String, Persist
     }
 }
 
+fn normalize_due_diligence_issue_type(value: &str) -> Result<String, PersistenceError> {
+    let issue_type = workflow_state_key(value);
+    if matches!(issue_type.as_str(), "FINDING" | "DEAL_ISSUE") {
+        Ok(issue_type)
+    } else {
+        Err(PersistenceError::Configuration(
+            "due diligence issue type must be FINDING or DEAL_ISSUE".to_string(),
+        ))
+    }
+}
+
+fn normalize_due_diligence_issue_status(value: &str) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if matches!(
+        status.as_str(),
+        "OPEN" | "UNDER_REVIEW" | "CONFIRMED" | "RESOLVED" | "CLOSED" | "DROPPED"
+    ) {
+        Ok(status)
+    } else {
+        Err(PersistenceError::Configuration(
+            "due diligence issue status is not supported".to_string(),
+        ))
+    }
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
