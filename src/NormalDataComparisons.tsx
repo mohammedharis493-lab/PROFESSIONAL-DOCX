@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./normal-data-comparisons.css";
+import {
+  PERIOD_BASES,
+  commonNumericColumns,
+  eligiblePeriodColumns,
+  hasVerifiedBinding,
+  isValidMinorTolerance,
+  type ColumnSemantic,
+  type PeriodBasis,
+} from "./normal-data-comparison-rules";
 
 type Dataset = {
   normalDataDatasetVersionId: string;
@@ -9,11 +18,7 @@ type Dataset = {
   sourceSha256Hex: string | null;
 };
 
-type Column = {
-  columnName: string;
-  semanticRole: string;
-  dataType: string;
-};
+type Column = ColumnSemantic;
 
 type Recipe = {
   normalDataComparisonRecipeId: string;
@@ -30,8 +35,6 @@ type Recipe = {
   toleranceMinorUnits: number;
   createdAtMs: number;
 };
-
-type PeriodBasis = "FILING_PERIOD" | "INVOICE_MONTH" | "ACCOUNTING_PERIOD";
 
 type ComparisonEntry = {
   businessKey: string;
@@ -70,11 +73,6 @@ type Run = {
   completedAtMs: number;
 };
 
-const PERIOD_BASES: { value: PeriodBasis; label: string; role: string; dataType: string }[] = [
-  { value: "FILING_PERIOD", label: "Filing period", role: "FILING_PERIOD", dataType: "PERIOD" },
-  { value: "INVOICE_MONTH", label: "Invoice month (from invoice date)", role: "INVOICE_DATE", dataType: "DATE" },
-  { value: "ACCOUNTING_PERIOD", label: "Accounting period", role: "ACCOUNTING_PERIOD", dataType: "PERIOD" },
-];
 const MAX_PREVIEW = 50;
 
 function formatDate(ms: number) {
@@ -83,11 +81,6 @@ function formatDate(ms: number) {
 
 function datasetLabel(dataset: Dataset) {
   return dataset.name + " · " + dataset.normalDataDatasetVersionId.slice(0, 8);
-}
-
-function hasVerifiedBinding(dataset?: Dataset) {
-  return !!dataset && dataset.sourceVerificationState === "HASH_VERIFIED" &&
-    !!dataset.sourceSha256Hex;
 }
 
 export default function NormalDataComparisons({
@@ -183,23 +176,13 @@ export default function NormalDataComparisons({
     return () => { live = false; };
   }, [recipeVersionId, runRevision]);
 
-  const basis = PERIOD_BASES.find((item) => item.value === periodBasis) ?? PERIOD_BASES[0];
-  const periodOptionsA = columnsA.filter((item) =>
-    item.semanticRole === basis.role && item.dataType === basis.dataType);
-  const periodOptionsB = columnsB.filter((item) =>
-    item.semanticRole === basis.role && item.dataType === basis.dataType);
+  const periodOptionsA = eligiblePeriodColumns(columnsA, periodBasis);
+  const periodOptionsB = eligiblePeriodColumns(columnsB, periodBasis);
 
-  const commonAmounts = useMemo(() => {
-    const right = new Set(columnsB
-      .filter((item) => item.semanticRole === "NUMERIC_VALUE" && item.dataType === "DECIMAL")
-      .map((item) => item.columnName));
-    return [...new Set(columnsA.filter((item) =>
-      item.semanticRole === "NUMERIC_VALUE" && item.dataType === "DECIMAL" &&
-      right.has(item.columnName)).map((item) => item.columnName))].sort();
-  }, [columnsA, columnsB]);
+  const commonAmounts = useMemo(() =>
+    commonNumericColumns(columnsA, columnsB), [columnsA, columnsB]);
 
-  const toleranceValid = /^(0|[1-9][0-9]*)$/.test(tolerance) &&
-    Number.isSafeInteger(Number(tolerance));
+  const toleranceValid = isValidMinorTolerance(tolerance);
   const a = datasets.find((item) => item.normalDataDatasetVersionId === datasetA);
   const b = datasets.find((item) => item.normalDataDatasetVersionId === datasetB);
   const canCreate = !!workspaceId && !!recipeName.trim() && datasetA !== datasetB &&
