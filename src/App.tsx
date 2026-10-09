@@ -153,6 +153,76 @@ type StatutoryComplianceEvidence = {
   linkedAtMs: number;
 };
 
+type InternalAuditProcess = {
+  internalAuditProcessId: string;
+  engagementId: string;
+  parentProcessId: string | null;
+  code: string | null;
+  name: string;
+  description: string | null;
+  displayOrder: number;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditObjective = {
+  internalAuditObjectiveId: string;
+  internalAuditProcessId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditRisk = {
+  internalAuditRiskId: string;
+  internalAuditObjectiveId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  riskClassification: string | null;
+  inherentRating: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditControl = {
+  internalAuditControlId: string;
+  internalAuditRiskId: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  controlType: string | null;
+  frequency: string | null;
+  ownerText: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditTest = {
+  internalAuditTestId: string;
+  internalAuditControlId: string;
+  reference: string | null;
+  title: string;
+  procedureText: string;
+  sampleStrategy: string | null;
+  expectedResult: string | null;
+  status: string;
+  createdAtMs: number;
+};
+
+type InternalAuditTestEvidence = {
+  internalAuditTestEvidenceLinkId: string;
+  internalAuditTestId: string;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  description: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1243,6 +1313,58 @@ export default function App() {
   const [selectedComplianceControlledVersionId, setSelectedComplianceControlledVersionId] =
     useState("");
   const [complianceEvidenceSearchBusy, setComplianceEvidenceSearchBusy] = useState(false);
+  const [internalAuditProcesses, setInternalAuditProcesses] = useState<InternalAuditProcess[]>([]);
+  const [selectedInternalAuditProcessId, setSelectedInternalAuditProcessId] =
+    useState<string | null>(null);
+  const [internalAuditObjectives, setInternalAuditObjectives] =
+    useState<InternalAuditObjective[]>([]);
+  const [selectedInternalAuditObjectiveId, setSelectedInternalAuditObjectiveId] =
+    useState<string | null>(null);
+  const [internalAuditRisks, setInternalAuditRisks] = useState<InternalAuditRisk[]>([]);
+  const [selectedInternalAuditRiskId, setSelectedInternalAuditRiskId] =
+    useState<string | null>(null);
+  const [internalAuditControls, setInternalAuditControls] = useState<InternalAuditControl[]>([]);
+  const [selectedInternalAuditControlId, setSelectedInternalAuditControlId] =
+    useState<string | null>(null);
+  const [internalAuditTests, setInternalAuditTests] = useState<InternalAuditTest[]>([]);
+  const [selectedInternalAuditTestId, setSelectedInternalAuditTestId] =
+    useState<string | null>(null);
+  const [internalAuditTestEvidence, setInternalAuditTestEvidence] =
+    useState<InternalAuditTestEvidence[]>([]);
+  const [newInternalAuditProcessName, setNewInternalAuditProcessName] = useState("");
+  const [newInternalAuditProcessCode, setNewInternalAuditProcessCode] = useState("");
+  const [newInternalAuditProcessDescription, setNewInternalAuditProcessDescription] = useState("");
+  const [newInternalAuditProcessParentId, setNewInternalAuditProcessParentId] = useState("");
+  const [newInternalAuditObjectiveReference, setNewInternalAuditObjectiveReference] = useState("");
+  const [newInternalAuditObjectiveTitle, setNewInternalAuditObjectiveTitle] = useState("");
+  const [newInternalAuditObjectiveDescription, setNewInternalAuditObjectiveDescription] = useState("");
+  const [newInternalAuditRiskReference, setNewInternalAuditRiskReference] = useState("");
+  const [newInternalAuditRiskTitle, setNewInternalAuditRiskTitle] = useState("");
+  const [newInternalAuditRiskDescription, setNewInternalAuditRiskDescription] = useState("");
+  const [newInternalAuditRiskClassification, setNewInternalAuditRiskClassification] = useState("");
+  const [newInternalAuditRiskRating, setNewInternalAuditRiskRating] = useState("");
+  const [newInternalAuditControlReference, setNewInternalAuditControlReference] = useState("");
+  const [newInternalAuditControlTitle, setNewInternalAuditControlTitle] = useState("");
+  const [newInternalAuditControlDescription, setNewInternalAuditControlDescription] = useState("");
+  const [newInternalAuditControlType, setNewInternalAuditControlType] = useState("");
+  const [newInternalAuditControlFrequency, setNewInternalAuditControlFrequency] = useState("");
+  const [newInternalAuditControlOwner, setNewInternalAuditControlOwner] = useState("");
+  const [newInternalAuditTestReference, setNewInternalAuditTestReference] = useState("");
+  const [newInternalAuditTestTitle, setNewInternalAuditTestTitle] = useState("");
+  const [newInternalAuditTestProcedure, setNewInternalAuditTestProcedure] = useState("");
+  const [newInternalAuditTestSampleStrategy, setNewInternalAuditTestSampleStrategy] = useState("");
+  const [newInternalAuditTestExpectedResult, setNewInternalAuditTestExpectedResult] = useState("");
+  const [internalAuditEvidenceSearchQuery, setInternalAuditEvidenceSearchQuery] = useState("");
+  const [internalAuditEvidenceSearchResults, setInternalAuditEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedInternalAuditEvidenceDocument, setSelectedInternalAuditEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [internalAuditEvidenceVersionHistory, setInternalAuditEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedInternalAuditControlledVersionId, setSelectedInternalAuditControlledVersionId] =
+    useState("");
+  const [internalAuditEvidenceDescription, setInternalAuditEvidenceDescription] = useState("");
+  const [internalAuditEvidenceSearchBusy, setInternalAuditEvidenceSearchBusy] = useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -1666,6 +1788,21 @@ export default function App() {
     setSelectedComplianceEvidenceDocument(null);
     setComplianceEvidenceVersionHistory([]);
     setSelectedComplianceControlledVersionId("");
+    setInternalAuditProcesses([]);
+    setSelectedInternalAuditProcessId(null);
+    setInternalAuditObjectives([]);
+    setSelectedInternalAuditObjectiveId(null);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    setInternalAuditEvidenceSearchResults([]);
+    setSelectedInternalAuditEvidenceDocument(null);
+    setInternalAuditEvidenceVersionHistory([]);
+    setSelectedInternalAuditControlledVersionId("");
     try {
       const [
         areas,
@@ -1678,6 +1815,7 @@ export default function App() {
         statementLinkRecords,
         reconciliationRunRecords,
         complianceRequirementRecords,
+        internalAuditProcessRecords,
       ] = await Promise.all([
         invoke<EngagementArea[]>("list_engagement_areas", { engagementId }),
         invoke<Procedure[]>("list_procedures", { engagementId }),
@@ -1696,6 +1834,7 @@ export default function App() {
         invoke<StatutoryComplianceRequirement[]>("list_statutory_compliance_requirements", {
           engagementId,
         }),
+        invoke<InternalAuditProcess[]>("list_internal_audit_processes", { engagementId }),
       ]);
       setEngagementAreas(areas);
       setProcedures(procedureRecords);
@@ -1707,6 +1846,56 @@ export default function App() {
       setFinancialStatementScheduleLinks(statementLinkRecords);
       setReconciliationRuns(reconciliationRunRecords);
       setStatutoryComplianceRequirements(complianceRequirementRecords);
+      setInternalAuditProcesses(internalAuditProcessRecords);
+      const firstInternalAuditProcess = internalAuditProcessRecords[0] ?? null;
+      setSelectedInternalAuditProcessId(
+        firstInternalAuditProcess?.internalAuditProcessId ?? null,
+      );
+      if (firstInternalAuditProcess) {
+        const objectives = await invoke<InternalAuditObjective[]>(
+          "list_internal_audit_objectives",
+          { internalAuditProcessId: firstInternalAuditProcess.internalAuditProcessId },
+        );
+        setInternalAuditObjectives(objectives);
+        const firstObjective = objectives[0] ?? null;
+        setSelectedInternalAuditObjectiveId(
+          firstObjective?.internalAuditObjectiveId ?? null,
+        );
+        if (firstObjective) {
+          const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+            internalAuditObjectiveId: firstObjective.internalAuditObjectiveId,
+          });
+          setInternalAuditRisks(risks);
+          const firstRisk = risks[0] ?? null;
+          setSelectedInternalAuditRiskId(firstRisk?.internalAuditRiskId ?? null);
+          if (firstRisk) {
+            const controls = await invoke<InternalAuditControl[]>(
+              "list_internal_audit_controls",
+              { internalAuditRiskId: firstRisk.internalAuditRiskId },
+            );
+            setInternalAuditControls(controls);
+            const firstControl = controls[0] ?? null;
+            setSelectedInternalAuditControlId(
+              firstControl?.internalAuditControlId ?? null,
+            );
+            if (firstControl) {
+              const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+                internalAuditControlId: firstControl.internalAuditControlId,
+              });
+              setInternalAuditTests(tests);
+              const firstTest = tests[0] ?? null;
+              setSelectedInternalAuditTestId(firstTest?.internalAuditTestId ?? null);
+              if (firstTest) {
+                const evidence = await invoke<InternalAuditTestEvidence[]>(
+                  "list_internal_audit_test_evidence",
+                  { internalAuditTestId: firstTest.internalAuditTestId },
+                );
+                setInternalAuditTestEvidence(evidence);
+              }
+            }
+          }
+        }
+      }
       const firstComplianceRequirement = complianceRequirementRecords[0] ?? null;
       setSelectedStatutoryComplianceRequirementId(
         firstComplianceRequirement?.statutoryComplianceRequirementId ?? null,
