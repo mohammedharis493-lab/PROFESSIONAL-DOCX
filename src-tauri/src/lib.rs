@@ -5,9 +5,9 @@ mod launcher;
 mod ledger;
 mod normal_data;
 pub mod normal_data_comparison;
+mod normal_data_csv;
 mod normal_data_datasets;
 mod normal_data_recipes;
-mod normal_data_csv;
 mod normal_data_run;
 pub mod normal_data_source_reader;
 mod persistence;
@@ -2490,11 +2490,8 @@ fn run_normal_data_comparison(
         &normal_data_comparison_recipe_version_id,
         "normal-data-comparison-recipe-version",
     )?;
-    normal_data_run::execute_comparison(
-        database.path(),
-        &normal_data_comparison_recipe_version_id,
-    )
-    .map_err(|error| error.to_string())
+    normal_data_run::execute_comparison(database.path(), &normal_data_comparison_recipe_version_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
