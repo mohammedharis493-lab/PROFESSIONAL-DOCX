@@ -2438,8 +2438,9 @@ impl From<search::SearchResultRecord> for SearchResultDto {
     }
 }
 
-#[tauri::command]
-fn create_normal_data_comparison_recipe(
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNormalDataComparisonRecipeRequest {
     normal_data_workspace_id: String,
     name: String,
     dataset_a_version_id: String,
@@ -2449,23 +2450,28 @@ fn create_normal_data_comparison_recipe(
     period_column_b: String,
     amount_columns: Vec<String>,
     tolerance_minor_units: i64,
+}
+
+#[tauri::command]
+fn create_normal_data_comparison_recipe(
+    input: CreateNormalDataComparisonRecipeRequest,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<normal_data_recipes::RecipeRecord, String> {
-    validate_uuid(&normal_data_workspace_id, "normal-data-workspace")?;
-    validate_uuid(&dataset_a_version_id, "comparison-dataset-A-version")?;
-    validate_uuid(&dataset_b_version_id, "comparison-dataset-B-version")?;
+    validate_uuid(&input.normal_data_workspace_id, "normal-data-workspace")?;
+    validate_uuid(&input.dataset_a_version_id, "comparison-dataset-A-version")?;
+    validate_uuid(&input.dataset_b_version_id, "comparison-dataset-B-version")?;
     normal_data_recipes::create_recipe(
         database.path(),
         normal_data_recipes::RecipeDefinition {
-            normal_data_workspace_id: &normal_data_workspace_id,
-            name: &name,
-            dataset_a_version_id: &dataset_a_version_id,
-            dataset_b_version_id: &dataset_b_version_id,
-            period_basis: &period_basis,
-            period_column_a: &period_column_a,
-            period_column_b: &period_column_b,
-            amount_columns: &amount_columns,
-            tolerance_minor_units,
+            normal_data_workspace_id: &input.normal_data_workspace_id,
+            name: &input.name,
+            dataset_a_version_id: &input.dataset_a_version_id,
+            dataset_b_version_id: &input.dataset_b_version_id,
+            period_basis: &input.period_basis,
+            period_column_a: &input.period_column_a,
+            period_column_b: &input.period_column_b,
+            amount_columns: &input.amount_columns,
+            tolerance_minor_units: input.tolerance_minor_units,
         },
     )
     .map_err(|error| error.to_string())
