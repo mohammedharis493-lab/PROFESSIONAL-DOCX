@@ -18664,13 +18664,13 @@ mod tests {
             assert_eq!(old_version, 24);
         }
 
-        initialize_database(&database.path).expect("migrate v24 to v25");
+        initialize_database(&database.path).expect("migrate v24 to current v27");
         let connection =
             open_configured_connection(&database.path).expect("open upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
