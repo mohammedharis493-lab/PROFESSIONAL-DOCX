@@ -637,6 +637,16 @@ pub struct InternalAuditFindingFollowupDefinition<'a> {
     pub actor_id: Option<&'a str>,
 }
 
+struct InternalAuditFindingFollowupSnapshot {
+    origin_client_id: String,
+    sequence_number: i64,
+    management_response: Option<String>,
+    action_owner: Option<String>,
+    target_date: Option<String>,
+    follow_up_text: Option<String>,
+    verification_conclusion: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct InternalAuditFindingEvidenceRecord {
     pub internal_audit_finding_evidence_link_id: String,
@@ -8207,15 +8217,7 @@ pub fn create_internal_audit_finding_followup(
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-    let current: Option<(
-        String,
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = transaction
+    let current: Option<InternalAuditFindingFollowupSnapshot> = transaction
         .query_row(
             "SELECT
                 origin_engagement.client_id,
@@ -8240,28 +8242,19 @@ pub fn create_internal_audit_finding_followup(
              WHERE finding.internal_audit_finding_id = ?1",
             [internal_audit_finding_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
+                Ok(InternalAuditFindingFollowupSnapshot {
+                    origin_client_id: row.get(0)?,
+                    sequence_number: row.get(1)?,
+                    management_response: row.get(2)?,
+                    action_owner: row.get(3)?,
+                    target_date: row.get(4)?,
+                    follow_up_text: row.get(5)?,
+                    verification_conclusion: row.get(6)?,
+                })
             },
         )
         .optional()?;
-    let Some((
-        origin_client_id,
-        current_sequence_number,
-        current_management_response,
-        current_action_owner,
-        current_target_date,
-        current_follow_up_text,
-        current_verification_conclusion,
-    )) = current
-    else {
+    let Some(current) = current else {
         return Err(PersistenceError::Configuration(format!(
             "internal audit finding {internal_audit_finding_id} does not exist"
         )));
@@ -8282,7 +8275,7 @@ pub fn create_internal_audit_finding_followup(
             "tracking engagement {tracking_engagement_id} does not exist"
         )));
     };
-    if tracking_client_id != origin_client_id {
+    if tracking_client_id != current.origin_client_id {
         return Err(PersistenceError::Configuration(
             "internal audit finding follow-up must remain within the same client".to_string(),
         ));
@@ -8291,27 +8284,27 @@ pub fn create_internal_audit_finding_followup(
     let management_response = if management_response.is_some() {
         normalized_management_response
     } else {
-        current_management_response
+        current.management_response
     };
     let action_owner = if action_owner.is_some() {
         normalized_action_owner
     } else {
-        current_action_owner
+        current.action_owner
     };
     let target_date = if target_date.is_some() {
         normalized_target_date
     } else {
-        current_target_date
+        current.target_date
     };
     let follow_up_text = if follow_up_text.is_some() {
         normalized_follow_up_text
     } else {
-        current_follow_up_text
+        current.follow_up_text
     };
     let verification_conclusion = if verification_conclusion.is_some() {
         normalized_verification_conclusion
     } else {
-        current_verification_conclusion
+        current.verification_conclusion
     };
 
     match status.as_str() {
@@ -8341,7 +8334,7 @@ pub fn create_internal_audit_finding_followup(
         _ => {}
     }
 
-    let next_sequence_number = current_sequence_number.checked_add(1).ok_or_else(|| {
+    let next_sequence_number = current.sequence_number.checked_add(1).ok_or_else(|| {
         PersistenceError::Configuration(
             "internal audit finding follow-up sequence exceeds supported range".to_string(),
         )
