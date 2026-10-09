@@ -21,6 +21,8 @@ pub struct RecipeRecord {
     pub dataset_a_version_id: String,
     pub dataset_b_version_id: String,
     pub period_basis: String,
+    pub period_column_a: String,
+    pub period_column_b: String,
     pub amount_columns: Vec<String>,
     pub tolerance_minor_units: i64,
     pub created_at_ms: i64,
@@ -32,6 +34,8 @@ pub struct RecipeDefinition<'a> {
     pub dataset_a_version_id: &'a str,
     pub dataset_b_version_id: &'a str,
     pub period_basis: &'a str,
+    pub period_column_a: &'a str,
+    pub period_column_b: &'a str,
     pub amount_columns: &'a [String],
     pub tolerance_minor_units: i64,
 }
@@ -63,6 +67,13 @@ fn validate_definition(
         "ACCOUNTING_PERIOD" => ("ACCOUNTING_PERIOD", "PERIOD"),
         _ => return Err(invalid("unsupported comparison period basis")),
     };
+    for column in [input.period_column_a, input.period_column_b] {
+        if column.trim().is_empty() || column.trim() != column
+            || column.chars().count() > 240 || column.chars().any(char::is_control)
+        {
+            return Err(invalid("selected period column must be a printable declared name"));
+        }
+    }
     if input.amount_columns.is_empty() || input.amount_columns.len() > 32 {
         return Err(invalid("comparison needs 1 to 32 numeric fields"));
     }
@@ -101,7 +112,10 @@ pub fn create_recipe(
     if !workspace_exists {
         return Err(invalid("normal data workspace does not exist"));
     }
-    for dataset_version_id in [input.dataset_a_version_id, input.dataset_b_version_id] {
+    for (dataset_version_id, selected_period_column) in [
+        (input.dataset_a_version_id, input.period_column_a),
+        (input.dataset_b_version_id, input.period_column_b),
+    ] {
         let within_workspace: bool = transaction.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM normal_data_dataset_versions v
@@ -121,9 +135,10 @@ pub fn create_recipe(
             "SELECT EXISTS(
                 SELECT 1 FROM normal_data_column_semantics
                 WHERE normal_data_dataset_version_id = ?1
-                  AND semantic_role = ?2 AND data_type = ?3
+                  AND column_name = ?2 COLLATE NOCASE
+                  AND semantic_role = ?3 AND data_type = ?4
              )",
-            params![dataset_version_id, period_role, period_type],
+            params![dataset_version_id, selected_period_column, period_role, period_type],
             |row| row.get(0),
         )?;
         if !selected_period_role {
@@ -164,8 +179,9 @@ pub fn create_recipe(
         "INSERT INTO normal_data_comparison_recipe_versions (
             normal_data_comparison_recipe_version_id, normal_data_comparison_recipe_id,
             version_number, name, dataset_a_version_id, dataset_b_version_id,
-            period_basis, amount_columns_json, tolerance_minor_units, created_at_ms
-         ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            period_basis, period_column_a, period_column_b,
+            amount_columns_json, tolerance_minor_units, created_at_ms
+         ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             &version_id,
             &recipe_id,
@@ -173,6 +189,8 @@ pub fn create_recipe(
             input.dataset_a_version_id,
             input.dataset_b_version_id,
             input.period_basis,
+            input.period_column_a,
+            input.period_column_b,
             &amount_columns_json,
             input.tolerance_minor_units,
             now,
@@ -191,6 +209,8 @@ pub fn create_recipe(
             input.normal_data_workspace_id,
             now,
             json!({"recipe_version_id":version_id,"period_basis":input.period_basis,
+                   "period_column_a":input.period_column_a,
+                   "period_column_b":input.period_column_b,
                    "dataset_a_version_id":input.dataset_a_version_id,
                    "dataset_b_version_id":input.dataset_b_version_id})
             .to_string(),
@@ -206,6 +226,8 @@ pub fn create_recipe(
         dataset_a_version_id: input.dataset_a_version_id.to_string(),
         dataset_b_version_id: input.dataset_b_version_id.to_string(),
         period_basis: input.period_basis.to_string(),
+        period_column_a: input.period_column_a.to_string(),
+        period_column_b: input.period_column_b.to_string(),
         amount_columns: columns,
         tolerance_minor_units: input.tolerance_minor_units,
         created_at_ms: now,
@@ -229,7 +251,8 @@ pub fn list_recipes(
         "SELECT r.normal_data_comparison_recipe_id, v.normal_data_comparison_recipe_version_id,
                 r.normal_data_workspace_id, v.version_number, v.name,
                 v.dataset_a_version_id, v.dataset_b_version_id, v.period_basis,
-                v.amount_columns_json, v.tolerance_minor_units, v.created_at_ms
+                v.period_column_a, v.period_column_b, v.amount_columns_json,
+                v.tolerance_minor_units, v.created_at_ms
          FROM normal_data_comparison_recipes r
          JOIN normal_data_comparison_recipe_versions v
            ON v.normal_data_comparison_recipe_id = r.normal_data_comparison_recipe_id
@@ -251,8 +274,10 @@ pub fn list_recipes(
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
             row.get::<_, String>(8)?,
-            row.get::<_, i64>(9)?,
-            row.get::<_, i64>(10)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
         ))
     })?;
     let mut result = Vec::new();
