@@ -4612,9 +4612,7 @@ fn normalize_internal_audit_status(value: &str) -> Result<String, PersistenceErr
     Ok(status)
 }
 
-fn normalize_internal_audit_finding_status(
-    value: &str,
-) -> Result<String, PersistenceError> {
+fn normalize_internal_audit_finding_status(value: &str) -> Result<String, PersistenceError> {
     let status = workflow_state_key(value);
     if matches!(
         status.as_str(),
@@ -7605,7 +7603,6 @@ pub fn list_internal_audit_test_evidence(
     Ok(result)
 }
 
-
 fn internal_audit_finding_record_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<InternalAuditFindingRecord> {
@@ -7734,11 +7731,8 @@ pub fn create_internal_audit_finding(
         actor_id,
     } = definition;
 
-    let reference = normalize_internal_audit_optional_text(
-        reference,
-        "internal audit finding reference",
-        100,
-    )?;
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit finding reference", 100)?;
     let title = normalize_domain_label(title, "internal audit finding title", 500)?;
     let condition_text = normalize_internal_audit_optional_text(
         Some(condition_text),
@@ -7746,20 +7740,15 @@ pub fn create_internal_audit_finding(
         20_000,
     )?
     .ok_or_else(|| {
-        PersistenceError::Configuration(
-            "internal audit finding condition is required".to_string(),
-        )
+        PersistenceError::Configuration("internal audit finding condition is required".to_string())
     })?;
     let criteria_text = normalize_internal_audit_optional_text(
         criteria_text,
         "internal audit finding criteria",
         20_000,
     )?;
-    let cause_text = normalize_internal_audit_optional_text(
-        cause_text,
-        "internal audit finding cause",
-        20_000,
-    )?;
+    let cause_text =
+        normalize_internal_audit_optional_text(cause_text, "internal audit finding cause", 20_000)?;
     let risk_effect_text = normalize_internal_audit_optional_text(
         risk_effect_text,
         "internal audit finding risk or effect",
@@ -7843,8 +7832,7 @@ pub fn create_internal_audit_finding(
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        let Some((chain_control_id, chain_risk_id, chain_process_id, chain_engagement_id)) =
-            chain
+        let Some((chain_control_id, chain_risk_id, chain_process_id, chain_engagement_id)) = chain
         else {
             return Err(PersistenceError::Configuration(format!(
                 "internal audit test {test_id} does not exist"
@@ -8164,9 +8152,7 @@ pub fn list_internal_audit_findings_for_client(
         )));
     }
 
-    let sql = internal_audit_findings_select_sql(
-        "WHERE origin_engagement.client_id = ?1",
-    );
+    let sql = internal_audit_findings_select_sql("WHERE origin_engagement.client_id = ?1");
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map([client_id], internal_audit_finding_record_from_row)?;
     let mut result = Vec::new();
@@ -8335,9 +8321,7 @@ pub fn create_internal_audit_finding_followup(
             ));
         }
         "ACTION_IN_PROGRESS"
-            if management_response.is_none()
-                || action_owner.is_none()
-                || target_date.is_none() =>
+            if management_response.is_none() || action_owner.is_none() || target_date.is_none() =>
         {
             return Err(PersistenceError::Configuration(
                 "action in progress requires management response, action owner, and target date"
@@ -8670,8 +8654,7 @@ pub fn create_internal_audit_finding_evidence_link(
     Ok(InternalAuditFindingEvidenceRecord {
         internal_audit_finding_evidence_link_id,
         internal_audit_finding_id: internal_audit_finding_id.to_string(),
-        internal_audit_finding_followup_id: internal_audit_finding_followup_id
-            .map(str::to_string),
+        internal_audit_finding_followup_id: internal_audit_finding_followup_id.map(str::to_string),
         controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
         document_id,
         source_content_version_id,
@@ -16466,9 +16449,7 @@ mod tests {
             },
         )
         .expect_err("action without owner must fail");
-        assert!(incomplete_action
-            .to_string()
-            .contains("action owner"));
+        assert!(incomplete_action.to_string().contains("action owner"));
 
         let management_response = create_internal_audit_finding_followup(
             &database.path,
@@ -16550,9 +16531,7 @@ mod tests {
             },
         )
         .expect_err("cross-client follow-up must fail");
-        assert!(cross_client_followup
-            .to_string()
-            .contains("same client"));
+        assert!(cross_client_followup.to_string().contains("same client"));
 
         let closed = create_internal_audit_finding_followup(
             &database.path,
@@ -16688,17 +16667,15 @@ mod tests {
             },
         )
         .expect_err("cross-client repeated finding must fail");
-        assert!(cross_client_repeat
-            .to_string()
-            .contains("same client"));
+        assert!(cross_client_repeat.to_string().contains("same client"));
 
         let client_findings =
             list_internal_audit_findings_for_client(&database.path, &client.client_id)
                 .expect("cross-engagement client findings");
         assert_eq!(client_findings.len(), 2);
-        assert!(client_findings.iter().any(|item| {
-            item.internal_audit_finding_id == finding.internal_audit_finding_id
-        }));
+        assert!(client_findings
+            .iter()
+            .any(|item| { item.internal_audit_finding_id == finding.internal_audit_finding_id }));
         assert!(client_findings.iter().any(|item| {
             item.internal_audit_finding_id == repeated_finding.internal_audit_finding_id
         }));
