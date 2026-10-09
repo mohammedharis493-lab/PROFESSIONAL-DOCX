@@ -4,6 +4,7 @@ mod indexer;
 mod launcher;
 mod ledger;
 mod normal_data;
+pub mod normal_data_comparison;
 mod normal_data_datasets;
 mod persistence;
 mod preview;
