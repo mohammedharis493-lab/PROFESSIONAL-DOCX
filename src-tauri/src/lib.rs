@@ -5,6 +5,7 @@ mod launcher;
 mod ledger;
 mod normal_data;
 mod normal_data_datasets;
+mod normal_data_recipes;
 mod persistence;
 mod preview;
 mod reconciliation;
@@ -2435,6 +2436,45 @@ impl From<search::SearchResultRecord> for SearchResultDto {
             score: value.score,
         }
     }
+}
+
+#[tauri::command]
+fn create_normal_data_comparison_recipe(
+    normal_data_workspace_id: String,
+    name: String,
+    dataset_a_version_id: String,
+    dataset_b_version_id: String,
+    period_basis: String,
+    amount_columns: Vec<String>,
+    tolerance_minor_units: i64,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<normal_data_recipes::RecipeRecord, String> {
+    validate_uuid(&normal_data_workspace_id, "normal-data-workspace")?;
+    validate_uuid(&dataset_a_version_id, "comparison-dataset-A-version")?;
+    validate_uuid(&dataset_b_version_id, "comparison-dataset-B-version")?;
+    normal_data_recipes::create_recipe(
+        database.path(),
+        normal_data_recipes::RecipeDefinition {
+            normal_data_workspace_id: &normal_data_workspace_id,
+            name: &name,
+            dataset_a_version_id: &dataset_a_version_id,
+            dataset_b_version_id: &dataset_b_version_id,
+            period_basis: &period_basis,
+            amount_columns: &amount_columns,
+            tolerance_minor_units,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_normal_data_comparison_recipes(
+    normal_data_workspace_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<normal_data_recipes::RecipeRecord>, String> {
+    validate_uuid(&normal_data_workspace_id, "normal-data-workspace")?;
+    normal_data_recipes::list_recipes(database.path(), &normal_data_workspace_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5082,6 +5122,8 @@ pub fn run() {
             list_normal_data_workspaces,
             create_normal_data_dataset,
             list_normal_data_datasets,
+            create_normal_data_comparison_recipe,
+            list_normal_data_comparison_recipes,
             declare_normal_data_column_semantic,
             list_normal_data_column_semantics,
             create_client,
