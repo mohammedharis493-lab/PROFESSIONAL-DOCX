@@ -3628,6 +3628,436 @@ export default function App() {
     }
   }
 
+  async function selectInternalAuditProcess(internalAuditProcessId: string | null) {
+    setSelectedInternalAuditProcessId(internalAuditProcessId);
+    setInternalAuditObjectives([]);
+    setSelectedInternalAuditObjectiveId(null);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditProcessId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const objectives = await invoke<InternalAuditObjective[]>(
+        "list_internal_audit_objectives",
+        { internalAuditProcessId },
+      );
+      setInternalAuditObjectives(objectives);
+      const firstObjective = objectives[0] ?? null;
+      setSelectedInternalAuditObjectiveId(firstObjective?.internalAuditObjectiveId ?? null);
+      if (firstObjective) {
+        await loadInternalAuditObjectiveDescendants(firstObjective.internalAuditObjectiveId);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditObjectiveDescendants(internalAuditObjectiveId: string) {
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+      internalAuditObjectiveId,
+    });
+    setInternalAuditRisks(risks);
+    const firstRisk = risks[0] ?? null;
+    setSelectedInternalAuditRiskId(firstRisk?.internalAuditRiskId ?? null);
+    if (firstRisk) {
+      await loadInternalAuditRiskDescendants(firstRisk.internalAuditRiskId);
+    }
+  }
+
+  async function selectInternalAuditObjective(internalAuditObjectiveId: string | null) {
+    setSelectedInternalAuditObjectiveId(internalAuditObjectiveId);
+    setInternalAuditRisks([]);
+    setSelectedInternalAuditRiskId(null);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditObjectiveId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditObjectiveDescendants(internalAuditObjectiveId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditRiskDescendants(internalAuditRiskId: string) {
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const controls = await invoke<InternalAuditControl[]>("list_internal_audit_controls", {
+      internalAuditRiskId,
+    });
+    setInternalAuditControls(controls);
+    const firstControl = controls[0] ?? null;
+    setSelectedInternalAuditControlId(firstControl?.internalAuditControlId ?? null);
+    if (firstControl) {
+      await loadInternalAuditControlDescendants(firstControl.internalAuditControlId);
+    }
+  }
+
+  async function selectInternalAuditRisk(internalAuditRiskId: string | null) {
+    setSelectedInternalAuditRiskId(internalAuditRiskId);
+    setInternalAuditControls([]);
+    setSelectedInternalAuditControlId(null);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditRiskId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditRiskDescendants(internalAuditRiskId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function loadInternalAuditControlDescendants(internalAuditControlId: string) {
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+      internalAuditControlId,
+    });
+    setInternalAuditTests(tests);
+    const firstTest = tests[0] ?? null;
+    setSelectedInternalAuditTestId(firstTest?.internalAuditTestId ?? null);
+    if (firstTest) {
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId: firstTest.internalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+    }
+  }
+
+  async function selectInternalAuditControl(internalAuditControlId: string | null) {
+    setSelectedInternalAuditControlId(internalAuditControlId);
+    setInternalAuditTests([]);
+    setSelectedInternalAuditTestId(null);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditControlId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadInternalAuditControlDescendants(internalAuditControlId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectInternalAuditTest(internalAuditTestId: string | null) {
+    setSelectedInternalAuditTestId(internalAuditTestId);
+    setInternalAuditTestEvidence([]);
+    if (!internalAuditTestId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditProcess(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedEngagementId || !newInternalAuditProcessName.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditProcess>("create_internal_audit_process", {
+        input: {
+          engagementId: selectedEngagementId,
+          parentProcessId: newInternalAuditProcessParentId || null,
+          code: newInternalAuditProcessCode.trim() || null,
+          name: newInternalAuditProcessName.trim(),
+          description: newInternalAuditProcessDescription.trim() || null,
+          displayOrder: internalAuditProcesses.length * 10,
+          status: "ACTIVE",
+        },
+      });
+      const processes = await invoke<InternalAuditProcess[]>("list_internal_audit_processes", {
+        engagementId: selectedEngagementId,
+      });
+      setInternalAuditProcesses(processes);
+      setSelectedInternalAuditProcessId(created.internalAuditProcessId);
+      setInternalAuditObjectives([]);
+      setSelectedInternalAuditObjectiveId(null);
+      setInternalAuditRisks([]);
+      setSelectedInternalAuditRiskId(null);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditProcessName("");
+      setNewInternalAuditProcessCode("");
+      setNewInternalAuditProcessDescription("");
+      setNewInternalAuditProcessParentId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditObjective(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditProcessId || !newInternalAuditObjectiveTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditObjective>("create_internal_audit_objective", {
+        internalAuditProcessId: selectedInternalAuditProcessId,
+        reference: newInternalAuditObjectiveReference.trim() || null,
+        title: newInternalAuditObjectiveTitle.trim(),
+        description: newInternalAuditObjectiveDescription.trim() || null,
+        status: "ACTIVE",
+      });
+      const objectives = await invoke<InternalAuditObjective[]>(
+        "list_internal_audit_objectives",
+        { internalAuditProcessId: selectedInternalAuditProcessId },
+      );
+      setInternalAuditObjectives(objectives);
+      setSelectedInternalAuditObjectiveId(created.internalAuditObjectiveId);
+      setInternalAuditRisks([]);
+      setSelectedInternalAuditRiskId(null);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditObjectiveReference("");
+      setNewInternalAuditObjectiveTitle("");
+      setNewInternalAuditObjectiveDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditRisk(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditObjectiveId || !newInternalAuditRiskTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditRisk>("create_internal_audit_risk", {
+        input: {
+          internalAuditObjectiveId: selectedInternalAuditObjectiveId,
+          reference: newInternalAuditRiskReference.trim() || null,
+          title: newInternalAuditRiskTitle.trim(),
+          description: newInternalAuditRiskDescription.trim() || null,
+          riskClassification: newInternalAuditRiskClassification.trim() || null,
+          inherentRating: newInternalAuditRiskRating.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const risks = await invoke<InternalAuditRisk[]>("list_internal_audit_risks", {
+        internalAuditObjectiveId: selectedInternalAuditObjectiveId,
+      });
+      setInternalAuditRisks(risks);
+      setSelectedInternalAuditRiskId(created.internalAuditRiskId);
+      setInternalAuditControls([]);
+      setSelectedInternalAuditControlId(null);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditRiskReference("");
+      setNewInternalAuditRiskTitle("");
+      setNewInternalAuditRiskDescription("");
+      setNewInternalAuditRiskClassification("");
+      setNewInternalAuditRiskRating("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditControl(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedInternalAuditRiskId || !newInternalAuditControlTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditControl>("create_internal_audit_control", {
+        input: {
+          internalAuditRiskId: selectedInternalAuditRiskId,
+          reference: newInternalAuditControlReference.trim() || null,
+          title: newInternalAuditControlTitle.trim(),
+          description: newInternalAuditControlDescription.trim() || null,
+          controlType: newInternalAuditControlType.trim() || null,
+          frequency: newInternalAuditControlFrequency.trim() || null,
+          ownerText: newInternalAuditControlOwner.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const controls = await invoke<InternalAuditControl[]>("list_internal_audit_controls", {
+        internalAuditRiskId: selectedInternalAuditRiskId,
+      });
+      setInternalAuditControls(controls);
+      setSelectedInternalAuditControlId(created.internalAuditControlId);
+      setInternalAuditTests([]);
+      setSelectedInternalAuditTestId(null);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditControlReference("");
+      setNewInternalAuditControlTitle("");
+      setNewInternalAuditControlDescription("");
+      setNewInternalAuditControlType("");
+      setNewInternalAuditControlFrequency("");
+      setNewInternalAuditControlOwner("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditTest(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !selectedInternalAuditControlId ||
+      !newInternalAuditTestTitle.trim() ||
+      !newInternalAuditTestProcedure.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditTest>("create_internal_audit_test", {
+        input: {
+          internalAuditControlId: selectedInternalAuditControlId,
+          reference: newInternalAuditTestReference.trim() || null,
+          title: newInternalAuditTestTitle.trim(),
+          procedureText: newInternalAuditTestProcedure.trim(),
+          sampleStrategy: newInternalAuditTestSampleStrategy.trim() || null,
+          expectedResult: newInternalAuditTestExpectedResult.trim() || null,
+          status: "ACTIVE",
+        },
+      });
+      const tests = await invoke<InternalAuditTest[]>("list_internal_audit_tests", {
+        internalAuditControlId: selectedInternalAuditControlId,
+      });
+      setInternalAuditTests(tests);
+      setSelectedInternalAuditTestId(created.internalAuditTestId);
+      setInternalAuditTestEvidence([]);
+      setNewInternalAuditTestReference("");
+      setNewInternalAuditTestTitle("");
+      setNewInternalAuditTestProcedure("");
+      setNewInternalAuditTestSampleStrategy("");
+      setNewInternalAuditTestExpectedResult("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchInternalAuditEvidence() {
+    const queryText = internalAuditEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setInternalAuditEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setInternalAuditEvidenceSearchResults(results);
+      setSelectedInternalAuditEvidenceDocument(null);
+      setInternalAuditEvidenceVersionHistory([]);
+      setSelectedInternalAuditControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setInternalAuditEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectInternalAuditEvidenceDocument(document: SearchResult) {
+    setInternalAuditEvidenceSearchBusy(true);
+    setSelectedInternalAuditEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setInternalAuditEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedInternalAuditControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setInternalAuditEvidenceVersionHistory([]);
+      setSelectedInternalAuditControlledVersionId("");
+    } finally {
+      setInternalAuditEvidenceSearchBusy(false);
+    }
+  }
+
+  async function linkInternalAuditTestEvidence() {
+    if (!selectedInternalAuditTestId || !selectedInternalAuditControlledVersionId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<InternalAuditTestEvidence>("create_internal_audit_test_evidence_link", {
+        internalAuditTestId: selectedInternalAuditTestId,
+        controlledEvidenceVersionId: selectedInternalAuditControlledVersionId,
+        description: internalAuditEvidenceDescription.trim() || null,
+      });
+      const evidence = await invoke<InternalAuditTestEvidence[]>(
+        "list_internal_audit_test_evidence",
+        { internalAuditTestId: selectedInternalAuditTestId },
+      );
+      setInternalAuditTestEvidence(evidence);
+      setInternalAuditEvidenceDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function searchComplianceEvidence() {
     const queryText = complianceEvidenceSearchQuery.trim();
     if (!queryText) return;
