@@ -4821,9 +4821,10 @@ export default function App() {
       setDueDiligenceEvidenceEventId("");
     }
 
+    const requestedIssueId = preferredIssueId ?? selectedDueDiligenceIssueId;
     const issueId =
-      preferredIssueId && issues.some((item) => item.dueDiligenceIssueId === preferredIssueId)
-        ? preferredIssueId
+      requestedIssueId && issues.some((item) => item.dueDiligenceIssueId === requestedIssueId)
+        ? requestedIssueId
         : issues[0]?.dueDiligenceIssueId ?? null;
     setSelectedDueDiligenceIssueId(issueId);
     if (issueId) {
@@ -5054,6 +5055,172 @@ export default function App() {
       );
       setDueDiligenceRequestEvidence(evidence);
       setDueDiligenceEvidenceDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssue(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!dueDiligenceWorkspace || !newDueDiligenceIssueTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const issue = await invoke<DueDiligenceIssue>("create_due_diligence_issue", {
+        input: {
+          dueDiligenceWorkspaceId: dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+          dueDiligenceSectionId: newDueDiligenceIssueSectionId || null,
+          dueDiligenceRequestId: newDueDiligenceIssueRequestId || null,
+          issueType: newDueDiligenceIssueType,
+          reference: newDueDiligenceIssueReference.trim() || null,
+          title: newDueDiligenceIssueTitle.trim(),
+          description: newDueDiligenceIssueDescription.trim() || null,
+          category: newDueDiligenceIssueCategory.trim() || null,
+          severity: newDueDiligenceIssueSeverity.trim() || null,
+          actorId: null,
+        },
+      });
+      setNewDueDiligenceIssueReference("");
+      setNewDueDiligenceIssueTitle("");
+      setNewDueDiligenceIssueDescription("");
+      setNewDueDiligenceIssueCategory("");
+      setNewDueDiligenceIssueSeverity("");
+      await refreshDueDiligenceWorkspaceDetails(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        selectedDueDiligenceRequestId,
+        issue.dueDiligenceIssueId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceIssue(dueDiligenceIssueId: string | null) {
+    setSelectedDueDiligenceIssueId(dueDiligenceIssueId);
+    setDueDiligenceIssueEvents([]);
+    setDueDiligenceIssueEvidence([]);
+    setDueDiligenceIssueEvidenceEventId("");
+    if (!dueDiligenceIssueId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceIssueDetails(dueDiligenceIssueId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssueEvent(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedDueDiligenceIssueId || !dueDiligenceWorkspace) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<DueDiligenceIssueEvent>("create_due_diligence_issue_event", {
+        input: {
+          dueDiligenceIssueId: selectedDueDiligenceIssueId,
+          status: dueDiligenceIssueStatus,
+          internalConclusion: dueDiligenceIssueConclusion.trim() || null,
+          dealImpact: dueDiligenceIssueDealImpact.trim() || null,
+          recommendation: dueDiligenceIssueRecommendation.trim() || null,
+          actorId: null,
+        },
+      });
+      setDueDiligenceIssueConclusion("");
+      setDueDiligenceIssueDealImpact("");
+      setDueDiligenceIssueRecommendation("");
+      await refreshDueDiligenceWorkspaceDetails(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        selectedDueDiligenceRequestId,
+        selectedDueDiligenceIssueId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchDueDiligenceIssueEvidence() {
+    const queryText = dueDiligenceIssueEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setDueDiligenceIssueEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setDueDiligenceIssueEvidenceSearchResults(results);
+      setSelectedDueDiligenceIssueEvidenceDocument(null);
+      setDueDiligenceIssueEvidenceVersionHistory([]);
+      setSelectedDueDiligenceIssueControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setDueDiligenceIssueEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceIssueEvidenceDocument(document: SearchResult) {
+    setDueDiligenceIssueEvidenceSearchBusy(true);
+    setSelectedDueDiligenceIssueEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setDueDiligenceIssueEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedDueDiligenceIssueControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setDueDiligenceIssueEvidenceVersionHistory([]);
+      setSelectedDueDiligenceIssueControlledVersionId("");
+    } finally {
+      setDueDiligenceIssueEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssueEvidence(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedDueDiligenceIssueId || !selectedDueDiligenceIssueControlledVersionId) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<DueDiligenceIssueEvidence>(
+        "create_due_diligence_issue_evidence_link",
+        {
+          dueDiligenceIssueId: selectedDueDiligenceIssueId,
+          dueDiligenceIssueEventId: dueDiligenceIssueEvidenceEventId || null,
+          controlledEvidenceVersionId: selectedDueDiligenceIssueControlledVersionId,
+          description: dueDiligenceIssueEvidenceDescription.trim() || null,
+        },
+      );
+      const evidence = await invoke<DueDiligenceIssueEvidence[]>(
+        "list_due_diligence_issue_evidence",
+        { dueDiligenceIssueId: selectedDueDiligenceIssueId },
+      );
+      setDueDiligenceIssueEvidence(evidence);
+      setDueDiligenceIssueEvidenceDescription("");
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
