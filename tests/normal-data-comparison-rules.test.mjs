@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   commonNumericColumns,
+  exceptionPreview,
   eligiblePeriodColumns,
   hasVerifiedBinding,
   isValidMinorTolerance,
@@ -55,4 +56,15 @@ test("source labels are advisory and never promote a fingerprint to hash verific
   assert.equal(hasVerifiedBinding({ sourceVerificationState: "FINGERPRINTED", sourceSha256Hex: "abc" }), false);
   assert.equal(hasVerifiedBinding({ sourceVerificationState: "HASH_VERIFIED", sourceSha256Hex: null }), false);
   assert.equal(hasVerifiedBinding({ sourceVerificationState: "HASH_VERIFIED", sourceSha256Hex: "abc" }), true);
+});
+
+test("exception preview skips matching rows and remains bounded", () => {
+  const entries = [
+    { businessKey: "A", classification: "PRESENT_BOTH" },
+    { businessKey: "B", classification: "PERIOD_MOVED" },
+    { businessKey: "C", classification: "AMOUNT_DIFFERENCE" },
+    { businessKey: "D", classification: "ONLY_B" },
+  ];
+  assert.deepEqual(exceptionPreview(entries, 2).map((x) => x.businessKey), ["B", "C"]);
+  assert.deepEqual(exceptionPreview(entries, 0), []);
 });
