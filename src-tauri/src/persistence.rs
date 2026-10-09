@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 21;
+const LATEST_SCHEMA_VERSION: i64 = 22;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -133,6 +133,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 21,
         name: "internal_audit_findings",
         sql: include_str!("../migrations/0021_internal_audit_findings.sql"),
+    },
+    Migration {
+        version: 22,
+        name: "due_diligence",
+        sql: include_str!("../migrations/0022_due_diligence.sql"),
     },
 ];
 
@@ -652,6 +657,103 @@ pub struct InternalAuditFindingEvidenceRecord {
     pub internal_audit_finding_evidence_link_id: String,
     pub internal_audit_finding_id: String,
     pub internal_audit_finding_followup_id: Option<String>,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceWorkspaceRecord {
+    pub due_diligence_workspace_id: String,
+    pub engagement_id: String,
+    pub engagement_name: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceSectionRecord {
+    pub due_diligence_section_id: String,
+    pub due_diligence_workspace_id: String,
+    pub parent_section_id: Option<String>,
+    pub code: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub display_order: i64,
+    pub created_at_ms: i64,
+}
+
+pub struct DueDiligenceSectionDefinition<'a> {
+    pub due_diligence_workspace_id: &'a str,
+    pub parent_section_id: Option<&'a str>,
+    pub code: Option<&'a str>,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub display_order: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestRecord {
+    pub due_diligence_request_id: String,
+    pub due_diligence_workspace_id: String,
+    pub due_diligence_section_id: Option<String>,
+    pub section_name: Option<String>,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub requested_from_party: Option<String>,
+    pub due_date: Option<String>,
+    pub internal_notes: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_event_id: String,
+    pub latest_sequence_number: u64,
+    pub latest_status: String,
+    pub latest_response_text: Option<String>,
+    pub latest_internal_assessment: Option<String>,
+    pub latest_actor_id: Option<String>,
+    pub latest_occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceRequestDefinition<'a> {
+    pub due_diligence_workspace_id: &'a str,
+    pub due_diligence_section_id: Option<&'a str>,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub requested_from_party: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+    pub internal_notes: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestEventRecord {
+    pub due_diligence_request_event_id: String,
+    pub due_diligence_request_id: String,
+    pub sequence_number: u64,
+    pub status: String,
+    pub response_text: Option<String>,
+    pub internal_assessment: Option<String>,
+    pub actor_id: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceRequestEventDefinition<'a> {
+    pub due_diligence_request_id: &'a str,
+    pub status: &'a str,
+    pub response_text: Option<&'a str>,
+    pub internal_assessment: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestEvidenceRecord {
+    pub due_diligence_request_evidence_link_id: String,
+    pub due_diligence_request_id: String,
+    pub due_diligence_request_event_id: Option<String>,
     pub controlled_evidence_version_id: String,
     pub document_id: String,
     pub source_content_version_id: String,
@@ -4637,6 +4739,22 @@ fn normalize_internal_audit_finding_status(value: &str) -> Result<String, Persis
     } else {
         Err(PersistenceError::Configuration(
             "internal audit finding status is not supported".to_string(),
+        ))
+    }
+}
+
+fn normalize_due_diligence_request_status(
+    value: &str,
+) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if matches!(
+        status.as_str(),
+        "OPEN" | "PARTIALLY_RESPONDED" | "RESPONDED" | "CLOSED" | "WITHDRAWN"
+    ) {
+        Ok(status)
+    } else {
+        Err(PersistenceError::Configuration(
+            "due diligence request status is not supported".to_string(),
         ))
     }
 }
