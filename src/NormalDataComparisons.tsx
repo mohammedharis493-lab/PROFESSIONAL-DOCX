@@ -189,7 +189,7 @@ export default function NormalDataComparisons({
     !!a && !!b && !!periodColumnA && !!periodColumnB &&
     periodOptionsA.some((item) => item.columnName === periodColumnA) &&
     periodOptionsB.some((item) => item.columnName === periodColumnB) &&
-    amountFields.length > 0 && amountFields.every((name) => commonAmounts.includes(name)) &&
+    amountFields.length > 0 && amountFields.length <= 32 && amountFields.every((name) => commonAmounts.includes(name)) &&
     toleranceValid && !busy && !loadingColumns;
   const selectedRecipe = recipes.find((recipe) =>
     recipe.normalDataComparisonRecipeVersionId === recipeVersionId);
@@ -332,7 +332,7 @@ export default function NormalDataComparisons({
               <legend>Common declared numeric columns (integer minor units)</legend>
               {commonAmounts.length ? commonAmounts.map((column) => (
                 <label key={column}>
-                  <input type="checkbox" checked={amountFields.includes(column)}
+                  <input type="checkbox" checked={amountFields.includes(column)} disabled={!amountFields.includes(column) && amountFields.length >= 32}
                     onChange={(event) => toggleAmount(column, event.target.checked)} />
                   <span>{column}</span>
                 </label>
