@@ -4,6 +4,7 @@ import "./normal-data-comparisons.css";
 import {
   PERIOD_BASES,
   commonNumericColumns,
+  exceptionPreview,
   eligiblePeriodColumns,
   hasVerifiedBinding,
   isValidMinorTolerance,
@@ -86,9 +87,11 @@ function datasetLabel(dataset: Dataset) {
 export default function NormalDataComparisons({
   workspaceId,
   datasets,
+  semanticRevision,
 }: {
   workspaceId: string;
   datasets: Dataset[];
+  semanticRevision: number;
 }) {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [recipeVersionId, setRecipeVersionId] = useState("");
@@ -153,7 +156,7 @@ export default function NormalDataComparisons({
     }).catch((cause: unknown) => { if (live) setError(String(cause)); })
       .finally(() => { if (live) setLoadingColumns(false); });
     return () => { live = false; };
-  }, [datasetA, datasetB]);
+  }, [datasetA, datasetB, semanticRevision]);
 
   useEffect(() => {
     setPeriodColumnA("");
@@ -194,6 +197,7 @@ export default function NormalDataComparisons({
   const selectedRecipe = recipes.find((recipe) =>
     recipe.normalDataComparisonRecipeVersionId === recipeVersionId);
   const selectedRun = runs.find((run) => run.normalDataComparisonRunId === runId);
+  const preview = selectedRun ? exceptionPreview(selectedRun.result.entries, MAX_PREVIEW) : [];
 
   async function createRecipe(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -436,7 +440,7 @@ export default function NormalDataComparisons({
                 <thead><tr><th scope="col">Business key</th><th scope="col">Classification</th>
                   <th scope="col">Period A</th><th scope="col">Period B</th></tr></thead>
                 <tbody>
-                  {selectedRun.result.entries.slice(0, MAX_PREVIEW).map((entry, index) =>
+                  {preview.map((entry, index) =>
                     <tr key={entry.businessKey + "-" + index}>
                       <td>{entry.businessKey}</td>
                       <td>{entry.classification.replaceAll("_", " ")}</td>
@@ -447,9 +451,10 @@ export default function NormalDataComparisons({
               </table>
             </div>
             <p className="normal-data-meta">
-              Showing {Math.min(MAX_PREVIEW, selectedRun.result.entries.length).toLocaleString()} of
+              Showing {preview.length.toLocaleString()} exception rows (maximum {MAX_PREVIEW}) from
               {" "}{selectedRun.result.entries.length.toLocaleString()} classified keys.
-              Result counts and hashes come from stored immutable history.
+              Matching keys are omitted from this preview; all summary counts and hashes
+              come from stored immutable history.
               Large signed amount differences are not converted to potentially lossy JavaScript numbers.
             </p>
           </>
