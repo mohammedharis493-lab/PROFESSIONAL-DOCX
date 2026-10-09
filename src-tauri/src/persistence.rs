@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 23;
+const LATEST_SCHEMA_VERSION: i64 = 24;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -143,6 +143,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 23,
         name: "due_diligence_issues",
         sql: include_str!("../migrations/0023_due_diligence_issues.sql"),
+    },
+    Migration {
+        version: 24,
+        name: "due_diligence_reports",
+        sql: include_str!("../migrations/0024_due_diligence_reports.sql"),
     },
 ];
 
@@ -837,6 +842,66 @@ pub struct DueDiligenceIssueEvidenceRecord {
     pub source_content_version_id: String,
     pub source_sha256: Vec<u8>,
     pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceReportRecord {
+    pub due_diligence_report_id: String,
+    pub due_diligence_workspace_id: String,
+    pub latest_version_id: String,
+    pub latest_version_number: u64,
+    pub latest_title: String,
+    pub latest_executive_summary: Option<String>,
+    pub latest_scope_summary: Option<String>,
+    pub latest_overall_conclusion: Option<String>,
+    pub latest_issue_count: u64,
+    pub latest_issue_snapshot_hash: Vec<u8>,
+    pub latest_created_by: Option<String>,
+    pub latest_created_at_ms: i64,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceReportVersionRecord {
+    pub due_diligence_report_version_id: String,
+    pub due_diligence_report_id: String,
+    pub version_number: u64,
+    pub title: String,
+    pub executive_summary: Option<String>,
+    pub scope_summary: Option<String>,
+    pub overall_conclusion: Option<String>,
+    pub issue_count: u64,
+    pub issue_snapshot_hash: Vec<u8>,
+    pub created_by: Option<String>,
+    pub created_at_ms: i64,
+}
+
+pub struct DueDiligenceReportVersionDefinition<'a> {
+    pub title: &'a str,
+    pub executive_summary: Option<&'a str>,
+    pub scope_summary: Option<&'a str>,
+    pub overall_conclusion: Option<&'a str>,
+    pub issue_ids: &'a [String],
+    pub created_by: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceReportIssueRecord {
+    pub due_diligence_report_issue_link_id: String,
+    pub due_diligence_report_version_id: String,
+    pub due_diligence_issue_id: String,
+    pub due_diligence_issue_event_id: String,
+    pub issue_type: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub category: Option<String>,
+    pub severity: Option<String>,
+    pub sequence_number: u64,
+    pub status: String,
+    pub internal_conclusion: Option<String>,
+    pub deal_impact: Option<String>,
+    pub recommendation: Option<String>,
     pub linked_at_ms: i64,
 }
 
