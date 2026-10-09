@@ -49,3 +49,17 @@ export function hasVerifiedBinding(dataset?: SourceBinding): boolean {
   return !!dataset && dataset.sourceVerificationState === "HASH_VERIFIED" &&
     !!dataset.sourceSha256Hex;
 }
+
+// Keep the preview bounded without losing early discrepancies among matched keys.
+export function exceptionPreview<T extends { classification: string }>(
+  entries: T[],
+  maxRows: number,
+): T[] {
+  if (!Number.isSafeInteger(maxRows) || maxRows <= 0) return [];
+  const preview: T[] = [];
+  for (const entry of entries) {
+    if (entry.classification !== "PRESENT_BOTH") preview.push(entry);
+    if (preview.length >= maxRows) break;
+  }
+  return preview;
+}
