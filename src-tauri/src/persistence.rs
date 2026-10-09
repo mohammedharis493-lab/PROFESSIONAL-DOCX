@@ -16831,7 +16831,9 @@ fn classify_storage_root(_path: &Path) -> &'static str {
     "LOCAL"
 }
 
-pub(crate) fn open_configured_connection(database_path: &Path) -> Result<Connection, PersistenceError> {
+pub(crate) fn open_configured_connection(
+    database_path: &Path,
+) -> Result<Connection, PersistenceError> {
     let connection = Connection::open(database_path)?;
 
     connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -18528,8 +18530,7 @@ mod tests {
         fs::create_dir_all(database.path.parent().expect("database parent"))
             .expect("create database parent");
         {
-            let mut connection =
-                open_configured_connection(&database.path).expect("open database");
+            let mut connection = open_configured_connection(&database.path).expect("open database");
             ensure_migration_history_table(&connection).expect("migration history");
             for migration in &MIGRATIONS[..24] {
                 let checksum = migration_checksum(migration.sql);
@@ -18543,8 +18544,8 @@ mod tests {
         }
 
         initialize_database(&database.path).expect("migrate v24 to v25");
-        let connection = open_configured_connection(&database.path)
-            .expect("open upgraded database");
+        let connection =
+            open_configured_connection(&database.path).expect("open upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
@@ -18553,7 +18554,8 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('normal_data_workspaces', 'normal_data_workspace_versions')",
-                [], |row| row.get(0),
+                [],
+                |row| row.get(0),
             )
             .expect("workspace tables");
         assert_eq!(tables, 2);
@@ -18561,7 +18563,8 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'
                  AND name LIKE 'trg_normal_data_workspace%_no_%'",
-                [], |row| row.get(0),
+                [],
+                |row| row.get(0),
             )
             .expect("immutable triggers");
         assert_eq!(triggers, 4);
