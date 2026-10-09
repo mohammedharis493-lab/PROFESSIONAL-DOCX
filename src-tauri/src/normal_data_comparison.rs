@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const MAX_ROWS_PER_SIDE: usize = 100_000;
 const MAX_AMOUNT_COLUMNS: usize = 32;
