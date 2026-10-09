@@ -17153,6 +17153,444 @@ mod tests {
     }
 
     #[test]
+    fn twenty_second_migration_adds_due_diligence_request_foundation() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..21] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 21);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 22");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 22);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'due_diligence_workspaces',
+                       'due_diligence_sections',
+                       'due_diligence_requests',
+                       'due_diligence_request_events',
+                       'due_diligence_request_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("due diligence tables should exist");
+        assert_eq!(table_count, 5);
+    }
+
+    #[test]
+    fn due_diligence_request_history_is_internal_append_only_and_source_traceable() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "DD Client").expect("client");
+        let service = create_service_type(&database.path, "Due Diligence").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Acquisition DD 2026",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+        let other_engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Other DD 2026",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("other engagement");
+
+        let workspace = create_due_diligence_workspace(
+            &database.path,
+            &engagement.engagement_id,
+            "Acquisition data room",
+        )
+        .expect("workspace");
+        assert_eq!(workspace.engagement_name, "Acquisition DD 2026");
+        assert!(create_due_diligence_workspace(
+            &database.path,
+            &engagement.engagement_id,
+            "Duplicate workspace",
+        )
+        .expect_err("duplicate workspace should fail")
+        .to_string()
+        .contains("already exists"));
+
+        let other_workspace = create_due_diligence_workspace(
+            &database.path,
+            &other_engagement.engagement_id,
+            "Other data room",
+        )
+        .expect("other workspace");
+
+        let financial = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                parent_section_id: None,
+                code: Some("FDD"),
+                name: "Financial DD",
+                description: Some("Financial diligence requests."),
+                display_order: 10,
+            },
+        )
+        .expect("financial section");
+        let revenue = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                parent_section_id: Some(&financial.due_diligence_section_id),
+                code: Some("REV"),
+                name: "Revenue",
+                description: None,
+                display_order: 20,
+            },
+        )
+        .expect("child section");
+        assert_eq!(
+            revenue.parent_section_id.as_deref(),
+            Some(financial.due_diligence_section_id.as_str())
+        );
+
+        let other_section = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &other_workspace.due_diligence_workspace_id,
+                parent_section_id: None,
+                code: None,
+                name: "Other",
+                description: None,
+                display_order: 10,
+            },
+        )
+        .expect("other section");
+
+        assert!(create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &other_workspace.due_diligence_workspace_id,
+                parent_section_id: Some(&financial.due_diligence_section_id),
+                code: None,
+                name: "Invalid child",
+                description: None,
+                display_order: 20,
+            },
+        )
+        .expect_err("cross-workspace parent should fail")
+        .to_string()
+        .contains("same workspace"));
+
+        let request = create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&revenue.due_diligence_section_id),
+                reference: Some("FDD-01"),
+                title: "Monthly revenue bridge",
+                description: Some("Provide monthly revenue bridge for the review period."),
+                requested_from_party: Some("Seller finance team"),
+                due_date: Some("2026-10-31"),
+                internal_notes: Some("Internal: validate unusual quarter-end cut-off."),
+                actor_id: None,
+            },
+        )
+        .expect("request");
+        assert_eq!(request.latest_status, "OPEN");
+        assert_eq!(request.latest_sequence_number, 1);
+        assert_eq!(request.section_name.as_deref(), Some("Revenue"));
+        assert_eq!(
+            request.internal_notes.as_deref(),
+            Some("Internal: validate unusual quarter-end cut-off.")
+        );
+
+        assert!(create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&other_section.due_diligence_section_id),
+                reference: None,
+                title: "Invalid section request",
+                description: None,
+                requested_from_party: None,
+                due_date: None,
+                internal_notes: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("cross-workspace section should fail")
+        .to_string()
+        .contains("same workspace"));
+
+        assert!(create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "PARTIALLY_RESPONDED",
+                response_text: None,
+                internal_assessment: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("responded status without response should fail")
+        .to_string()
+        .contains("response text is required"));
+
+        let response = create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "PARTIALLY_RESPONDED",
+                response_text: Some("Revenue bridge uploaded; two subsidiaries pending."),
+                internal_assessment: Some("Internal: reconcile uploaded bridge to TB."),
+                actor_id: None,
+            },
+        )
+        .expect("partial response");
+        assert_eq!(response.sequence_number, 2);
+
+        let closed = create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "CLOSED",
+                response_text: None,
+                internal_assessment: Some("Internal: request satisfactorily completed."),
+                actor_id: None,
+            },
+        )
+        .expect("closed event");
+        assert_eq!(closed.sequence_number, 3);
+
+        let requests = list_due_diligence_requests(
+            &database.path,
+            &workspace.due_diligence_workspace_id,
+        )
+        .expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].latest_status, "CLOSED");
+        assert_eq!(requests[0].latest_sequence_number, 3);
+
+        let events =
+            list_due_diligence_request_events(&database.path, &request.due_diligence_request_id)
+                .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OPEN", "PARTIALLY_RESPONDED", "CLOSED"]
+        );
+
+        let another_request = create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&financial.due_diligence_section_id),
+                reference: Some("FDD-02"),
+                title: "Customer concentration",
+                description: None,
+                requested_from_party: None,
+                due_date: None,
+                internal_notes: None,
+                actor_id: None,
+            },
+        )
+        .expect("another request");
+
+        let storage_root_id = Uuid::new_v4().to_string();
+        let document_id = Uuid::new_v4().to_string();
+        let file_instance_id = Uuid::new_v4().to_string();
+        let content_version_id = Uuid::new_v4().to_string();
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_evidence_version_id = Uuid::new_v4().to_string();
+        let source_sha256 = vec![0xDD; 32];
+        {
+            let connection =
+                open_configured_connection(&database.path).expect("database should open");
+            connection
+                .execute(
+                    "INSERT INTO storage_roots (
+                        storage_root_id, kind, native_locator, native_locator_encoding,
+                        display_locator, canonical_native_locator, canonical_display_locator,
+                        availability_state, approved_at_ms, approved_by, created_at_ms, updated_at_ms
+                     ) VALUES (?1, 'LOCAL', ?2, 'TEST', '/dd-test', NULL, NULL, 'AVAILABLE', 1, NULL, 1, 1)",
+                    params![&storage_root_id, vec![0_u8]],
+                )
+                .expect("storage root");
+            connection
+                .execute(
+                    "INSERT INTO documents (
+                        document_id, storage_state, display_name, created_at_ms, created_by, archived_at_ms
+                     ) VALUES (?1, 'CONTROLLED_EVIDENCE', 'Revenue bridge.xlsx', 1, NULL, NULL)",
+                    [&document_id],
+                )
+                .expect("document");
+            connection
+                .execute(
+                    "INSERT INTO file_instances (
+                        file_instance_id, document_id, storage_root_id, relative_path_native,
+                        path_native_encoding, relative_path_display, relative_path_search,
+                        filesystem_identity, volume_identity, creation_time_ms, last_write_time_ms,
+                        size_bytes, file_attributes, reparse_tag, first_seen_at_ms, last_seen_at_ms,
+                        first_seen_generation_id, last_seen_generation_id, availability_state
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, 'TEST', 'Revenue bridge.xlsx', 'revenue bridge xlsx',
+                        NULL, NULL, NULL, NULL, 128, NULL, NULL, 1, 1, NULL, NULL, 'AVAILABLE'
+                     )",
+                    params![
+                        &file_instance_id,
+                        &document_id,
+                        &storage_root_id,
+                        b"Revenue bridge.xlsx".to_vec()
+                    ],
+                )
+                .expect("file instance");
+            connection
+                .execute(
+                    "INSERT INTO content_versions (
+                        content_version_id, document_id, file_instance_id, observed_at_ms,
+                        size_bytes, last_write_time_ms, quick_fingerprint, sha256,
+                        verification_state, source_stable_during_read
+                     ) VALUES (?1, ?2, ?3, 1, 128, NULL, NULL, ?4, 'HASH_VERIFIED', 1)",
+                    params![
+                        &content_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &source_sha256
+                    ],
+                )
+                .expect("content version");
+            connection
+                .execute(
+                    "INSERT INTO evidence_capture_jobs (
+                        evidence_capture_job_id, file_instance_id, document_id, status,
+                        requested_at_ms, started_at_ms, completed_at_ms, capture_reason,
+                        capture_policy, failure_code, failure_message
+                     ) VALUES (?1, ?2, ?3, 'COMPLETE', 1, 1, 1, 'TEST', 'TEST', NULL, NULL)",
+                    params![&capture_job_id, &file_instance_id, &document_id],
+                )
+                .expect("capture job");
+            connection
+                .execute(
+                    "INSERT INTO controlled_evidence_versions (
+                        controlled_evidence_version_id, document_id, source_file_instance_id,
+                        source_content_version_id, evidence_capture_job_id, version_number,
+                        controlled_storage_locator, sha256, size_bytes, captured_at_ms,
+                        captured_by, capture_reason, capture_policy, retention_state,
+                        verification_state, source_stable_during_read
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 128, 1, NULL, 'TEST', 'TEST',
+                        'RETAINED', 'HASH_VERIFIED', 1
+                     )",
+                    params![
+                        &controlled_evidence_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &content_version_id,
+                        &capture_job_id,
+                        format!("{document_id}/{controlled_evidence_version_id}"),
+                        &source_sha256
+                    ],
+                )
+                .expect("controlled evidence");
+        }
+
+        let evidence = create_due_diligence_request_evidence_link(
+            &database.path,
+            &request.due_diligence_request_id,
+            Some(&response.due_diligence_request_event_id),
+            &controlled_evidence_version_id,
+            Some("Revenue bridge supporting the partial response."),
+        )
+        .expect("evidence link");
+        assert_eq!(evidence.document_id, document_id);
+        assert_eq!(evidence.source_content_version_id, content_version_id);
+        assert_eq!(evidence.source_sha256, source_sha256);
+
+        assert!(create_due_diligence_request_evidence_link(
+            &database.path,
+            &request.due_diligence_request_id,
+            Some(&another_request.latest_event_id),
+            &controlled_evidence_version_id,
+            None,
+        )
+        .expect_err("event from another request should fail")
+        .to_string()
+        .contains("same request"));
+
+        let evidence_links = list_due_diligence_request_evidence(
+            &database.path,
+            &request.due_diligence_request_id,
+        )
+        .expect("evidence links");
+        assert_eq!(evidence_links.len(), 1);
+        assert_eq!(
+            evidence_links[0].due_diligence_request_event_id.as_deref(),
+            Some(response.due_diligence_request_event_id.as_str())
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let request_mutation = connection
+            .execute(
+                "UPDATE due_diligence_requests
+                 SET title = 'Mutated'
+                 WHERE due_diligence_request_id = ?1",
+                [&request.due_diligence_request_id],
+            )
+            .expect_err("requests must be immutable");
+        assert!(request_mutation
+            .to_string()
+            .contains("due diligence requests are immutable"));
+
+        let event_mutation = connection
+            .execute(
+                "UPDATE due_diligence_request_events
+                 SET status = 'OPEN'
+                 WHERE due_diligence_request_event_id = ?1",
+                [&closed.due_diligence_request_event_id],
+            )
+            .expect_err("request events must be immutable");
+        assert!(event_mutation
+            .to_string()
+            .contains("due diligence request events are immutable"));
+    }
+
+    #[test]
     fn internal_audit_process_risk_control_test_chain_is_configurable() {
         let database = TestDatabase::new();
         initialize_database(&database.path).expect("database initialization should succeed");
