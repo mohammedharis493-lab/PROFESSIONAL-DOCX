@@ -6852,6 +6852,16 @@ export default function App() {
         entry.controlledEvidenceVersionId &&
         entry.controlledVerificationState === "HASH_VERIFIED",
     );
+  const selectedDueDiligenceIssue =
+    dueDiligenceIssues.find(
+      (item) => item.dueDiligenceIssueId === selectedDueDiligenceIssueId,
+    ) ?? null;
+  const dueDiligenceIssueControlledEvidenceVersions =
+    dueDiligenceIssueEvidenceVersionHistory.filter(
+      (entry) =>
+        entry.controlledEvidenceVersionId &&
+        entry.controlledVerificationState === "HASH_VERIFIED",
+    );
   const selectedLedgerImport =
     ledgerImports.find((item) => item.ledgerImportId === selectedLedgerImportId) ?? null;
   const ledgerControlledEvidenceVersions = ledgerEvidenceVersionHistory.filter(
