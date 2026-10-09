@@ -2112,6 +2112,15 @@ export default function App() {
     setDueDiligenceEvidenceVersionHistory([]);
     setSelectedDueDiligenceControlledVersionId("");
     setDueDiligenceEvidenceEventId("");
+    setDueDiligenceIssues([]);
+    setSelectedDueDiligenceIssueId(null);
+    setDueDiligenceIssueEvents([]);
+    setDueDiligenceIssueEvidence([]);
+    setDueDiligenceIssueEvidenceSearchResults([]);
+    setSelectedDueDiligenceIssueEvidenceDocument(null);
+    setDueDiligenceIssueEvidenceVersionHistory([]);
+    setSelectedDueDiligenceIssueControlledVersionId("");
+    setDueDiligenceIssueEvidenceEventId("");
     try {
       const [
         areas,
@@ -4763,20 +4772,42 @@ export default function App() {
     );
   }
 
+  async function loadDueDiligenceIssueDetails(dueDiligenceIssueId: string) {
+    const [events, evidence] = await Promise.all([
+      invoke<DueDiligenceIssueEvent[]>("list_due_diligence_issue_events", {
+        dueDiligenceIssueId,
+      }),
+      invoke<DueDiligenceIssueEvidence[]>("list_due_diligence_issue_evidence", {
+        dueDiligenceIssueId,
+      }),
+    ]);
+    setDueDiligenceIssueEvents(events);
+    setDueDiligenceIssueEvidence(evidence);
+    setDueDiligenceIssueEvidenceEventId(
+      events.length ? events[events.length - 1].dueDiligenceIssueEventId : "",
+    );
+  }
+
   async function refreshDueDiligenceWorkspaceDetails(
     dueDiligenceWorkspaceId: string,
     preferredRequestId?: string | null,
+    preferredIssueId?: string | null,
   ) {
-    const [sections, requests] = await Promise.all([
+    const [sections, requests, issues] = await Promise.all([
       invoke<DueDiligenceSection[]>("list_due_diligence_sections", {
         dueDiligenceWorkspaceId,
       }),
       invoke<DueDiligenceRequest[]>("list_due_diligence_requests", {
         dueDiligenceWorkspaceId,
       }),
+      invoke<DueDiligenceIssue[]>("list_due_diligence_issues", {
+        dueDiligenceWorkspaceId,
+      }),
     ]);
     setDueDiligenceSections(sections);
     setDueDiligenceRequests(requests);
+    setDueDiligenceIssues(issues);
+
     const requestId =
       preferredRequestId && requests.some((item) => item.dueDiligenceRequestId === preferredRequestId)
         ? preferredRequestId
@@ -4788,6 +4819,19 @@ export default function App() {
       setDueDiligenceRequestEvents([]);
       setDueDiligenceRequestEvidence([]);
       setDueDiligenceEvidenceEventId("");
+    }
+
+    const issueId =
+      preferredIssueId && issues.some((item) => item.dueDiligenceIssueId === preferredIssueId)
+        ? preferredIssueId
+        : issues[0]?.dueDiligenceIssueId ?? null;
+    setSelectedDueDiligenceIssueId(issueId);
+    if (issueId) {
+      await loadDueDiligenceIssueDetails(issueId);
+    } else {
+      setDueDiligenceIssueEvents([]);
+      setDueDiligenceIssueEvidence([]);
+      setDueDiligenceIssueEvidenceEventId("");
     }
   }
 
