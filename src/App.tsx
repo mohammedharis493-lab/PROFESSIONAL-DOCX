@@ -7109,6 +7109,16 @@ export default function App() {
     dueDiligenceIssues.find(
       (item) => item.dueDiligenceIssueId === selectedDueDiligenceIssueId,
     ) ?? null;
+  const selectedDueDiligenceReport =
+    dueDiligenceReports.find(
+      (item) => item.dueDiligenceReportId === selectedDueDiligenceReportId,
+    ) ?? null;
+  const selectedDueDiligenceReportVersion =
+    dueDiligenceReportVersions.find(
+      (item) =>
+        item.dueDiligenceReportVersionId ===
+        selectedDueDiligenceReportVersionId,
+    ) ?? null;
   const dueDiligenceIssueControlledEvidenceVersions =
     dueDiligenceIssueEvidenceVersionHistory.filter(
       (entry) =>
