@@ -414,7 +414,8 @@ export default function NormalDataWorkspace() {
           </form>
         </section>
       </div>
-      <NormalDataComparisons key={workspaceId} workspaceId={workspaceId} datasets={datasets} />
+      <NormalDataComparisons key={workspaceId} workspaceId={workspaceId}
+        datasets={datasets} semanticRevision={columnRevision} />
       <p className="normal-data-footnote">
         Normal Data datasets and comparison runs are working data, not controlled audit
         evidence. Native execution requires unchanged, SHA-256-verified source bytes.
