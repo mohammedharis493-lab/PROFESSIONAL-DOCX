@@ -311,3 +311,206 @@ pub fn list_comparison_runs(
     }
     Ok(runs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{normal_data, normal_data_datasets, normal_data_recipes};
+    use rusqlite::params;
+    use sha2::{Digest, Sha256};
+    use std::{fs, path::PathBuf};
+
+    #[cfg(unix)]
+    fn encode_relative(path: &Path) -> (Vec<u8>, &'static str) {
+        use std::os::unix::ffi::OsStrExt;
+        (path.as_os_str().as_bytes().to_vec(), "unix-bytes")
+    }
+
+    #[cfg(windows)]
+    fn encode_relative(path: &Path) -> (Vec<u8>, &'static str) {
+        use std::os::windows::ffi::OsStrExt;
+        let bytes = path.as_os_str().encode_wide()
+            .flat_map(u16::to_le_bytes).collect();
+        (bytes, "windows-utf16le")
+    }
+
+    struct Fixture {
+        folder: PathBuf,
+        path: PathBuf,
+        source_b: PathBuf,
+        recipe_version_id: String,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let folder = std::env::temp_dir()
+                .join(format!("pdox-comparison-run-{}", Uuid::new_v4()));
+            fs::create_dir_all(&folder).expect("create fixture directory");
+            let path = folder.join("state.sqlite");
+            persistence::initialize_database(&path).expect("initialize v27 database");
+            let directory = folder.join("data");
+            fs::create_dir_all(&directory).expect("create data directory");
+            let canonical = fs::canonicalize(&directory).expect("canonical approved root");
+            let root = persistence::register_storage_root(
+                &path, "test-comparison-root", &directory, &canonical,
+            ).expect("approve fixture root");
+            let workspace = normal_data::create_workspace(
+                &path,
+                normal_data::WorkspaceDefinition {
+                    name: "Working data", description: None, client_id: None,
+                    period_start: None, period_end: None,
+                },
+            ).expect("create engagement-independent workspace");
+            let mut versions = Vec::new();
+            let sources = [
+                ("a.csv", b"Key,Period,Amount\nINV-100,2026-08,10000\n".as_slice()),
+                ("b.csv", b"Key,Period,Amount\nINV-100,2026-09,10250\n".as_slice()),
+            ];
+            for (filename, bytes) in sources {
+                let source = directory.join(filename);
+                fs::write(&source, bytes).expect("write source bytes");
+                let document_id = Uuid::new_v4().to_string();
+                let file_instance_id = Uuid::new_v4().to_string();
+                let content_version_id = Uuid::new_v4().to_string();
+                let (relative_bytes, encoding) = encode_relative(Path::new(filename));
+                let hash = Sha256::digest(bytes);
+                let connection = persistence::open_configured_connection(&path)
+                    .expect("open fixture database");
+                connection.execute(
+                    "INSERT INTO documents (
+                        document_id, storage_state, display_name, created_at_ms
+                    ) VALUES (?1, 'LINKED', ?2, 1)",
+                    params![&document_id, filename],
+                ).expect("insert document");
+                connection.execute(
+                    "INSERT INTO file_instances (
+                        file_instance_id, document_id, storage_root_id,
+                        relative_path_native, path_native_encoding, relative_path_display,
+                        relative_path_search, size_bytes, first_seen_at_ms,
+                        last_seen_at_ms, availability_state
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, 'AVAILABLE')",
+                    params![&file_instance_id, &document_id, &root.storage_root_id,
+                            relative_bytes, encoding, filename, filename, bytes.len() as i64],
+                ).expect("insert indexed file");
+                connection.execute(
+                    "INSERT INTO content_versions (
+                        content_version_id, document_id, file_instance_id,
+                        observed_at_ms, size_bytes, sha256,
+                        verification_state, source_stable_during_read
+                    ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 'HASH_VERIFIED', 1)",
+                    params![&content_version_id, &document_id, &file_instance_id,
+                            bytes.len() as i64, &hash[..]],
+                ).expect("insert hash-verified observation");
+                drop(connection);
+                let dataset = normal_data_datasets::create_dataset(
+                    &path, &workspace.normal_data_workspace_id, &file_instance_id, filename,
+                ).expect("bind versioned dataset source");
+                for (name, role, data_type) in [
+                    ("Key", "BUSINESS_KEY", "TEXT"),
+                    ("Period", "FILING_PERIOD", "PERIOD"),
+                    ("Amount", "NUMERIC_VALUE", "DECIMAL"),
+                ] {
+                    normal_data_datasets::declare_column(
+                        &path, &dataset.normal_data_dataset_version_id, name, role, data_type,
+                    ).expect("declare source semantic column");
+                }
+                versions.push(dataset.normal_data_dataset_version_id);
+            }
+            let recipe = normal_data_recipes::create_recipe(
+                &path,
+                normal_data_recipes::RecipeDefinition {
+                    normal_data_workspace_id: &workspace.normal_data_workspace_id,
+                    name: "Filing comparison",
+                    dataset_a_version_id: &versions[0],
+                    dataset_b_version_id: &versions[1],
+                    period_basis: "FILING_PERIOD",
+                    period_column_a: "Period",
+                    period_column_b: "Period",
+                    amount_columns: &["Amount".to_string()],
+                    tolerance_minor_units: 0,
+                },
+            ).expect("create immutable comparison recipe");
+            Self {
+                folder,
+                path,
+                source_b: directory.join("b.csv"),
+                recipe_version_id: recipe.normal_data_comparison_recipe_version_id,
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.folder);
+        }
+    }
+
+    #[test]
+    fn verified_csv_movement_persists_exact_hashes_and_immutable_audit_event() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison");
+        assert_eq!(run.result.summary.period_moved, 1);
+        assert_eq!(run.result.entries[0].period_a.as_deref(), Some("2026-08"));
+        assert_eq!(run.result.entries[0].period_b.as_deref(), Some("2026-09"));
+        assert_eq!(
+            run.result.entries[0].amount_differences[0].b_minus_a_minor_units,
+            250
+        );
+        assert_eq!(run.dataset_a_source_sha256_hex.len(), 64);
+        assert_eq!(run.dataset_b_source_sha256_hex.len(), 64);
+        let previous = list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
+            .expect("query history");
+        assert_eq!(previous.len(), 1);
+        assert_eq!(previous[0].normal_data_comparison_run_id,
+                   run.normal_data_comparison_run_id);
+        assert_eq!(previous[0].result, run.result);
+        let connection = persistence::open_configured_connection(&fixture.path)
+            .expect("open database");
+        assert!(connection.execute(
+            "UPDATE normal_data_comparison_runs SET result_json = '{}'
+             WHERE normal_data_comparison_run_id = ?1",
+            [&run.normal_data_comparison_run_id],
+        ).is_err());
+        assert!(connection.execute(
+            "DELETE FROM normal_data_comparison_runs
+             WHERE normal_data_comparison_run_id = ?1",
+            [&run.normal_data_comparison_run_id],
+        ).is_err());
+        let events = persistence::count_audit_events_for_test(
+            &fixture.path, "NORMAL_DATA_COMPARISON_RUN_COMPLETED",
+            &run.normal_data_comparison_run_id,
+        ).expect("audited execution");
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn linked_source_change_rejects_run_and_keeps_prior_history() {
+        let fixture = Fixture::new();
+        execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("first run");
+        fs::write(&fixture.source_b, b"Key,Period,Amount\nINV-100,2026-09,10200\n")
+            .expect("same-sized source tampering");
+        assert!(execute_comparison(&fixture.path, &fixture.recipe_version_id).is_err());
+        let runs = list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
+            .expect("immutable history remains");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].result.summary.period_moved, 1);
+    }
+
+    #[test]
+    fn unconfirmed_business_key_cannot_generate_a_run() {
+        let fixture = Fixture::new();
+        let connection = persistence::open_configured_connection(&fixture.path)
+            .expect("open database");
+        let all: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM normal_data_column_semantics
+             WHERE semantic_role = 'BUSINESS_KEY'",
+            [], |row| row.get(0),
+        ).expect("declared keys");
+        assert_eq!(all, 2);
+        assert!(execute_comparison(&fixture.path, &Uuid::new_v4().to_string()).is_err());
+        assert!(list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
+            .expect("no runs").is_empty());
+    }
+}
