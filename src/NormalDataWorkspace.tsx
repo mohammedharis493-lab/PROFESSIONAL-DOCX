@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./normal-data.css";
+import NormalDataComparisons from "./NormalDataComparisons";
 
 type NormalDataWorkspaceRecord = {
   normalDataWorkspaceId: string;
@@ -413,10 +414,10 @@ export default function NormalDataWorkspace() {
           </form>
         </section>
       </div>
+      <NormalDataComparisons key={workspaceId} workspaceId={workspaceId} datasets={datasets} />
       <p className="normal-data-footnote">
-        Normal Data datasets are not controlled audit evidence. Historical comparison
-        runs require unchanged, SHA-256-verified source bytes. Recipe setup and
-        run history will be surfaced in a following UI slice.
+        Normal Data datasets and comparison runs are working data, not controlled audit
+        evidence. Native execution requires unchanged, SHA-256-verified source bytes.
       </p>
     </section>
   );
