@@ -11819,6 +11819,290 @@ export default function App() {
                   <div className="workspace-card">
                     <div className="workspace-card-heading">
                       <div>
+                        <span className="workspace-label">DD REPORT BUILDER · INTERNAL ONLY</span>
+                        <h3>Immutable report versions</h3>
+                      </div>
+                    </div>
+
+                    {dueDiligenceWorkspace ? (
+                      <>
+                        <label className="workspace-form compact">
+                          <span>Report</span>
+                          <select
+                            value={selectedDueDiligenceReportId ?? ""}
+                            onChange={(event) =>
+                              void selectDueDiligenceReport(
+                                event.target.value || null,
+                              )
+                            }
+                          >
+                            <option value="">New internal report</option>
+                            {dueDiligenceReports.map((report) => (
+                              <option
+                                key={report.dueDiligenceReportId}
+                                value={report.dueDiligenceReportId}
+                              >
+                                {report.latestTitle} · v{report.latestVersionNumber}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedDueDiligenceReport ? (
+                          <label className="workspace-form compact">
+                            <span>Base draft on immutable version</span>
+                            <select
+                              value={selectedDueDiligenceReportVersionId ?? ""}
+                              onChange={(event) =>
+                                void selectDueDiligenceReportVersion(
+                                  event.target.value,
+                                )
+                              }
+                              disabled={workspaceBusy}
+                            >
+                              {dueDiligenceReportVersions.map((version) => (
+                                <option
+                                  key={version.dueDiligenceReportVersionId}
+                                  value={version.dueDiligenceReportVersionId}
+                                >
+                                  v{version.versionNumber} · {version.issueCount} issue(s) ·{" "}
+                                  {formatTimestamp(version.createdAtMs)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitDueDiligenceReportVersion}
+                        >
+                          <label>
+                            <span>Report title</span>
+                            <input
+                              value={dueDiligenceReportTitle}
+                              onChange={(event) =>
+                                setDueDiligenceReportTitle(event.target.value)
+                              }
+                              placeholder="Financial due diligence report"
+                              maxLength={500}
+                            />
+                          </label>
+                          <label>
+                            <span>Executive summary</span>
+                            <textarea
+                              value={dueDiligenceReportExecutiveSummary}
+                              onChange={(event) =>
+                                setDueDiligenceReportExecutiveSummary(
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Internal executive summary"
+                              maxLength={32000}
+                            />
+                          </label>
+                          <label>
+                            <span>Scope summary</span>
+                            <textarea
+                              value={dueDiligenceReportScopeSummary}
+                              onChange={(event) =>
+                                setDueDiligenceReportScopeSummary(event.target.value)
+                              }
+                              placeholder="Scope, limitations, and work performed"
+                              maxLength={32000}
+                            />
+                          </label>
+                          <label>
+                            <span>Overall conclusion</span>
+                            <textarea
+                              value={dueDiligenceReportOverallConclusion}
+                              onChange={(event) =>
+                                setDueDiligenceReportOverallConclusion(
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Internal overall conclusion"
+                              maxLength={32000}
+                            />
+                          </label>
+
+                          <div className="workspace-mini-list">
+                            <span>
+                              <strong>
+                                Issue snapshot · {dueDiligenceReportIssueIds.length} selected
+                              </strong>
+                              <small>
+                                On save, the backend resolves each selected issue to its latest
+                                immutable issue-event ID and hashes the exact snapshot set.
+                              </small>
+                            </span>
+                            {dueDiligenceIssues.length ? (
+                              dueDiligenceIssues.map((issue) => (
+                                <label
+                                  key={issue.dueDiligenceIssueId}
+                                  className="evidence-integrity-note"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={dueDiligenceReportIssueIds.includes(
+                                      issue.dueDiligenceIssueId,
+                                    )}
+                                    onChange={() =>
+                                      toggleDueDiligenceReportIssue(
+                                        issue.dueDiligenceIssueId,
+                                      )
+                                    }
+                                  />{" "}
+                                  {issue.reference ? issue.reference + " · " : ""}
+                                  {issue.title} ·{" "}
+                                  {issue.latestStatus.replaceAll("_", " ")} · event #
+                                  {issue.latestSequenceNumber}
+                                </label>
+                              ))
+                            ) : (
+                              <div className="empty-result">
+                                Record internal findings or deal issues before adding report
+                                snapshots.
+                              </div>
+                            )}
+                          </div>
+
+                          <p className="evidence-integrity-note">
+                            Saving creates an immutable internal report version. It does not publish
+                            externally and it never rewrites prior report versions or issue
+                            snapshots.
+                          </p>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !dueDiligenceReportTitle.trim()}
+                          >
+                            {selectedDueDiligenceReport
+                              ? "Save new immutable report version"
+                              : "Create immutable internal report"}
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Create the internal DD workspace before building a report.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">REPORT SNAPSHOT REVIEW</span>
+                        <h3>Exact issue-event snapshot</h3>
+                      </div>
+                    </div>
+
+                    {selectedDueDiligenceReportVersion ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              v{selectedDueDiligenceReportVersion.versionNumber} ·{" "}
+                              {selectedDueDiligenceReportVersion.title}
+                            </strong>
+                            <small>
+                              {selectedDueDiligenceReportVersion.issueCount} issue(s) · snapshot
+                              SHA{" "}
+                              {selectedDueDiligenceReportVersion.issueSnapshotHashHex.slice(
+                                0,
+                                20,
+                              )}…
+                            </small>
+                            <small>
+                              {formatTimestamp(
+                                selectedDueDiligenceReportVersion.createdAtMs,
+                              )}
+                              {selectedDueDiligenceReportVersion.createdBy
+                                ? " · " + selectedDueDiligenceReportVersion.createdBy
+                                : ""}
+                            </small>
+                            {selectedDueDiligenceReportVersion.executiveSummary ? (
+                              <small>
+                                Executive summary:{" "}
+                                {selectedDueDiligenceReportVersion.executiveSummary}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceReportVersion.scopeSummary ? (
+                              <small>
+                                Scope: {selectedDueDiligenceReportVersion.scopeSummary}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceReportVersion.overallConclusion ? (
+                              <small>
+                                Conclusion:{" "}
+                                {selectedDueDiligenceReportVersion.overallConclusion}
+                              </small>
+                            ) : null}
+                          </span>
+                        </div>
+
+                        <div className="workspace-mini-list">
+                          {dueDiligenceReportVersionIssues.length ? (
+                            dueDiligenceReportVersionIssues.map((snapshot) => (
+                              <span
+                                key={snapshot.dueDiligenceReportIssueLinkId}
+                              >
+                                <strong>
+                                  {snapshot.reference ? snapshot.reference + " · " : ""}
+                                  {snapshot.title}
+                                </strong>
+                                <small>
+                                  {snapshot.issueType.replaceAll("_", " ")} ·{" "}
+                                  {snapshot.status.replaceAll("_", " ")} · snapshotted event #
+                                  {snapshot.sequenceNumber}
+                                </small>
+                                <small>
+                                  Issue ID {snapshot.dueDiligenceIssueId.slice(0, 18)}… · event ID{" "}
+                                  {snapshot.dueDiligenceIssueEventId.slice(0, 18)}…
+                                </small>
+                                {snapshot.category || snapshot.severity ? (
+                                  <small>
+                                    {snapshot.category ?? "Uncategorized"}
+                                    {snapshot.severity
+                                      ? " · severity: " + snapshot.severity
+                                      : ""}
+                                  </small>
+                                ) : null}
+                                {snapshot.internalConclusion ? (
+                                  <small>
+                                    Conclusion: {snapshot.internalConclusion}
+                                  </small>
+                                ) : null}
+                                {snapshot.dealImpact ? (
+                                  <small>Deal impact: {snapshot.dealImpact}</small>
+                                ) : null}
+                                {snapshot.recommendation ? (
+                                  <small>
+                                    Recommendation: {snapshot.recommendation}
+                                  </small>
+                                ) : null}
+                              </span>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              This immutable report version contains no issue snapshots.
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Select or create an internal report to review an immutable snapshot.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
                         <span className="workspace-label">STATUTORY COMPLIANCE</span>
                         <h3>Versioned requirements</h3>
                       </div>
