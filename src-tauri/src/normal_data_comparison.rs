@@ -109,6 +109,41 @@ pub struct ComparisonResult {
     pub result_sha256_hex: String,
 }
 
+/// Recompute the comparison result's canonical digest from its stored semantic values.
+fn compute_result_digest(
+    basis: PeriodBasis,
+    columns: &[String],
+    tolerance: i64,
+    entries: &[ComparisonEntry],
+    summary: &ComparisonSummary,
+) -> Result<String, String> {
+    let canonical = serde_json::to_vec(&(basis, columns, tolerance, entries, summary))
+        .map_err(|error| format!("cannot encode deterministic comparison result: {error}"))?;
+    let mut digest = Sha256::new();
+    digest.update(&canonical);
+    let mut hex = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(&mut hex, "{byte:02x}").expect("writing a digest to String cannot fail");
+    }
+    Ok(hex)
+}
+
+/// Detects modified stored comparison JSON; this does not prove linked sources are still present
+/// or confer the retention guarantees of controlled evidence.
+pub fn verify_stored_result_digest(result: &ComparisonResult) -> Result<(), String> {
+    let computed = compute_result_digest(
+        result.period_basis,
+        &result.amount_columns,
+        result.tolerance_minor_units,
+        &result.entries,
+        &result.summary,
+    )?;
+    if computed != result.result_sha256_hex {
+        return Err("stored comparison result does not match its canonical digest".to_string());
+    }
+    Ok(())
+}
+
 fn validate_period(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 7
@@ -268,21 +303,13 @@ pub fn compare_rows(
             amount_differences,
         });
     }
-    let canonical = serde_json::to_vec(&(
+    let result_sha256_hex = compute_result_digest(
         config.period_basis,
         &columns,
         config.tolerance_minor_units,
         &entries,
         &summary,
-    ))
-    .map_err(|error| format!("cannot encode deterministic comparison result: {error}"))?;
-    let mut digest = Sha256::new();
-    digest.update(&canonical);
-    let mut result_sha256_hex = String::with_capacity(64);
-    for byte in digest.finalize() {
-        write!(&mut result_sha256_hex, "{byte:02x}")
-            .expect("writing a digest to String cannot fail");
-    }
+    )?;
 
     Ok(ComparisonResult {
         period_basis: config.period_basis,
@@ -396,6 +423,20 @@ mod tests {
             Classification::DuplicateKey
         );
         assert_eq!(result.entries[0].rows_a, 2);
+    }
+
+    #[test]
+    fn frozen_result_digest_rejects_tampered_entries_and_parameters() {
+        let sample = row("K", "2026-08", "2026-07", "2026-08", 25);
+        let result = compare_rows(&config(PeriodBasis::FilingPeriod, 0), &[sample], &[])
+            .expect("deterministic result");
+        verify_stored_result_digest(&result).expect("canonical stored values");
+        let mut tampered = result.clone();
+        tampered.summary.only_a += 1;
+        assert!(verify_stored_result_digest(&tampered).is_err());
+        let mut different_config = result.clone();
+        different_config.tolerance_minor_units += 1;
+        assert!(verify_stored_result_digest(&different_config).is_err());
     }
 
     #[test]
