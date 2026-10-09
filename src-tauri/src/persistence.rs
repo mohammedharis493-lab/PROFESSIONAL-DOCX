@@ -4612,6 +4612,27 @@ fn normalize_internal_audit_status(value: &str) -> Result<String, PersistenceErr
     Ok(status)
 }
 
+fn normalize_internal_audit_finding_status(
+    value: &str,
+) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if matches!(
+        status.as_str(),
+        "OPEN"
+            | "MANAGEMENT_RESPONDED"
+            | "ACTION_IN_PROGRESS"
+            | "IMPLEMENTED_PENDING_VERIFICATION"
+            | "CLOSED"
+            | "RISK_ACCEPTED"
+    ) {
+        Ok(status)
+    } else {
+        Err(PersistenceError::Configuration(
+            "internal audit finding status is not supported".to_string(),
+        ))
+    }
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
