@@ -2264,6 +2264,9 @@ export default function App() {
         await refreshDueDiligenceWorkspaceDetails(
           dueDiligenceWorkspaceRecord.dueDiligenceWorkspaceId,
         );
+        await refreshDueDiligenceReports(
+          dueDiligenceWorkspaceRecord.dueDiligenceWorkspaceId,
+        );
       }
       const firstInternalAuditFinding = internalAuditFindingRecords[0] ?? null;
       setSelectedInternalAuditFindingId(
@@ -4865,6 +4868,173 @@ export default function App() {
     );
   }
 
+  function clearDueDiligenceReportDraft() {
+    setDueDiligenceReportTitle("");
+    setDueDiligenceReportExecutiveSummary("");
+    setDueDiligenceReportScopeSummary("");
+    setDueDiligenceReportOverallConclusion("");
+    setDueDiligenceReportIssueIds([]);
+  }
+
+  async function loadDueDiligenceReportVersion(
+    version: DueDiligenceReportVersion,
+  ) {
+    const issueSnapshots = await invoke<DueDiligenceReportIssue[]>(
+      "list_due_diligence_report_version_issues",
+      { dueDiligenceReportVersionId: version.dueDiligenceReportVersionId },
+    );
+    setSelectedDueDiligenceReportVersionId(version.dueDiligenceReportVersionId);
+    setDueDiligenceReportVersionIssues(issueSnapshots);
+    setDueDiligenceReportTitle(version.title);
+    setDueDiligenceReportExecutiveSummary(version.executiveSummary ?? "");
+    setDueDiligenceReportScopeSummary(version.scopeSummary ?? "");
+    setDueDiligenceReportOverallConclusion(version.overallConclusion ?? "");
+    setDueDiligenceReportIssueIds(
+      issueSnapshots.map((snapshot) => snapshot.dueDiligenceIssueId),
+    );
+  }
+
+  async function loadDueDiligenceReportDetails(
+    dueDiligenceReportId: string,
+    preferredVersionId?: string | null,
+  ) {
+    const versions = await invoke<DueDiligenceReportVersion[]>(
+      "list_due_diligence_report_versions",
+      { dueDiligenceReportId },
+    );
+    setDueDiligenceReportVersions(versions);
+    const requestedVersion =
+      preferredVersionId &&
+      versions.find(
+        (version) =>
+          version.dueDiligenceReportVersionId === preferredVersionId,
+      );
+    const version = requestedVersion || versions[versions.length - 1] || null;
+    if (version) {
+      await loadDueDiligenceReportVersion(version);
+    } else {
+      setSelectedDueDiligenceReportVersionId(null);
+      setDueDiligenceReportVersionIssues([]);
+      clearDueDiligenceReportDraft();
+    }
+  }
+
+  async function refreshDueDiligenceReports(
+    dueDiligenceWorkspaceId: string,
+    preferredReportId?: string | null,
+  ) {
+    const reports = await invoke<DueDiligenceReport[]>(
+      "list_due_diligence_reports",
+      { dueDiligenceWorkspaceId },
+    );
+    setDueDiligenceReports(reports);
+    const requestedReportId = preferredReportId ?? selectedDueDiligenceReportId;
+    const reportId =
+      requestedReportId &&
+      reports.some((report) => report.dueDiligenceReportId === requestedReportId)
+        ? requestedReportId
+        : reports[0]?.dueDiligenceReportId ?? null;
+    setSelectedDueDiligenceReportId(reportId);
+    if (reportId) {
+      await loadDueDiligenceReportDetails(reportId);
+    } else {
+      setDueDiligenceReportVersions([]);
+      setSelectedDueDiligenceReportVersionId(null);
+      setDueDiligenceReportVersionIssues([]);
+      clearDueDiligenceReportDraft();
+    }
+  }
+
+  async function selectDueDiligenceReport(
+    dueDiligenceReportId: string | null,
+  ) {
+    setSelectedDueDiligenceReportId(dueDiligenceReportId);
+    setDueDiligenceReportVersions([]);
+    setSelectedDueDiligenceReportVersionId(null);
+    setDueDiligenceReportVersionIssues([]);
+    if (!dueDiligenceReportId) {
+      clearDueDiligenceReportDraft();
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceReportDetails(dueDiligenceReportId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceReportVersion(
+    dueDiligenceReportVersionId: string,
+  ) {
+    const version = dueDiligenceReportVersions.find(
+      (item) =>
+        item.dueDiligenceReportVersionId === dueDiligenceReportVersionId,
+    );
+    if (!version) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceReportVersion(version);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  function toggleDueDiligenceReportIssue(dueDiligenceIssueId: string) {
+    setDueDiligenceReportIssueIds((current) =>
+      current.includes(dueDiligenceIssueId)
+        ? current.filter((item) => item !== dueDiligenceIssueId)
+        : [...current, dueDiligenceIssueId],
+    );
+  }
+
+  async function submitDueDiligenceReportVersion(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!dueDiligenceWorkspace || !dueDiligenceReportTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const input = {
+        title: dueDiligenceReportTitle.trim(),
+        executiveSummary: dueDiligenceReportExecutiveSummary.trim() || null,
+        scopeSummary: dueDiligenceReportScopeSummary.trim() || null,
+        overallConclusion: dueDiligenceReportOverallConclusion.trim() || null,
+        issueIds: dueDiligenceReportIssueIds,
+        createdBy: null,
+      };
+      const report = selectedDueDiligenceReportId
+        ? await invoke<DueDiligenceReport>(
+            "publish_due_diligence_report_version",
+            {
+              dueDiligenceReportId: selectedDueDiligenceReportId,
+              input,
+            },
+          )
+        : await invoke<DueDiligenceReport>("create_due_diligence_report", {
+            dueDiligenceWorkspaceId:
+              dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+            input,
+          });
+
+      await refreshDueDiligenceReports(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        report.dueDiligenceReportId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function refreshDueDiligenceWorkspaceDetails(
     dueDiligenceWorkspaceId: string,
     preferredRequestId?: string | null,
@@ -4929,6 +5099,7 @@ export default function App() {
       setDueDiligenceWorkspace(workspace);
       setNewDueDiligenceWorkspaceName("");
       await refreshDueDiligenceWorkspaceDetails(workspace.dueDiligenceWorkspaceId);
+      await refreshDueDiligenceReports(workspace.dueDiligenceWorkspaceId);
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
