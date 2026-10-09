@@ -214,9 +214,7 @@ pub fn parse_normalized_csv(
                     .trim_start_matches(['-', '+'])
                     .chars()
                     .all(|ch| ch.is_ascii_digit())
-                || raw
-                    .trim_start_matches(['-', '+'])
-                    .is_empty()
+                || raw.trim_start_matches(['-', '+']).is_empty()
             {
                 return Err(format!(
                     "CSV row {} column '{}' must be signed integer minor units; no rounding or decimal-scale inference",
