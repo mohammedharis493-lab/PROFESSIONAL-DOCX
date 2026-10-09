@@ -8,7 +8,7 @@ use crate::{
     launcher,
     persistence::{self, PersistenceError},
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 use uuid::Uuid;
