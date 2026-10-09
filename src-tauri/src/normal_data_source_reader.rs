@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 const MAX_DATASET_BYTES: u64 = 32 * 1024 * 1024;
 
-pub(crate) struct VerifiedDatasetBytes {
+pub struct VerifiedDatasetBytes {
     pub dataset_version_id: String,
     pub document_id: String,
     pub content_version_id: String,
@@ -37,7 +37,7 @@ fn invalid(message: impl Into<String>) -> PersistenceError {
 ///
 /// Source bytes are transient; no historical availability is guaranteed.
 /// A verified result only applies to the exact bytes returned in this call.
-pub(crate) fn read_verified_dataset(
+pub fn read_verified_dataset(
     database_path: &Path,
     dataset_version_id: &str,
 ) -> Result<VerifiedDatasetBytes, PersistenceError> {
@@ -111,7 +111,7 @@ pub(crate) fn read_verified_dataset(
         return Err(invalid("dataset source was modified during verified reading"));
     }
     let actual = Sha256::digest(&bytes);
-    if actual.as_slice() != binding.sha256.as_slice() {
+    if actual[..] != binding.sha256[..] {
         return Err(invalid("dataset source SHA-256 differs from immutable indexed content version"));
     }
     let mut sha256 = [0u8; 32];
@@ -199,7 +199,7 @@ mod tests {
                     verification_state, source_stable_during_read
                 ) VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, 1)",
                 params![&content_version_id, &document_id, &file_instance_id,
-                        bytes.len() as i64, digest.as_slice(), verification_state],
+                        bytes.len() as i64, &digest[..], verification_state],
             ).expect("indexed content");
             let workspace_id = Uuid::new_v4().to_string();
             conn.execute(
@@ -223,7 +223,7 @@ mod tests {
                 ) VALUES (?1, ?2, 1, ?3, ?4, ?5, 1, ?6, ?7, 1, ?8, 1)",
                 params![&dataset_version_id, &dataset_id, &document_id, &file_instance_id,
                         &content_version_id, bytes.len() as i64,
-                        verification_state, digest.as_slice()],
+                        verification_state, &digest[..]],
             ).expect("frozen dataset version");
             drop(conn);
             Self { folder, database_path, source_path, dataset_version_id }
@@ -241,7 +241,7 @@ mod tests {
         ).expect("verified registered dataset");
         assert_eq!(verified.dataset_version_id, fixture.dataset_version_id);
         assert_eq!(verified.bytes, fs::read(&fixture.source_path).expect("source"));
-        assert_eq!(verified.sha256.as_slice(), Sha256::digest(&verified.bytes).as_slice());
+        assert_eq!(&verified.sha256[..], &Sha256::digest(&verified.bytes)[..]);
     }
 
     #[test]
