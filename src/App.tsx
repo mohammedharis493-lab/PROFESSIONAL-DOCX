@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import NormalDataWorkspace from "./NormalDataWorkspace";
 
 type ApprovedStorageRoot = {
   storageRootId: string;
@@ -1013,7 +1014,7 @@ type ViewerLocalMatch = {
   index: number;
 };
 
-type ViewMode = "home" | "clients" | "engagements" | "recent" | "searches" | "pinned";
+type ViewMode = "home" | "clients" | "engagements" | "normal-data" | "recent" | "searches" | "pinned";
 
 type NavigationLocation = {
   viewMode: ViewMode;
@@ -7276,6 +7277,13 @@ export default function App() {
             Engagements <span className="nav-count">{engagements.length}</span>
           </button>
           <button
+            className={`nav-item${viewMode === "normal-data" ? " nav-item-active" : ""}`}
+            type="button"
+            onClick={() => showView("normal-data")}
+          >
+            Normal Data
+          </button>
+          <button
             className={`nav-item${viewMode === "recent" ? " nav-item-active" : ""}`}
             type="button"
             onClick={() => showView("recent")}
@@ -7356,8 +7364,10 @@ export default function App() {
         </header>
 
         <section className="hero">
-          <p className="eyebrow">UNIVERSAL SEARCH</p>
-          <h1>Find the document without remembering where it lives.</h1>
+          <p className="eyebrow">{viewMode === "normal-data" ? "NORMAL DATA MODE" : "UNIVERSAL SEARCH"}</p>
+          <h1>{viewMode === "normal-data"
+            ? "Work with data, independently of an audit engagement."
+            : "Find the document without remembering where it lives."}</h1>
           <p className="hero-copy">
             Search existing indexed files by filename or path across approved roots.
             Partial words, prefixes, common typing errors, and year separators are
@@ -7534,6 +7544,10 @@ export default function App() {
               </div>
             )}
           </section>
+        ) : null}
+
+        {!hasQuery && !selectedRoot && viewMode === "normal-data" ? (
+          <NormalDataWorkspace />
         ) : null}
 
         {!hasQuery && !selectedRoot && viewMode === "clients" ? (
