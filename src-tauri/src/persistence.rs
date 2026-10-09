@@ -18540,8 +18540,7 @@ mod tests {
         fs::create_dir_all(database.path.parent().expect("database parent"))
             .expect("create parent");
         {
-            let mut connection =
-                open_configured_connection(&database.path).expect("open database");
+            let mut connection = open_configured_connection(&database.path).expect("open database");
             ensure_migration_history_table(&connection).expect("migration history");
             for migration in &MIGRATIONS[..26] {
                 let checksum = migration_checksum(migration.sql);
