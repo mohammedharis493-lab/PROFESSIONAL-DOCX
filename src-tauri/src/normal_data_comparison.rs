@@ -115,8 +115,10 @@ fn validate_period(value: &str) -> bool {
         && bytes[..4].iter().all(u8::is_ascii_digit)
         && bytes[5..].iter().all(u8::is_ascii_digit)
         && &value[..4] != "0000"
-        && matches!(&value[5..], "01" | "02" | "03" | "04" | "05" | "06"
-            | "07" | "08" | "09" | "10" | "11" | "12")
+        && matches!(
+            &value[5..],
+            "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+        )
 }
 
 fn validate_rows(
@@ -291,13 +293,7 @@ pub fn compare_rows(
 mod tests {
     use super::*;
 
-    fn row(
-        key: &str,
-        filing: &str,
-        invoice: &str,
-        accounting: &str,
-        amount: i64,
-    ) -> CompareRow {
+    fn row(key: &str, filing: &str, invoice: &str, accounting: &str, amount: i64) -> CompareRow {
         CompareRow {
             business_key: key.to_string(),
             filing_period: Some(filing.to_string()),
@@ -326,22 +322,28 @@ mod tests {
         .expect("same filing period should match");
         assert_eq!(result.summary.present_both, 1);
         assert_eq!(result.entries[0].period_a.as_deref(), Some("2026-08"));
-        assert_eq!(result.entries[0].classification, Classification::PresentBoth);
+        assert_eq!(
+            result.entries[0].classification,
+            Classification::PresentBoth
+        );
     }
 
     #[test]
     fn period_movement_is_not_misclassified_as_missing() {
         let a = row("INV-100", "2026-08", "2026-07", "2026-08", 10_000);
         let b = row("INV-100", "2026-09", "2026-07", "2026-08", 10_250);
-        let result = compare_rows(&config(PeriodBasis::FilingPeriod, 0), &[a], &[b])
-            .expect("comparison");
+        let result =
+            compare_rows(&config(PeriodBasis::FilingPeriod, 0), &[a], &[b]).expect("comparison");
         assert_eq!(result.summary.period_moved, 1);
         assert_eq!(result.summary.only_a, 0);
         assert_eq!(result.summary.only_b, 0);
         assert_eq!(result.entries[0].period_a.as_deref(), Some("2026-08"));
         assert_eq!(result.entries[0].period_b.as_deref(), Some("2026-09"));
         assert_eq!(result.entries[0].amount_differences.len(), 1);
-        assert_eq!(result.entries[0].amount_differences[0].b_minus_a_minor_units, 250);
+        assert_eq!(
+            result.entries[0].amount_differences[0].b_minus_a_minor_units,
+            250
+        );
     }
 
     #[test]
@@ -359,7 +361,9 @@ mod tests {
         let b = row("INV-1", "2026-08", "2026-07", "2026-08", 10_001);
         assert_eq!(
             compare_rows(&config(PeriodBasis::FilingPeriod, 1), &[a], &[b])
-                .expect("comparison").summary.present_both,
+                .expect("comparison")
+                .summary
+                .present_both,
             1
         );
     }
@@ -375,14 +379,17 @@ mod tests {
             row("only-B", "2026-08", "2026-08", "2026-08", 100),
             row("duplicate", "2026-08", "2026-08", "2026-08", 100),
         ];
-        let result = compare_rows(&config(PeriodBasis::FilingPeriod, 0), &a, &b)
-            .expect("comparison");
+        let result =
+            compare_rows(&config(PeriodBasis::FilingPeriod, 0), &a, &b).expect("comparison");
         assert_eq!(result.summary.total_business_keys, 3);
         assert_eq!(result.summary.duplicate_keys, 1);
         assert_eq!(result.summary.only_a, 1);
         assert_eq!(result.summary.only_b, 1);
         assert_eq!(result.entries[0].business_key, "duplicate");
-        assert_eq!(result.entries[0].classification, Classification::DuplicateKey);
+        assert_eq!(
+            result.entries[0].classification,
+            Classification::DuplicateKey
+        );
         assert_eq!(result.entries[0].rows_a, 2);
     }
 
@@ -414,8 +421,12 @@ mod tests {
     fn chosen_period_basis_is_explicit_and_changes_results() {
         let a = row("K", "2026-08", "2026-07", "2026-08", 10);
         let b = row("K", "2026-09", "2026-07", "2026-08", 10);
-        let filing = compare_rows(&config(PeriodBasis::FilingPeriod, 0), &[a.clone()], &[b.clone()])
-            .expect("filing comparison");
+        let filing = compare_rows(
+            &config(PeriodBasis::FilingPeriod, 0),
+            &[a.clone()],
+            &[b.clone()],
+        )
+        .expect("filing comparison");
         let invoice = compare_rows(&config(PeriodBasis::InvoiceMonth, 0), &[a], &[b])
             .expect("invoice month comparison");
         assert_eq!(filing.summary.period_moved, 1);
