@@ -5,6 +5,7 @@ mod launcher;
 mod ledger;
 mod normal_data;
 mod normal_data_datasets;
+pub mod normal_data_comparison;
 mod persistence;
 mod preview;
 mod reconciliation;
