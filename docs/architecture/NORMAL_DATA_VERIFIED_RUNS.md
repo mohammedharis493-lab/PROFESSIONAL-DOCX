@@ -19,6 +19,22 @@ Successful executions atomically write the immutable recipe-version ID, both ver
 
 The result digest describes normalized comparison outputs and effective settings; input hashes independently identify the source bytes. Runs are ordinary working-data history, not controlled evidence. Source originals may subsequently change or disappear; a run does not imply retained original bytes.
 
+## Historical run provenance inspection (Slice D1)
+
+`inspect_normal_data_run_provenance` accepts an exact completed run UUID and returns
+the frozen recipe version, workspace, dataset/content versions, the two **source**
+SHA-256 hashes recorded during execution, and the separate **result** SHA-256
+digest. It recomputes the digest from stored normalized result values and checks
+the stored metadata against frozen recipe and dataset versions. It does not
+read current linked files, export originals, create a controlled evidence version,
+attach to a workpaper or confer any authorization.
+
+Historical inspection remains available after a linked source changes or
+disappears, and reports `currentSourceBytesChecked: false` plus
+`isControlledEvidence: false` and `specialistPromotionAuthorized: false`.
+This is an inspection receipt, not a source-retention or independent audit
+attestation. See [ADR_NORMAL_DATA_PROMOTION_BOUNDARY.md](ADR_NORMAL_DATA_PROMOTION_BOUNDARY.md).
+
 ## Deferred features
 
-XLSX import, configured decimal scales, UI, evidence promotion, paginated history and reviewer workflow remain separate slices.
+XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
