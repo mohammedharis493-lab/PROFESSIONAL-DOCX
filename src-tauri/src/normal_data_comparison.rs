@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 const MAX_ROWS_PER_SIDE: usize = 100_000;
 const MAX_AMOUNT_COLUMNS: usize = 32;
@@ -277,7 +278,11 @@ pub fn compare_rows(
     .map_err(|error| format!("cannot encode deterministic comparison result: {error}"))?;
     let mut digest = Sha256::new();
     digest.update(&canonical);
-    let result_sha256_hex = format!("{:x}", digest.finalize());
+    let mut result_sha256_hex = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(&mut result_sha256_hex, "{byte:02x}")
+            .expect("writing a digest to String cannot fail");
+    }
 
     Ok(ComparisonResult {
         period_basis: config.period_basis,
