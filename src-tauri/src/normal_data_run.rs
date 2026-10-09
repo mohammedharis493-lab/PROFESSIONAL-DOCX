@@ -369,7 +369,7 @@ pub fn list_comparison_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{normal_data, normal_data_datasets, normal_data_recipes};
+    use crate::{normal_data, normal_data_datasets, normal_data_provenance, normal_data_recipes};
     use rusqlite::params;
     use sha2::{Digest, Sha256};
     use std::{fs, path::PathBuf};
@@ -636,4 +636,118 @@ mod tests {
                 .is_empty()
         );
     }
+    #[test]
+    fn historical_provenance_keeps_exact_run_identity_without_promotion_or_new_capture() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified run");
+        let previous_events = persistence::count_audit_events_for_test(
+            &fixture.path,
+            "NORMAL_DATA_COMPARISON_RUN_COMPLETED",
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("audit event count");
+        let receipt = normal_data_provenance::inspect_run(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("historical working-data receipt");
+        assert_eq!(
+            receipt.normal_data_comparison_recipe_version_id,
+            fixture.recipe_version_id
+        );
+        assert_eq!(receipt.source_a.sha256_hex, run.dataset_a_source_sha256_hex);
+        assert_eq!(receipt.source_b.sha256_hex, run.dataset_b_source_sha256_hex);
+        assert_eq!(receipt.result_sha256_hex, run.result.result_sha256_hex);
+        assert_eq!(receipt.verification_at_execution, "HASH_VERIFIED_RECORDED");
+        assert!(!receipt.current_source_bytes_checked);
+        assert!(!receipt.is_controlled_evidence);
+        assert!(!receipt.specialist_promotion_authorized);
+
+        // A changed linked file cannot rewrite this historical identity or imply
+        // it has been reverified in the present.
+        fs::write(&fixture.source_b, b"Key,Period,Amount\nINV-100,2026-09,10200\n")
+            .expect("change source bytes without changing size");
+        assert_eq!(
+            normal_data_provenance::inspect_run(
+                &fixture.path,
+                &run.normal_data_comparison_run_id,
+            )
+            .expect("still inspect frozen historical run"),
+            receipt
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &fixture.path,
+                "NORMAL_DATA_COMPARISON_RUN_COMPLETED",
+                &run.normal_data_comparison_run_id,
+            )
+            .expect("no extra audit events"),
+            previous_events
+        );
+        let connection = persistence::open_configured_connection(&fixture.path)
+            .expect("open receipt database");
+        let evidence_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| {
+                row.get(0)
+            })
+            .expect("receipt did not capture originals");
+        assert_eq!(evidence_count, 0);
+    }
+
+    #[test]
+    fn provenance_rejects_bad_ids_forged_source_hash_and_modified_result_values() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified run");
+        assert!(
+            normal_data_provenance::inspect_run(&fixture.path, "../not-a-uuid").is_err()
+        );
+        assert!(
+            normal_data_provenance::inspect_run(
+                &fixture.path,
+                &Uuid::new_v4().to_string()
+            ).is_err()
+        );
+        let connection = persistence::open_configured_connection(&fixture.path)
+            .expect("open receipt database");
+        let forged_hash_id = Uuid::new_v4().to_string();
+        connection.execute(
+            "INSERT INTO normal_data_comparison_runs (
+                normal_data_comparison_run_id, normal_data_comparison_recipe_version_id,
+                dataset_a_source_sha256, dataset_b_source_sha256, result_sha256,
+                result_json, started_at_ms, completed_at_ms
+             )
+             SELECT ?1, normal_data_comparison_recipe_version_id,
+                    zeroblob(32), dataset_b_source_sha256, result_sha256, result_json,
+                    started_at_ms, completed_at_ms
+             FROM normal_data_comparison_runs WHERE normal_data_comparison_run_id = ?2",
+            params![&forged_hash_id, &run.normal_data_comparison_run_id],
+        ).expect("insert forged synthetic immutable record");
+        assert!(
+            normal_data_provenance::inspect_run(&fixture.path, &forged_hash_id).is_err()
+        );
+
+        // A forged result with the original metadata digest must not produce a receipt.
+        let tampered_id = Uuid::new_v4().to_string();
+        let mut result = run.result.clone();
+        result.summary.only_b += 1;
+        let tampered_json = serde_json::to_string(&result).expect("encode forged run");
+        connection.execute(
+            "INSERT INTO normal_data_comparison_runs (
+                normal_data_comparison_run_id, normal_data_comparison_recipe_version_id,
+                dataset_a_source_sha256, dataset_b_source_sha256, result_sha256,
+                result_json, started_at_ms, completed_at_ms
+             )
+             SELECT ?1, normal_data_comparison_recipe_version_id,
+                    dataset_a_source_sha256, dataset_b_source_sha256, result_sha256,
+                    ?2, started_at_ms, completed_at_ms
+             FROM normal_data_comparison_runs WHERE normal_data_comparison_run_id = ?3",
+            params![&tampered_id, &tampered_json, &run.normal_data_comparison_run_id],
+        ).expect("insert forged synthetic output");
+        assert!(
+            normal_data_provenance::inspect_run(&fixture.path, &tampered_id).is_err()
+        );
+    }
+
 }
