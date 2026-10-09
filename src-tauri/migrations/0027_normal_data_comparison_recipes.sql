@@ -19,6 +19,8 @@ CREATE TABLE normal_data_comparison_recipe_versions (
     period_basis TEXT NOT NULL CHECK (
         period_basis IN ('FILING_PERIOD', 'INVOICE_MONTH', 'ACCOUNTING_PERIOD')
     ),
+    period_column_a TEXT NOT NULL CHECK (length(trim(period_column_a)) BETWEEN 1 AND 240),
+    period_column_b TEXT NOT NULL CHECK (length(trim(period_column_b)) BETWEEN 1 AND 240),
     amount_columns_json TEXT NOT NULL CHECK (
         length(amount_columns_json) BETWEEN 2 AND 8192 AND json_valid(amount_columns_json)
     ),
