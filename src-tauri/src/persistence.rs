@@ -19009,8 +19009,12 @@ mod tests {
             &workspace.due_diligence_workspace_id,
             DueDiligenceReportVersionDefinition {
                 title: "Acquisition due diligence report",
-                executive_summary: Some("Initial internal diligence summary.\nRevenue cut-off remains under review."),
-                scope_summary: Some("Financial due diligence focused on revenue quality and cut-off."),
+                executive_summary: Some(
+                    "Initial internal diligence summary.\nRevenue cut-off remains under review.",
+                ),
+                scope_summary: Some(
+                    "Financial due diligence focused on revenue quality and cut-off.",
+                ),
                 overall_conclusion: Some("Further work is required before confirming the issue."),
                 issue_ids: &report_issue_ids,
                 created_by: Some("dd-reviewer-2"),
@@ -19021,11 +19025,9 @@ mod tests {
         assert_eq!(report_v1.latest_issue_count, 1);
         assert_eq!(report_v1.latest_issue_snapshot_hash.len(), 32);
 
-        let report_v1_issues = list_due_diligence_report_version_issues(
-            &database.path,
-            &report_v1.latest_version_id,
-        )
-        .expect("report v1 issue snapshot");
+        let report_v1_issues =
+            list_due_diligence_report_version_issues(&database.path, &report_v1.latest_version_id)
+                .expect("report v1 issue snapshot");
         assert_eq!(report_v1_issues.len(), 1);
         assert_eq!(
             report_v1_issues[0].due_diligence_issue_event_id,
@@ -19052,9 +19054,15 @@ mod tests {
             &report_v1.due_diligence_report_id,
             DueDiligenceReportVersionDefinition {
                 title: "Acquisition due diligence report",
-                executive_summary: Some("Updated internal diligence summary.\nRevenue cut-off issue is confirmed."),
-                scope_summary: Some("Financial due diligence focused on revenue quality and cut-off."),
-                overall_conclusion: Some("A quality-of-earnings adjustment should be reflected in deal analysis."),
+                executive_summary: Some(
+                    "Updated internal diligence summary.\nRevenue cut-off issue is confirmed.",
+                ),
+                scope_summary: Some(
+                    "Financial due diligence focused on revenue quality and cut-off.",
+                ),
+                overall_conclusion: Some(
+                    "A quality-of-earnings adjustment should be reflected in deal analysis.",
+                ),
                 issue_ids: &report_issue_ids,
                 created_by: Some("dd-reviewer-2"),
             },
@@ -19073,21 +19081,17 @@ mod tests {
         assert_eq!(report_versions[0].version_number, 1);
         assert_eq!(report_versions[1].version_number, 2);
 
-        let report_v1_issues_after_update = list_due_diligence_report_version_issues(
-            &database.path,
-            &report_v1.latest_version_id,
-        )
-        .expect("report v1 should remain exact");
+        let report_v1_issues_after_update =
+            list_due_diligence_report_version_issues(&database.path, &report_v1.latest_version_id)
+                .expect("report v1 should remain exact");
         assert_eq!(
             report_v1_issues_after_update[0].due_diligence_issue_event_id,
             review_event.due_diligence_issue_event_id
         );
 
-        let report_v2_issues = list_due_diligence_report_version_issues(
-            &database.path,
-            &report_v2.latest_version_id,
-        )
-        .expect("report v2 issue snapshot");
+        let report_v2_issues =
+            list_due_diligence_report_version_issues(&database.path, &report_v2.latest_version_id)
+                .expect("report v2 issue snapshot");
         assert_eq!(
             report_v2_issues[0].due_diligence_issue_event_id,
             confirmed_event.due_diligence_issue_event_id
@@ -19114,7 +19118,9 @@ mod tests {
             },
         )
         .expect_err("report issue must belong to the same workspace");
-        assert!(cross_workspace_report.to_string().contains("same workspace"));
+        assert!(cross_workspace_report
+            .to_string()
+            .contains("same workspace"));
 
         let issue_evidence = create_due_diligence_issue_evidence_link(
             &database.path,
@@ -19213,8 +19219,8 @@ mod tests {
             .to_string()
             .contains("due diligence report versions are immutable"));
 
-        let report_issue_link_id = &report_v1_issues_after_update[0]
-            .due_diligence_report_issue_link_id;
+        let report_issue_link_id =
+            &report_v1_issues_after_update[0].due_diligence_report_issue_link_id;
         let report_issue_mutation = connection
             .execute(
                 "UPDATE due_diligence_report_issue_links
