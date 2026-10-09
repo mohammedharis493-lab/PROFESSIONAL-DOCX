@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 22;
+const LATEST_SCHEMA_VERSION: i64 = 23;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -138,6 +138,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 22,
         name: "due_diligence",
         sql: include_str!("../migrations/0022_due_diligence.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "due_diligence_issues",
+        sql: include_str!("../migrations/0023_due_diligence_issues.sql"),
     },
 ];
 
@@ -754,6 +759,79 @@ pub struct DueDiligenceRequestEvidenceRecord {
     pub due_diligence_request_evidence_link_id: String,
     pub due_diligence_request_id: String,
     pub due_diligence_request_event_id: Option<String>,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceIssueRecord {
+    pub due_diligence_issue_id: String,
+    pub due_diligence_workspace_id: String,
+    pub due_diligence_section_id: Option<String>,
+    pub section_name: Option<String>,
+    pub due_diligence_request_id: Option<String>,
+    pub request_title: Option<String>,
+    pub issue_type: String,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub severity: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_event_id: String,
+    pub latest_sequence_number: u64,
+    pub latest_status: String,
+    pub latest_internal_conclusion: Option<String>,
+    pub latest_deal_impact: Option<String>,
+    pub latest_recommendation: Option<String>,
+    pub latest_actor_id: Option<String>,
+    pub latest_occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceIssueDefinition<'a> {
+    pub due_diligence_workspace_id: &'a str,
+    pub due_diligence_section_id: Option<&'a str>,
+    pub due_diligence_request_id: Option<&'a str>,
+    pub issue_type: &'a str,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub severity: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceIssueEventRecord {
+    pub due_diligence_issue_event_id: String,
+    pub due_diligence_issue_id: String,
+    pub sequence_number: u64,
+    pub status: String,
+    pub internal_conclusion: Option<String>,
+    pub deal_impact: Option<String>,
+    pub recommendation: Option<String>,
+    pub actor_id: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceIssueEventDefinition<'a> {
+    pub due_diligence_issue_id: &'a str,
+    pub status: &'a str,
+    pub internal_conclusion: Option<&'a str>,
+    pub deal_impact: Option<&'a str>,
+    pub recommendation: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceIssueEvidenceRecord {
+    pub due_diligence_issue_evidence_link_id: String,
+    pub due_diligence_issue_id: String,
+    pub due_diligence_issue_event_id: Option<String>,
     pub controlled_evidence_version_id: String,
     pub document_id: String,
     pub source_content_version_id: String,
