@@ -4903,12 +4903,12 @@ export default function App() {
       { dueDiligenceReportId },
     );
     setDueDiligenceReportVersions(versions);
-    const requestedVersion =
-      preferredVersionId &&
-      versions.find(
-        (version) =>
-          version.dueDiligenceReportVersionId === preferredVersionId,
-      );
+    const requestedVersion = preferredVersionId
+      ? versions.find(
+          (version) =>
+            version.dueDiligenceReportVersionId === preferredVersionId,
+        )
+      : undefined;
     const version = requestedVersion || versions[versions.length - 1] || null;
     if (version) {
       await loadDueDiligenceReportVersion(version);
