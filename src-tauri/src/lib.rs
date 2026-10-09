@@ -1033,8 +1033,7 @@ struct DueDiligenceRequestEvidenceDto {
 impl From<persistence::DueDiligenceRequestEvidenceRecord> for DueDiligenceRequestEvidenceDto {
     fn from(value: persistence::DueDiligenceRequestEvidenceRecord) -> Self {
         Self {
-            due_diligence_request_evidence_link_id: value
-                .due_diligence_request_evidence_link_id,
+            due_diligence_request_evidence_link_id: value.due_diligence_request_evidence_link_id,
             due_diligence_request_id: value.due_diligence_request_id,
             due_diligence_request_event_id: value.due_diligence_request_event_id,
             controlled_evidence_version_id: value.controlled_evidence_version_id,
