@@ -9,6 +9,7 @@ mod normal_data_csv;
 mod normal_data_datasets;
 mod normal_data_recipes;
 mod normal_data_run;
+mod normal_data_provenance;
 pub mod normal_data_source_reader;
 mod persistence;
 mod preview;
@@ -2491,6 +2492,16 @@ fn run_normal_data_comparison(
         "normal-data-comparison-recipe-version",
     )?;
     normal_data_run::execute_comparison(database.path(), &normal_data_comparison_recipe_version_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn inspect_normal_data_run_provenance(
+    normal_data_comparison_run_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<normal_data_provenance::RunProvenanceReceipt, String> {
+    validate_uuid(&normal_data_comparison_run_id, "normal-data-comparison-run")?;
+    normal_data_provenance::inspect_run(database.path(), &normal_data_comparison_run_id)
         .map_err(|error| error.to_string())
 }
 
@@ -5169,6 +5180,7 @@ pub fn run() {
             list_normal_data_comparison_recipes,
             run_normal_data_comparison,
             list_normal_data_comparison_runs,
+            inspect_normal_data_run_provenance,
             declare_normal_data_column_semantic,
             list_normal_data_column_semantics,
             create_client,
