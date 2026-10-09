@@ -211,11 +211,11 @@ pub fn parse_normalized_csv(
             if raw.trim() != raw
                 || raw.is_empty()
                 || !raw
-                    .trim_start_matches(|ch| ch == '-' || ch == '+')
+                    .trim_start_matches(['-', '+'])
                     .chars()
                     .all(|ch| ch.is_ascii_digit())
                 || raw
-                    .trim_start_matches(|ch| ch == '-' || ch == '+')
+                    .trim_start_matches(['-', '+'])
                     .is_empty()
             {
                 return Err(format!(
