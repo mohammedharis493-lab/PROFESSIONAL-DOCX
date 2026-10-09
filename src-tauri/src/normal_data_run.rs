@@ -55,7 +55,8 @@ fn decode_hex_32(value: &str) -> Result<[u8; 32], PersistenceError> {
     }
     let mut result = [0u8; 32];
     for (i, byte) in result.iter_mut().enumerate() {
-        let hexpair = value.get(2 * i..2 * i + 2)
+        let hexpair = value
+            .get(2 * i..2 * i + 2)
             .ok_or_else(|| invalid("invalid result digest encoding"))?;
         *byte = u8::from_str_radix(hexpair, 16)
             .map_err(|_| invalid("result digest is not hexadecimal"))?;
@@ -68,23 +69,28 @@ fn get_recipe(
     recipe_version_id: &str,
 ) -> Result<RecipeSnapshot, PersistenceError> {
     let connection = persistence::open_configured_connection(database_path)?;
-    connection.query_row(
-        "SELECT dataset_a_version_id, dataset_b_version_id,
+    connection
+        .query_row(
+            "SELECT dataset_a_version_id, dataset_b_version_id,
                 period_basis, period_column_a, period_column_b,
                 amount_columns_json, tolerance_minor_units
          FROM normal_data_comparison_recipe_versions
          WHERE normal_data_comparison_recipe_version_id = ?1",
-        [recipe_version_id],
-        |row| Ok(RecipeSnapshot {
-            dataset_a_version_id: row.get(0)?,
-            dataset_b_version_id: row.get(1)?,
-            period_basis: row.get(2)?,
-            period_column_a: row.get(3)?,
-            period_column_b: row.get(4)?,
-            amount_columns_json: row.get(5)?,
-            tolerance_minor_units: row.get(6)?,
-        }),
-    ).optional()?.ok_or_else(|| invalid("comparison recipe version does not exist"))
+            [recipe_version_id],
+            |row| {
+                Ok(RecipeSnapshot {
+                    dataset_a_version_id: row.get(0)?,
+                    dataset_b_version_id: row.get(1)?,
+                    period_basis: row.get(2)?,
+                    period_column_a: row.get(3)?,
+                    period_column_b: row.get(4)?,
+                    amount_columns_json: row.get(5)?,
+                    tolerance_minor_units: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| invalid("comparison recipe version does not exist"))
 }
 
 fn confirmed_business_key(
@@ -101,7 +107,8 @@ fn confirmed_business_key(
            AND semantic_role = 'BUSINESS_KEY' AND data_type = 'TEXT'
          ORDER BY normal_data_column_semantic_id",
     )?;
-    let found: Vec<String> = stmt.query_map([dataset_version_id], |row| row.get(0))?
+    let found: Vec<String> = stmt
+        .query_map([dataset_version_id], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     if found.len() != 1 {
         return Err(invalid(
@@ -116,12 +123,22 @@ fn confirmed_business_key(
               AND semantic_role = ?3
               AND data_type = ?4
         )",
-        params![dataset_version_id, period_column, period_role,
-            if period_role == "INVOICE_DATE" { "DATE" } else { "PERIOD" }],
+        params![
+            dataset_version_id,
+            period_column,
+            period_role,
+            if period_role == "INVOICE_DATE" {
+                "DATE"
+            } else {
+                "PERIOD"
+            }
+        ],
         |row| row.get(0),
     )?;
     if !period_confirmed {
-        return Err(invalid("frozen selected period column has no matching declaration"));
+        return Err(invalid(
+            "frozen selected period column has no matching declaration",
+        ));
     }
     for column in numeric_columns {
         let confirmed: bool = connection.query_row(
@@ -153,11 +170,14 @@ fn rows_for_version(
     numeric_columns: &[String],
 ) -> Result<(Vec<normal_data_comparison::CompareRow>, [u8; 32]), PersistenceError> {
     let key = confirmed_business_key(
-        database_path, dataset_version_id, period_column, period_role, numeric_columns,
+        database_path,
+        dataset_version_id,
+        period_column,
+        period_role,
+        numeric_columns,
     )?;
-    let verified = normal_data_source_reader::read_verified_dataset(
-        database_path, dataset_version_id,
-    )?;
+    let verified =
+        normal_data_source_reader::read_verified_dataset(database_path, dataset_version_id)?;
     let rows = normal_data_csv::parse_normalized_csv(
         &verified.bytes,
         &CsvLayout {
@@ -166,10 +186,13 @@ fn rows_for_version(
             period_basis: basis,
             amount_columns: numeric_columns,
         },
-    ).map_err(|error| invalid(format!(
-        "verified dataset '{}' has invalid normalized CSV: {error}",
-        dataset_version_id,
-    )))?;
+    )
+    .map_err(|error| {
+        invalid(format!(
+            "verified dataset '{}' has invalid normalized CSV: {error}",
+            dataset_version_id,
+        ))
+    })?;
     Ok((rows, verified.sha256))
 }
 
@@ -193,12 +216,20 @@ pub fn execute_comparison(
         return Err(invalid("comparison needs 1 to 32 declared numeric columns"));
     }
     let (left, hash_a) = rows_for_version(
-        database_path, &recipe.dataset_a_version_id, &recipe.period_column_a,
-        basis, period_role, &amount_columns,
+        database_path,
+        &recipe.dataset_a_version_id,
+        &recipe.period_column_a,
+        basis,
+        period_role,
+        &amount_columns,
     )?;
     let (right, hash_b) = rows_for_version(
-        database_path, &recipe.dataset_b_version_id, &recipe.period_column_b,
-        basis, period_role, &amount_columns,
+        database_path,
+        &recipe.dataset_b_version_id,
+        &recipe.period_column_b,
+        basis,
+        period_role,
+        &amount_columns,
     )?;
     let result = normal_data_comparison::compare_rows(
         &ComparisonConfig {
@@ -206,12 +237,16 @@ pub fn execute_comparison(
             amount_columns,
             tolerance_minor_units: recipe.tolerance_minor_units,
         },
-        &left, &right,
-    ).map_err(invalid)?;
+        &left,
+        &right,
+    )
+    .map_err(invalid)?;
     let result_json = serde_json::to_string(&result)
         .map_err(|error| invalid(format!("comparison result cannot be encoded: {error}")))?;
     if result_json.len() > MAX_RESULT_JSON_BYTES {
-        return Err(invalid("comparison result exceeds the immutable 8 MiB run-record limit"));
+        return Err(invalid(
+            "comparison result exceeds the immutable 8 MiB run-record limit",
+        ));
     }
     let digest = decode_hex_32(&result.result_sha256_hex)?;
     let completed_at_ms = persistence::now_unix_ms()?;
@@ -225,8 +260,14 @@ pub fn execute_comparison(
             result_json, started_at_ms, completed_at_ms
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
-            &run_id, recipe_version_id, &hash_a[..], &hash_b[..],
-            &digest[..], &result_json, started_at_ms, completed_at_ms,
+            &run_id,
+            recipe_version_id,
+            &hash_a[..],
+            &hash_b[..],
+            &digest[..],
+            &result_json,
+            started_at_ms,
+            completed_at_ms,
         ],
     )?;
     transaction.execute(
@@ -237,10 +278,14 @@ pub fn execute_comparison(
          ) VALUES (?1, 'NORMAL_DATA_COMPARISON_RUN_COMPLETED', 'NORMAL_DATA_COMPARISON_RUN',
                    ?2, 'NORMAL_DATA_COMPARISON_RECIPE_VERSION', ?3, ?4, NULL, ?5)",
         params![
-            Uuid::new_v4().to_string(), &run_id, recipe_version_id, completed_at_ms,
+            Uuid::new_v4().to_string(),
+            &run_id,
+            recipe_version_id,
+            completed_at_ms,
             json!({"source_a_sha256":hex(&hash_a),"source_b_sha256":hex(&hash_b),
                 "result_sha256":result.result_sha256_hex,
-                "row_count_a":left.len(),"row_count_b":right.len()}).to_string(),
+                "row_count_a":left.len(),"row_count_b":right.len()})
+            .to_string(),
         ],
     )?;
     transaction.commit()?;
@@ -266,7 +311,9 @@ pub fn list_comparison_runs(
         "SELECT EXISTS(
             SELECT 1 FROM normal_data_comparison_recipe_versions
             WHERE normal_data_comparison_recipe_version_id = ?1
-         )", [recipe_version_id], |row| row.get(0),
+         )",
+        [recipe_version_id],
+        |row| row.get(0),
     )?;
     if !exists {
         return Err(invalid("comparison recipe version does not exist"));
@@ -279,25 +326,32 @@ pub fn list_comparison_runs(
          WHERE normal_data_comparison_recipe_version_id = ?1
          ORDER BY completed_at_ms DESC, normal_data_comparison_run_id",
     )?;
-    let rows = stmt.query_map([recipe_version_id], |row| Ok((
-        row.get::<_, String>(0)?,
-        row.get::<_, Vec<u8>>(1)?,
-        row.get::<_, Vec<u8>>(2)?,
-        row.get::<_, Vec<u8>>(3)?,
-        row.get::<_, String>(4)?,
-        row.get::<_, i64>(5)?,
-        row.get::<_, i64>(6)?,
-    )))?;
+    let rows = stmt.query_map([recipe_version_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, Vec<u8>>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    })?;
     let mut runs = Vec::new();
     for row in rows {
-        let (run_id, hash_a, hash_b, stored_digest, result_json, started_at_ms, completed_at_ms) = row?;
+        let (run_id, hash_a, hash_b, stored_digest, result_json, started_at_ms, completed_at_ms) =
+            row?;
         if hash_a.len() != 32 || hash_b.len() != 32 || stored_digest.len() != 32 {
-            return Err(invalid("stored immutable comparison run has invalid digest lengths"));
+            return Err(invalid(
+                "stored immutable comparison run has invalid digest lengths",
+            ));
         }
         let result: ComparisonResult = serde_json::from_str(&result_json)
             .map_err(|error| invalid(format!("invalid immutable comparison run JSON: {error}")))?;
         if decode_hex_32(&result.result_sha256_hex)?.as_slice() != stored_digest.as_slice() {
-            return Err(invalid("stored result digest does not match comparison metadata"));
+            return Err(invalid(
+                "stored result digest does not match comparison metadata",
+            ));
         }
         runs.push(ComparisonRunRecord {
             normal_data_comparison_run_id: run_id,
@@ -329,8 +383,11 @@ mod tests {
     #[cfg(windows)]
     fn encode_relative(path: &Path) -> (Vec<u8>, &'static str) {
         use std::os::windows::ffi::OsStrExt;
-        let bytes = path.as_os_str().encode_wide()
-            .flat_map(u16::to_le_bytes).collect();
+        let bytes = path
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         (bytes, "windows-utf16le")
     }
 
@@ -347,8 +404,8 @@ mod tests {
         }
 
         fn with_declared_keys(declare_keys: bool) -> Self {
-            let folder = std::env::temp_dir()
-                .join(format!("pdox-comparison-run-{}", Uuid::new_v4()));
+            let folder =
+                std::env::temp_dir().join(format!("pdox-comparison-run-{}", Uuid::new_v4()));
             fs::create_dir_all(&folder).expect("create fixture directory");
             let path = folder.join("state.sqlite");
             persistence::initialize_database(&path).expect("initialize v27 database");
@@ -356,19 +413,33 @@ mod tests {
             fs::create_dir_all(&directory).expect("create data directory");
             let canonical = fs::canonicalize(&directory).expect("canonical approved root");
             let root = persistence::register_storage_root(
-                &path, "test-comparison-root", &directory, &canonical,
-            ).expect("approve fixture root");
+                &path,
+                "test-comparison-root",
+                &directory,
+                &canonical,
+            )
+            .expect("approve fixture root");
             let workspace = normal_data::create_workspace(
                 &path,
                 normal_data::WorkspaceDefinition {
-                    name: "Working data", description: None, client_id: None,
-                    period_start: None, period_end: None,
+                    name: "Working data",
+                    description: None,
+                    client_id: None,
+                    period_start: None,
+                    period_end: None,
                 },
-            ).expect("create engagement-independent workspace");
+            )
+            .expect("create engagement-independent workspace");
             let mut versions = Vec::new();
             let sources = [
-                ("a.csv", b"Key,Period,Amount\nINV-100,2026-08,10000\n".as_slice()),
-                ("b.csv", b"Key,Period,Amount\nINV-100,2026-09,10250\n".as_slice()),
+                (
+                    "a.csv",
+                    b"Key,Period,Amount\nINV-100,2026-08,10000\n".as_slice(),
+                ),
+                (
+                    "b.csv",
+                    b"Key,Period,Amount\nINV-100,2026-09,10250\n".as_slice(),
+                ),
             ];
             for (source_index, (filename, bytes)) in sources.into_iter().enumerate() {
                 let source = directory.join(filename);
@@ -378,37 +449,60 @@ mod tests {
                 let content_version_id = Uuid::new_v4().to_string();
                 let (relative_bytes, encoding) = encode_relative(Path::new(filename));
                 let hash = Sha256::digest(bytes);
-                let connection = persistence::open_configured_connection(&path)
-                    .expect("open fixture database");
-                connection.execute(
-                    "INSERT INTO documents (
+                let connection =
+                    persistence::open_configured_connection(&path).expect("open fixture database");
+                connection
+                    .execute(
+                        "INSERT INTO documents (
                         document_id, storage_state, display_name, created_at_ms
                     ) VALUES (?1, 'LINKED', ?2, 1)",
-                    params![&document_id, filename],
-                ).expect("insert document");
-                connection.execute(
-                    "INSERT INTO file_instances (
+                        params![&document_id, filename],
+                    )
+                    .expect("insert document");
+                connection
+                    .execute(
+                        "INSERT INTO file_instances (
                         file_instance_id, document_id, storage_root_id,
                         relative_path_native, path_native_encoding, relative_path_display,
                         relative_path_search, size_bytes, first_seen_at_ms,
                         last_seen_at_ms, availability_state
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, 'AVAILABLE')",
-                    params![&file_instance_id, &document_id, &root.storage_root_id,
-                            relative_bytes, encoding, filename, filename, bytes.len() as i64],
-                ).expect("insert indexed file");
-                connection.execute(
-                    "INSERT INTO content_versions (
+                        params![
+                            &file_instance_id,
+                            &document_id,
+                            &root.storage_root_id,
+                            relative_bytes,
+                            encoding,
+                            filename,
+                            filename,
+                            bytes.len() as i64
+                        ],
+                    )
+                    .expect("insert indexed file");
+                connection
+                    .execute(
+                        "INSERT INTO content_versions (
                         content_version_id, document_id, file_instance_id,
                         observed_at_ms, size_bytes, sha256,
                         verification_state, source_stable_during_read
                     ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 'HASH_VERIFIED', 1)",
-                    params![&content_version_id, &document_id, &file_instance_id,
-                            bytes.len() as i64, &hash[..]],
-                ).expect("insert hash-verified observation");
+                        params![
+                            &content_version_id,
+                            &document_id,
+                            &file_instance_id,
+                            bytes.len() as i64,
+                            &hash[..]
+                        ],
+                    )
+                    .expect("insert hash-verified observation");
                 drop(connection);
                 let dataset = normal_data_datasets::create_dataset(
-                    &path, &workspace.normal_data_workspace_id, &file_instance_id, filename,
-                ).expect("bind versioned dataset source");
+                    &path,
+                    &workspace.normal_data_workspace_id,
+                    &file_instance_id,
+                    filename,
+                )
+                .expect("bind versioned dataset source");
                 for (name, role, data_type) in [
                     ("Key", "BUSINESS_KEY", "TEXT"),
                     ("Period", "FILING_PERIOD", "PERIOD"),
@@ -418,8 +512,13 @@ mod tests {
                         continue;
                     }
                     normal_data_datasets::declare_column(
-                        &path, &dataset.normal_data_dataset_version_id, name, role, data_type,
-                    ).expect("declare source semantic column");
+                        &path,
+                        &dataset.normal_data_dataset_version_id,
+                        name,
+                        role,
+                        data_type,
+                    )
+                    .expect("declare source semantic column");
                 }
                 versions.push(dataset.normal_data_dataset_version_id);
             }
@@ -436,7 +535,8 @@ mod tests {
                     amount_columns: &["Amount".to_string()],
                     tolerance_minor_units: 0,
                 },
-            ).expect("create immutable comparison recipe");
+            )
+            .expect("create immutable comparison recipe");
             Self {
                 folder,
                 path,
@@ -466,38 +566,48 @@ mod tests {
         );
         assert_eq!(run.dataset_a_source_sha256_hex.len(), 64);
         assert_eq!(run.dataset_b_source_sha256_hex.len(), 64);
-        let previous = list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
-            .expect("query history");
+        let previous =
+            list_comparison_runs(&fixture.path, &fixture.recipe_version_id).expect("query history");
         assert_eq!(previous.len(), 1);
-        assert_eq!(previous[0].normal_data_comparison_run_id,
-                   run.normal_data_comparison_run_id);
+        assert_eq!(
+            previous[0].normal_data_comparison_run_id,
+            run.normal_data_comparison_run_id
+        );
         assert_eq!(previous[0].result, run.result);
-        let connection = persistence::open_configured_connection(&fixture.path)
-            .expect("open database");
-        assert!(connection.execute(
-            "UPDATE normal_data_comparison_runs SET result_json = '{}'
+        let connection =
+            persistence::open_configured_connection(&fixture.path).expect("open database");
+        assert!(connection
+            .execute(
+                "UPDATE normal_data_comparison_runs SET result_json = '{}'
              WHERE normal_data_comparison_run_id = ?1",
-            [&run.normal_data_comparison_run_id],
-        ).is_err());
-        assert!(connection.execute(
-            "DELETE FROM normal_data_comparison_runs
+                [&run.normal_data_comparison_run_id],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "DELETE FROM normal_data_comparison_runs
              WHERE normal_data_comparison_run_id = ?1",
-            [&run.normal_data_comparison_run_id],
-        ).is_err());
+                [&run.normal_data_comparison_run_id],
+            )
+            .is_err());
         let events = persistence::count_audit_events_for_test(
-            &fixture.path, "NORMAL_DATA_COMPARISON_RUN_COMPLETED",
+            &fixture.path,
+            "NORMAL_DATA_COMPARISON_RUN_COMPLETED",
             &run.normal_data_comparison_run_id,
-        ).expect("audited execution");
+        )
+        .expect("audited execution");
         assert_eq!(events, 1);
     }
 
     #[test]
     fn linked_source_change_rejects_run_and_keeps_prior_history() {
         let fixture = Fixture::new();
-        execute_comparison(&fixture.path, &fixture.recipe_version_id)
-            .expect("first run");
-        fs::write(&fixture.source_b, b"Key,Period,Amount\nINV-100,2026-09,10200\n")
-            .expect("same-sized source tampering");
+        execute_comparison(&fixture.path, &fixture.recipe_version_id).expect("first run");
+        fs::write(
+            &fixture.source_b,
+            b"Key,Period,Amount\nINV-100,2026-09,10200\n",
+        )
+        .expect("same-sized source tampering");
         assert!(execute_comparison(&fixture.path, &fixture.recipe_version_id).is_err());
         let runs = list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
             .expect("immutable history remains");
@@ -508,16 +618,22 @@ mod tests {
     #[test]
     fn unconfirmed_business_key_cannot_generate_a_run() {
         let fixture = Fixture::with_declared_keys(false);
-        let connection = persistence::open_configured_connection(&fixture.path)
-            .expect("open database");
-        let all: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_column_semantics
+        let connection =
+            persistence::open_configured_connection(&fixture.path).expect("open database");
+        let all: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_column_semantics
              WHERE semantic_role = 'BUSINESS_KEY'",
-            [], |row| row.get(0),
-        ).expect("declared keys");
+                [],
+                |row| row.get(0),
+            )
+            .expect("declared keys");
         assert_eq!(all, 1);
         assert!(execute_comparison(&fixture.path, &fixture.recipe_version_id).is_err());
-        assert!(list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
-            .expect("no runs").is_empty());
+        assert!(
+            list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
+                .expect("no runs")
+                .is_empty()
+        );
     }
 }
