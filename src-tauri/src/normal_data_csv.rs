@@ -173,8 +173,8 @@ pub fn parse_normalized_csv(
         for (name, index) in &numeric {
             let raw = &record[*index];
             if raw.trim() != raw || raw.is_empty() ||
-                !raw.trim_start_matches(['-', '+']).chars().all(|ch| ch.is_ascii_digit()) ||
-                raw.trim_start_matches(['-', '+']).is_empty()
+                !raw.trim_start_matches(|ch| ch == '-' || ch == '+').chars().all(|ch| ch.is_ascii_digit()) ||
+                raw.trim_start_matches(|ch| ch == '-' || ch == '+').is_empty()
             {
                 return Err(format!(
                     "CSV row {} column '{}' must be signed integer minor units; no rounding or decimal-scale inference",
@@ -199,6 +199,9 @@ pub fn parse_normalized_csv(
             PeriodBasis::AccountingPeriod => row.accounting_period = Some(period),
         }
         normalized.push(row);
+    }
+    if normalized.is_empty() {
+        return Err("CSV must contain at least one data row".into());
     }
     Ok(normalized)
 }
