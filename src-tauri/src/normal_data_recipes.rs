@@ -259,6 +259,168 @@ mod tests {
     use super::*;
 
     #[test]
+    fn valid_recipe_is_workspace_scoped_audited_and_immutable() {
+        use crate::normal_data::{self, WorkspaceDefinition};
+        use crate::normal_data_datasets;
+        use rusqlite::params;
+        use std::fs;
+
+        let folder = std::env::temp_dir().join(format!("pdox-recipe-{}", Uuid::new_v4()));
+        fs::create_dir_all(&folder).expect("fixture parent");
+        let database_path = folder.join("metadata.sqlite");
+        persistence::initialize_database(&database_path).expect("initialize");
+        let workspace = normal_data::create_workspace(
+            &database_path,
+            WorkspaceDefinition {
+                name: "Normal data", description: None, client_id: None,
+                period_start: None, period_end: None,
+            },
+        ).expect("create engagement-independent workspace");
+        let other_workspace = normal_data::create_workspace(
+            &database_path,
+            WorkspaceDefinition {
+                name: "Unrelated normal data", description: None, client_id: None,
+                period_start: None, period_end: None,
+            },
+        ).expect("create unrelated workspace");
+        let root_id = Uuid::new_v4().to_string();
+        let connection = persistence::open_configured_connection(&database_path)
+            .expect("open database");
+        connection.execute(
+            "INSERT INTO storage_roots (
+                storage_root_id, kind, native_locator, native_locator_encoding,
+                display_locator, availability_state, approved_at_ms,
+                created_at_ms, updated_at_ms
+            ) VALUES (?1, 'LOCAL', X'00', 'test', 'fixture only',
+                      'AVAILABLE', 1, 1, 1)",
+            [&root_id],
+        ).expect("insert synthetic source identity");
+        let mut versions = Vec::new();
+        for index in 0..2 {
+            let document_id = Uuid::new_v4().to_string();
+            let file_instance_id = Uuid::new_v4().to_string();
+            let content_version_id = Uuid::new_v4().to_string();
+            let dataset_id = Uuid::new_v4().to_string();
+            let dataset_version_id = Uuid::new_v4().to_string();
+            connection.execute(
+                "INSERT INTO documents (
+                    document_id, storage_state, display_name, created_at_ms
+                ) VALUES (?1, 'LINKED', 'fixture.csv', 1)",
+                [&document_id],
+            ).expect("document");
+            connection.execute(
+                "INSERT INTO file_instances (
+                    file_instance_id, document_id, storage_root_id,
+                    relative_path_native, path_native_encoding,
+                    relative_path_display, relative_path_search,
+                    size_bytes, first_seen_at_ms, last_seen_at_ms, availability_state
+                 ) VALUES (?1, ?2, ?3, X'666978747572652E637376', 'test',
+                           'fixture.csv', 'fixture.csv', 5, 1, 1, 'AVAILABLE')",
+                params![&file_instance_id, &document_id, &root_id],
+            ).expect("file instance");
+            connection.execute(
+                "INSERT INTO content_versions (
+                    content_version_id, document_id, file_instance_id,
+                    observed_at_ms, size_bytes, sha256,
+                    verification_state, source_stable_during_read
+                ) VALUES (?1, ?2, ?3, 1, 5, ?4, 'HASH_VERIFIED', 1)",
+                params![&content_version_id, &document_id, &file_instance_id, vec![index + 1u8; 32]],
+            ).expect("observed content version");
+            connection.execute(
+                "INSERT INTO normal_data_datasets (
+                    normal_data_dataset_id, normal_data_workspace_id, name, created_at_ms
+                ) VALUES (?1, ?2, 'Source', 1)",
+                params![&dataset_id, &workspace.normal_data_workspace_id],
+            ).expect("dataset");
+            connection.execute(
+                "INSERT INTO normal_data_dataset_versions (
+                    normal_data_dataset_version_id, normal_data_dataset_id,
+                    version_number, document_id, file_instance_id, content_version_id,
+                    source_observed_at_ms, source_size_bytes,
+                    source_verification_state, source_stable_during_read,
+                    source_sha256, created_at_ms
+                ) VALUES (?1, ?2, 1, ?3, ?4, ?5, 1, 5, 'HASH_VERIFIED', 1, ?6, 1)",
+                params![&dataset_version_id, &dataset_id, &document_id,
+                        &file_instance_id, &content_version_id, vec![index + 1u8; 32]],
+            ).expect("versioned source");
+            normal_data_datasets::declare_column(
+                &database_path, &dataset_version_id, "Return Month", "FILING_PERIOD", "PERIOD",
+            ).expect("declare filing period");
+            normal_data_datasets::declare_column(
+                &database_path, &dataset_version_id, "Invoice Date", "INVOICE_DATE", "DATE",
+            ).expect("declare invoice date");
+            normal_data_datasets::declare_column(
+                &database_path, &dataset_version_id, "Taxable", "NUMERIC_VALUE", "DECIMAL",
+            ).expect("declare numeric value");
+            versions.push(dataset_version_id);
+        }
+
+        let recipe = create_recipe(
+            &database_path,
+            RecipeDefinition {
+                normal_data_workspace_id: &workspace.normal_data_workspace_id,
+                name: "Filing month comparison",
+                dataset_a_version_id: &versions[0],
+                dataset_b_version_id: &versions[1],
+                period_basis: "FILING_PERIOD",
+                amount_columns: &["Taxable".to_string()],
+                tolerance_minor_units: 5,
+            },
+        ).expect("create bound recipe");
+        assert_eq!(recipe.version_number, 1);
+        assert_eq!(recipe.period_basis, "FILING_PERIOD");
+        let listed = list_recipes(&database_path, &workspace.normal_data_workspace_id)
+            .expect("list recipes");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].normal_data_comparison_recipe_version_id,
+                   recipe.normal_data_comparison_recipe_version_id);
+        assert!(list_recipes(&database_path, &other_workspace.normal_data_workspace_id)
+            .expect("other workspace list").is_empty());
+
+        assert!(create_recipe(
+            &database_path,
+            RecipeDefinition {
+                normal_data_workspace_id: &other_workspace.normal_data_workspace_id,
+                name: "Cross workspace",
+                dataset_a_version_id: &versions[0],
+                dataset_b_version_id: &versions[1],
+                period_basis: "FILING_PERIOD",
+                amount_columns: &["Taxable".to_string()],
+                tolerance_minor_units: 0,
+            },
+        ).is_err());
+        assert!(create_recipe(
+            &database_path,
+            RecipeDefinition {
+                normal_data_workspace_id: &workspace.normal_data_workspace_id,
+                name: "Incorrect numeric field",
+                dataset_a_version_id: &versions[0],
+                dataset_b_version_id: &versions[1],
+                period_basis: "FILING_PERIOD",
+                amount_columns: &["Missing".to_string()],
+                tolerance_minor_units: 0,
+            },
+        ).is_err());
+        assert!(connection.execute(
+            "UPDATE normal_data_comparison_recipe_versions SET name = 'tampered'
+             WHERE normal_data_comparison_recipe_version_id = ?1",
+            [&recipe.normal_data_comparison_recipe_version_id],
+        ).is_err());
+        assert!(connection.execute(
+            "DELETE FROM normal_data_comparison_recipes
+             WHERE normal_data_comparison_recipe_id = ?1",
+            [&recipe.normal_data_comparison_recipe_id],
+        ).is_err());
+        let events = persistence::count_audit_events_for_test(
+            &database_path, "NORMAL_DATA_RECIPE_CREATED",
+            &recipe.normal_data_comparison_recipe_id,
+        ).expect("creation audit event");
+        assert_eq!(events, 1);
+        drop(connection);
+        fs::remove_dir_all(folder).expect("remove test fixture");
+    }
+
+    #[test]
     fn recipe_configuration_requires_confirmed_non_duplicate_fields() {
         let id_a = Uuid::new_v4().to_string();
         let id_b = Uuid::new_v4().to_string();
