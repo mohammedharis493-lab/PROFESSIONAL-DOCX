@@ -805,9 +805,7 @@ struct InternalAuditFindingFollowupDto {
     occurred_at_ms: i64,
 }
 
-impl From<persistence::InternalAuditFindingFollowupRecord>
-    for InternalAuditFindingFollowupDto
-{
+impl From<persistence::InternalAuditFindingFollowupRecord> for InternalAuditFindingFollowupDto {
     fn from(value: persistence::InternalAuditFindingFollowupRecord) -> Self {
         Self {
             internal_audit_finding_followup_id: value.internal_audit_finding_followup_id,
@@ -841,13 +839,10 @@ struct InternalAuditFindingEvidenceDto {
     linked_at_ms: i64,
 }
 
-impl From<persistence::InternalAuditFindingEvidenceRecord>
-    for InternalAuditFindingEvidenceDto
-{
+impl From<persistence::InternalAuditFindingEvidenceRecord> for InternalAuditFindingEvidenceDto {
     fn from(value: persistence::InternalAuditFindingEvidenceRecord) -> Self {
         Self {
-            internal_audit_finding_evidence_link_id: value
-                .internal_audit_finding_evidence_link_id,
+            internal_audit_finding_evidence_link_id: value.internal_audit_finding_evidence_link_id,
             internal_audit_finding_id: value.internal_audit_finding_id,
             internal_audit_finding_followup_id: value.internal_audit_finding_followup_id,
             controlled_evidence_version_id: value.controlled_evidence_version_id,
@@ -2569,12 +2564,9 @@ fn list_internal_audit_finding_followups(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<Vec<InternalAuditFindingFollowupDto>, String> {
     validate_uuid(&internal_audit_finding_id, "internal-audit-finding")?;
-    persistence::list_internal_audit_finding_followups(
-        database.path(),
-        &internal_audit_finding_id,
-    )
-    .map(|records| records.into_iter().map(Into::into).collect())
-    .map_err(|error| error.to_string())
+    persistence::list_internal_audit_finding_followups(database.path(), &internal_audit_finding_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2612,12 +2604,9 @@ fn list_internal_audit_finding_evidence(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<Vec<InternalAuditFindingEvidenceDto>, String> {
     validate_uuid(&internal_audit_finding_id, "internal-audit-finding")?;
-    persistence::list_internal_audit_finding_evidence(
-        database.path(),
-        &internal_audit_finding_id,
-    )
-    .map(|records| records.into_iter().map(Into::into).collect())
-    .map_err(|error| error.to_string())
+    persistence::list_internal_audit_finding_evidence(database.path(), &internal_audit_finding_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
