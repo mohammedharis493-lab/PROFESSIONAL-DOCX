@@ -321,7 +321,7 @@ mod tests {
         let source = row("INV-100", "2026-08", "2026-07", "2026-07", 10_000);
         let result = compare_rows(
             &config(PeriodBasis::FilingPeriod, 0),
-            &[source.clone()],
+            std::slice::from_ref(&source),
             &[source],
         )
         .expect("same filing period should match");
@@ -428,8 +428,8 @@ mod tests {
         let b = row("K", "2026-09", "2026-07", "2026-08", 10);
         let filing = compare_rows(
             &config(PeriodBasis::FilingPeriod, 0),
-            &[a.clone()],
-            &[b.clone()],
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
         )
         .expect("filing comparison");
         let invoice = compare_rows(&config(PeriodBasis::InvoiceMonth, 0), &[a], &[b])
