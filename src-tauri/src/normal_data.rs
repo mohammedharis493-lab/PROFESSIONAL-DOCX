@@ -39,9 +39,13 @@ fn optional_description(value: Option<&str>) -> Result<Option<String>, Persisten
         return Ok(None);
     };
     if value.chars().count() > 8192
-        || value.chars().any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+        || value
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
     {
-        return Err(invalid("normal data workspace description is invalid or too long"));
+        return Err(invalid(
+            "normal data workspace description is invalid or too long",
+        ));
     }
     Ok(Some(value.to_string()))
 }
@@ -85,29 +89,37 @@ pub fn create_workspace(
 ) -> Result<WorkspaceRecord, PersistenceError> {
     let name = input.name.split_whitespace().collect::<Vec<_>>().join(" ");
     if name.is_empty() || name.chars().count() > 240 || name.chars().any(char::is_control) {
-        return Err(invalid("normal data workspace name must have 1 to 240 printable characters"));
+        return Err(invalid(
+            "normal data workspace name must have 1 to 240 printable characters",
+        ));
     }
     let description = optional_description(input.description)?;
     let period_start = calendar_date(input.period_start, "period start")?;
     let period_end = calendar_date(input.period_end, "period end")?;
     if period_start.is_some() != period_end.is_some() {
-        return Err(invalid("period start and end must both be supplied or both omitted"));
+        return Err(invalid(
+            "period start and end must both be supplied or both omitted",
+        ));
     }
     if period_start > period_end {
         return Err(invalid("period start cannot be after period end"));
     }
-    let client_id = input.client_id.map(|value| {
-        Uuid::parse_str(value)
-            .map(|uuid| uuid.to_string())
-            .map_err(|_| invalid("client ID must be a UUID"))
-    }).transpose()?;
+    let client_id = input
+        .client_id
+        .map(|value| {
+            Uuid::parse_str(value)
+                .map(|uuid| uuid.to_string())
+                .map_err(|_| invalid("client ID must be a UUID"))
+        })
+        .transpose()?;
 
     let mut connection = persistence::open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(client_id) = client_id.as_deref() {
         let active: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM clients WHERE client_id = ?1 AND archived_at_ms IS NULL)",
-            [client_id], |row| row.get(0),
+            [client_id],
+            |row| row.get(0),
         )?;
         if !active {
             return Err(invalid("optional client does not exist or is archived"));
@@ -128,8 +140,14 @@ pub fn create_workspace(
             name, description, client_id, period_start, period_end, created_at_ms
          ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
-            &normal_data_workspace_version_id, &normal_data_workspace_id, &name,
-            &description, &client_id, &period_start, &period_end, now
+            &normal_data_workspace_version_id,
+            &normal_data_workspace_id,
+            &name,
+            &description,
+            &client_id,
+            &period_start,
+            &period_end,
+            now
         ],
     )?;
     transaction.execute(
@@ -139,9 +157,13 @@ pub fn create_workspace(
          ) VALUES (?1, 'NORMAL_DATA_WORKSPACE_CREATED', 'NORMAL_DATA_WORKSPACE',
                    ?2, ?3, ?4, ?5, NULL, ?6)",
         params![
-            Uuid::new_v4().to_string(), &normal_data_workspace_id,
-            client_id.as_ref().map(|_| "CLIENT"), &client_id, now,
-            json!({"workspace_version_id": normal_data_workspace_version_id, "version_number": 1}).to_string()
+            Uuid::new_v4().to_string(),
+            &normal_data_workspace_id,
+            client_id.as_ref().map(|_| "CLIENT"),
+            &client_id,
+            now,
+            json!({"workspace_version_id": normal_data_workspace_version_id, "version_number": 1})
+                .to_string()
         ],
     )?;
     transaction.commit()?;
@@ -173,7 +195,7 @@ pub fn list_workspaces(database_path: &Path) -> Result<Vec<WorkspaceRecord>, Per
                 FROM normal_data_workspace_versions v2
                 WHERE v2.normal_data_workspace_id = w.normal_data_workspace_id
           )
-         ORDER BY w.created_at_ms DESC, w.normal_data_workspace_id"
+         ORDER BY w.created_at_ms DESC, w.normal_data_workspace_id",
     )?;
     let rows = statement.query_map([], |row| {
         Ok(WorkspaceRecord {
@@ -219,7 +241,11 @@ mod tests {
     }
     fn new_definition<'a>(name: &'a str) -> WorkspaceDefinition<'a> {
         WorkspaceDefinition {
-            name, description: None, client_id: None, period_start: None, period_end: None,
+            name,
+            description: None,
+            client_id: None,
+            period_start: None,
+            period_end: None,
         }
     }
 
@@ -233,11 +259,20 @@ mod tests {
         assert!(workspace.client_id.is_none());
         let again = list_workspaces(&fixture.path).expect("list workspaces");
         assert_eq!(again.len(), 1);
-        assert_eq!(again[0].normal_data_workspace_id, workspace.normal_data_workspace_id);
-        assert_eq!(again[0].normal_data_workspace_version_id, workspace.normal_data_workspace_version_id);
+        assert_eq!(
+            again[0].normal_data_workspace_id,
+            workspace.normal_data_workspace_id
+        );
+        assert_eq!(
+            again[0].normal_data_workspace_version_id,
+            workspace.normal_data_workspace_version_id
+        );
         let count = persistence::count_audit_events_for_test(
-            &fixture.path, "NORMAL_DATA_WORKSPACE_CREATED", &workspace.normal_data_workspace_id
-        ).expect("audit event count");
+            &fixture.path,
+            "NORMAL_DATA_WORKSPACE_CREATED",
+            &workspace.normal_data_workspace_id,
+        )
+        .expect("audit event count");
         assert_eq!(count, 1);
     }
 
@@ -250,7 +285,10 @@ mod tests {
         input.period_start = Some("2026-08-01");
         input.period_end = Some("2026-08-31");
         let created = create_workspace(&fixture.path, input).expect("valid workspace");
-        assert_eq!(created.client_id.as_deref(), Some(client.client_id.as_str()));
+        assert_eq!(
+            created.client_id.as_deref(),
+            Some(client.client_id.as_str())
+        );
         assert_eq!(created.period_start.as_deref(), Some("2026-08-01"));
 
         let mut invalid = new_definition("Invalid period");
@@ -275,10 +313,10 @@ mod tests {
     #[test]
     fn persisted_identity_and_version_cannot_be_rewritten_or_deleted() {
         let fixture = Fixture::new();
-        let workspace = create_workspace(&fixture.path, new_definition("Immutable"))
-            .expect("create workspace");
-        let connection = persistence::open_configured_connection(&fixture.path)
-            .expect("open connection");
+        let workspace =
+            create_workspace(&fixture.path, new_definition("Immutable")).expect("create workspace");
+        let connection =
+            persistence::open_configured_connection(&fixture.path).expect("open connection");
         assert!(connection.execute(
             "UPDATE normal_data_workspace_versions SET name = 'Tampered' WHERE normal_data_workspace_version_id = ?1",
             [&workspace.normal_data_workspace_version_id]
@@ -287,9 +325,11 @@ mod tests {
             "DELETE FROM normal_data_workspace_versions WHERE normal_data_workspace_version_id = ?1",
             [&workspace.normal_data_workspace_version_id]
         ).is_err());
-        assert!(connection.execute(
-            "DELETE FROM normal_data_workspaces WHERE normal_data_workspace_id = ?1",
-            [&workspace.normal_data_workspace_id]
-        ).is_err());
+        assert!(connection
+            .execute(
+                "DELETE FROM normal_data_workspaces WHERE normal_data_workspace_id = ?1",
+                [&workspace.normal_data_workspace_id]
+            )
+            .is_err());
     }
 }
