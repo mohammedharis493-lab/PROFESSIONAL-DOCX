@@ -4783,6 +4783,9 @@ export default function App() {
     ]);
     setDueDiligenceIssueEvents(events);
     setDueDiligenceIssueEvidence(evidence);
+    setDueDiligenceIssueStatus(
+      events.length ? events[events.length - 1].status : "OPEN",
+    );
     setDueDiligenceIssueEvidenceEventId(
       events.length ? events[events.length - 1].dueDiligenceIssueEventId : "",
     );
@@ -5104,6 +5107,11 @@ export default function App() {
     setDueDiligenceIssueEvents([]);
     setDueDiligenceIssueEvidence([]);
     setDueDiligenceIssueEvidenceEventId("");
+    setDueDiligenceIssueEvidenceSearchResults([]);
+    setSelectedDueDiligenceIssueEvidenceDocument(null);
+    setDueDiligenceIssueEvidenceVersionHistory([]);
+    setSelectedDueDiligenceIssueControlledVersionId("");
+    setDueDiligenceIssueEvidenceDescription("");
     if (!dueDiligenceIssueId) return;
 
     setWorkspaceBusy(true);
