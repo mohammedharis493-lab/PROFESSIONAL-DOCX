@@ -2447,8 +2447,12 @@ fn create_normal_data_dataset(
     validate_uuid(&normal_data_workspace_id, "normal-data-workspace")?;
     validate_uuid(&file_instance_id, "indexed-file-instance")?;
     normal_data_datasets::create_dataset(
-        database.path(), &normal_data_workspace_id, &file_instance_id, &name,
-    ).map_err(|error| error.to_string())
+        database.path(),
+        &normal_data_workspace_id,
+        &file_instance_id,
+        &name,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2469,11 +2473,18 @@ fn declare_normal_data_column_semantic(
     data_type: String,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<normal_data_datasets::ColumnSemanticRecord, String> {
-    validate_uuid(&normal_data_dataset_version_id, "normal-data-dataset-version")?;
+    validate_uuid(
+        &normal_data_dataset_version_id,
+        "normal-data-dataset-version",
+    )?;
     normal_data_datasets::declare_column(
-        database.path(), &normal_data_dataset_version_id, &column_name,
-        &semantic_role, &data_type,
-    ).map_err(|error| error.to_string())
+        database.path(),
+        &normal_data_dataset_version_id,
+        &column_name,
+        &semantic_role,
+        &data_type,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2481,7 +2492,10 @@ fn list_normal_data_column_semantics(
     normal_data_dataset_version_id: String,
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<Vec<normal_data_datasets::ColumnSemanticRecord>, String> {
-    validate_uuid(&normal_data_dataset_version_id, "normal-data-dataset-version")?;
+    validate_uuid(
+        &normal_data_dataset_version_id,
+        "normal-data-dataset-version",
+    )?;
     normal_data_datasets::list_columns(database.path(), &normal_data_dataset_version_id)
         .map_err(|error| error.to_string())
 }
