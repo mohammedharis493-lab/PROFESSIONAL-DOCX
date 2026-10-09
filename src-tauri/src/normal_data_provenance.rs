@@ -64,7 +64,9 @@ fn invalid(message: &str) -> PersistenceError {
 
 fn encode_hash(bytes: &[u8]) -> Result<String, PersistenceError> {
     if bytes.len() != 32 {
-        return Err(invalid("stored Normal Data provenance has an invalid digest length"));
+        return Err(invalid(
+            "stored Normal Data provenance has an invalid digest length",
+        ));
     }
     let mut text = String::with_capacity(64);
     for byte in bytes {
@@ -82,8 +84,9 @@ pub fn inspect_run(
 ) -> Result<RunProvenanceReceipt, PersistenceError> {
     Uuid::parse_str(run_id).map_err(|_| invalid("comparison run ID must be a UUID"))?;
     let connection = persistence::open_configured_connection(database_path)?;
-    let frozen: FrozenRun = connection.query_row(
-        "SELECT r.normal_data_comparison_recipe_version_id,
+    let frozen: FrozenRun = connection
+        .query_row(
+            "SELECT r.normal_data_comparison_recipe_version_id,
                 cr.normal_data_workspace_id,
                 rv.dataset_a_version_id, rv.dataset_b_version_id,
                 av.content_version_id, bv.content_version_id,
@@ -123,35 +126,38 @@ pub fn inspect_run(
            AND bc.sha256 = bv.source_sha256
            AND ac.size_bytes = av.source_size_bytes
            AND bc.size_bytes = bv.source_size_bytes",
-        [run_id],
-        |row| {
-            Ok(FrozenRun {
-                recipe_version_id: row.get(0)?,
-                workspace_id: row.get(1)?,
-                dataset_a_id: row.get(2)?,
-                dataset_b_id: row.get(3)?,
-                content_a_id: row.get(4)?,
-                content_b_id: row.get(5)?,
-                frozen_a_hash: row.get(6)?,
-                frozen_b_hash: row.get(7)?,
-                run_a_hash: row.get(8)?,
-                run_b_hash: row.get(9)?,
-                result_hash: row.get(10)?,
-                result_json: row.get(11)?,
-                recipe_period_basis: row.get(12)?,
-                recipe_amount_columns_json: row.get(13)?,
-                recipe_tolerance: row.get(14)?,
-                started_at_ms: row.get(15)?,
-                completed_at_ms: row.get(16)?,
-            })
-        },
-    ).optional()?.ok_or_else(|| invalid("verified historical comparison run was not found"))?;
+            [run_id],
+            |row| {
+                Ok(FrozenRun {
+                    recipe_version_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    dataset_a_id: row.get(2)?,
+                    dataset_b_id: row.get(3)?,
+                    content_a_id: row.get(4)?,
+                    content_b_id: row.get(5)?,
+                    frozen_a_hash: row.get(6)?,
+                    frozen_b_hash: row.get(7)?,
+                    run_a_hash: row.get(8)?,
+                    run_b_hash: row.get(9)?,
+                    result_hash: row.get(10)?,
+                    result_json: row.get(11)?,
+                    recipe_period_basis: row.get(12)?,
+                    recipe_amount_columns_json: row.get(13)?,
+                    recipe_tolerance: row.get(14)?,
+                    started_at_ms: row.get(15)?,
+                    completed_at_ms: row.get(16)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| invalid("verified historical comparison run was not found"))?;
 
     let a_hash = encode_hash(&frozen.run_a_hash)?;
     let b_hash = encode_hash(&frozen.run_b_hash)?;
-    if frozen.run_a_hash != frozen.frozen_a_hash ||
-       frozen.run_b_hash != frozen.frozen_b_hash {
-        return Err(invalid("stored run source hashes do not match immutable dataset versions"));
+    if frozen.run_a_hash != frozen.frozen_a_hash || frozen.run_b_hash != frozen.frozen_b_hash {
+        return Err(invalid(
+            "stored run source hashes do not match immutable dataset versions",
+        ));
     }
     let result_hash = encode_hash(&frozen.result_hash)?;
     let result: ComparisonResult = serde_json::from_str(&frozen.result_json)
@@ -168,10 +174,13 @@ pub fn inspect_run(
     };
     let frozen_fields: Vec<String> = serde_json::from_str(&frozen.recipe_amount_columns_json)
         .map_err(|_| invalid("stored comparison recipe numeric columns are invalid"))?;
-    if frozen.recipe_period_basis != expected_basis ||
-        frozen.recipe_tolerance != result.tolerance_minor_units ||
-        frozen_fields != result.amount_columns {
-        return Err(invalid("stored run settings do not match frozen recipe version"));
+    if frozen.recipe_period_basis != expected_basis
+        || frozen.recipe_tolerance != result.tolerance_minor_units
+        || frozen_fields != result.amount_columns
+    {
+        return Err(invalid(
+            "stored run settings do not match frozen recipe version",
+        ));
     }
 
     Ok(RunProvenanceReceipt {
