@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 20;
+const LATEST_SCHEMA_VERSION: i64 = 21;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -128,6 +128,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20,
         name: "internal_audit",
         sql: include_str!("../migrations/0020_internal_audit.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "internal_audit_findings",
+        sql: include_str!("../migrations/0021_internal_audit_findings.sql"),
     },
 ];
 
@@ -541,6 +546,102 @@ pub struct InternalAuditTestDefinition<'a> {
 pub struct InternalAuditTestEvidenceRecord {
     pub internal_audit_test_evidence_link_id: String,
     pub internal_audit_test_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingRecord {
+    pub internal_audit_finding_id: String,
+    pub origin_engagement_id: String,
+    pub origin_engagement_name: String,
+    pub internal_audit_process_id: String,
+    pub process_name: String,
+    pub internal_audit_risk_id: Option<String>,
+    pub internal_audit_control_id: Option<String>,
+    pub internal_audit_test_id: Option<String>,
+    pub workpaper_id: Option<String>,
+    pub repeated_from_finding_id: Option<String>,
+    pub reference: Option<String>,
+    pub title: String,
+    pub condition_text: String,
+    pub criteria_text: Option<String>,
+    pub cause_text: Option<String>,
+    pub risk_effect_text: Option<String>,
+    pub recommendation_text: Option<String>,
+    pub risk_classification: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_followup_id: String,
+    pub latest_tracking_engagement_id: String,
+    pub latest_tracking_engagement_name: String,
+    pub latest_sequence_number: u64,
+    pub latest_status: String,
+    pub latest_management_response: Option<String>,
+    pub latest_action_owner: Option<String>,
+    pub latest_target_date: Option<String>,
+    pub latest_follow_up_text: Option<String>,
+    pub latest_verification_conclusion: Option<String>,
+    pub latest_actor_id: Option<String>,
+    pub latest_occurred_at_ms: i64,
+}
+
+pub struct InternalAuditFindingDefinition<'a> {
+    pub origin_engagement_id: &'a str,
+    pub internal_audit_process_id: &'a str,
+    pub internal_audit_risk_id: Option<&'a str>,
+    pub internal_audit_control_id: Option<&'a str>,
+    pub internal_audit_test_id: Option<&'a str>,
+    pub workpaper_id: Option<&'a str>,
+    pub repeated_from_finding_id: Option<&'a str>,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub condition_text: &'a str,
+    pub criteria_text: Option<&'a str>,
+    pub cause_text: Option<&'a str>,
+    pub risk_effect_text: Option<&'a str>,
+    pub recommendation_text: Option<&'a str>,
+    pub risk_classification: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingFollowupRecord {
+    pub internal_audit_finding_followup_id: String,
+    pub internal_audit_finding_id: String,
+    pub tracking_engagement_id: String,
+    pub tracking_engagement_name: String,
+    pub sequence_number: u64,
+    pub status: String,
+    pub management_response: Option<String>,
+    pub action_owner: Option<String>,
+    pub target_date: Option<String>,
+    pub follow_up_text: Option<String>,
+    pub verification_conclusion: Option<String>,
+    pub actor_id: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct InternalAuditFindingFollowupDefinition<'a> {
+    pub internal_audit_finding_id: &'a str,
+    pub tracking_engagement_id: &'a str,
+    pub status: &'a str,
+    pub management_response: Option<&'a str>,
+    pub action_owner: Option<&'a str>,
+    pub target_date: Option<&'a str>,
+    pub follow_up_text: Option<&'a str>,
+    pub verification_conclusion: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingEvidenceRecord {
+    pub internal_audit_finding_evidence_link_id: String,
+    pub internal_audit_finding_id: String,
+    pub internal_audit_finding_followup_id: Option<String>,
     pub controlled_evidence_version_id: String,
     pub document_id: String,
     pub source_content_version_id: String,
