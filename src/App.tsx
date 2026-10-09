@@ -4219,6 +4219,322 @@ export default function App() {
     }
   }
 
+  async function refreshInternalAuditFindingLists(focusFindingId?: string) {
+    if (!selectedEngagementId) return;
+
+    const clientId =
+      engagements.find((item) => item.engagementId === selectedEngagementId)?.clientId ??
+      selectedClientId;
+    const [engagementFindings, clientFindings] = await Promise.all([
+      invoke<InternalAuditFinding[]>("list_internal_audit_findings_for_engagement", {
+        engagementId: selectedEngagementId,
+      }),
+      clientId
+        ? invoke<InternalAuditFinding[]>("list_internal_audit_findings_for_client", {
+            clientId,
+          })
+        : Promise.resolve([] as InternalAuditFinding[]),
+    ]);
+    setInternalAuditFindings(engagementFindings);
+    setClientInternalAuditFindings(clientFindings);
+
+    const focus =
+      engagementFindings.find(
+        (item) => item.internalAuditFindingId === focusFindingId,
+      ) ??
+      engagementFindings.find(
+        (item) => item.internalAuditFindingId === selectedInternalAuditFindingId,
+      ) ??
+      engagementFindings[0] ??
+      null;
+    setSelectedInternalAuditFindingId(focus?.internalAuditFindingId ?? null);
+    if (focus) {
+      setFindingFollowupTrackingEngagementId(focus.latestTrackingEngagementId);
+      setFindingFollowupStatus(focus.latestStatus);
+      setFindingManagementResponse(focus.latestManagementResponse ?? "");
+      setFindingActionOwner(focus.latestActionOwner ?? "");
+      setFindingTargetDate(focus.latestTargetDate ?? "");
+      setFindingFollowupText(focus.latestFollowUpText ?? "");
+      setFindingVerificationConclusion(focus.latestVerificationConclusion ?? "");
+      setFindingEvidenceFollowupId(focus.latestFollowupId);
+    }
+  }
+
+  async function selectInternalAuditFinding(internalAuditFindingId: string | null) {
+    setSelectedInternalAuditFindingId(internalAuditFindingId);
+    setInternalAuditFindingFollowups([]);
+    setInternalAuditFindingEvidence([]);
+    setFindingEvidenceFollowupId("");
+    if (!internalAuditFindingId) return;
+
+    const finding =
+      internalAuditFindings.find(
+        (item) => item.internalAuditFindingId === internalAuditFindingId,
+      ) ??
+      clientInternalAuditFindings.find(
+        (item) => item.internalAuditFindingId === internalAuditFindingId,
+      ) ??
+      null;
+
+    setWorkspaceBusy(true);
+    try {
+      const [followups, evidence] = await Promise.all([
+        invoke<InternalAuditFindingFollowup[]>(
+          "list_internal_audit_finding_followups",
+          { internalAuditFindingId },
+        ),
+        invoke<InternalAuditFindingEvidence[]>(
+          "list_internal_audit_finding_evidence",
+          { internalAuditFindingId },
+        ),
+      ]);
+      setInternalAuditFindingFollowups(followups);
+      setInternalAuditFindingEvidence(evidence);
+      if (finding) {
+        setFindingFollowupTrackingEngagementId(finding.latestTrackingEngagementId);
+        setFindingFollowupStatus(finding.latestStatus);
+        setFindingManagementResponse(finding.latestManagementResponse ?? "");
+        setFindingActionOwner(finding.latestActionOwner ?? "");
+        setFindingTargetDate(finding.latestTargetDate ?? "");
+        setFindingFollowupText(finding.latestFollowUpText ?? "");
+        setFindingVerificationConclusion(finding.latestVerificationConclusion ?? "");
+        setFindingEvidenceFollowupId(finding.latestFollowupId);
+      } else if (followups.length) {
+        const latest = followups[followups.length - 1];
+        setFindingFollowupTrackingEngagementId(latest.trackingEngagementId);
+        setFindingFollowupStatus(latest.status);
+        setFindingManagementResponse(latest.managementResponse ?? "");
+        setFindingActionOwner(latest.actionOwner ?? "");
+        setFindingTargetDate(latest.targetDate ?? "");
+        setFindingFollowupText(latest.followUpText ?? "");
+        setFindingVerificationConclusion(latest.verificationConclusion ?? "");
+        setFindingEvidenceFollowupId(latest.internalAuditFindingFollowupId);
+      }
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditFinding(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !selectedEngagementId ||
+      !selectedInternalAuditProcessId ||
+      !newInternalAuditFindingTitle.trim() ||
+      !newInternalAuditFindingCondition.trim()
+    ) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditFinding>("create_internal_audit_finding", {
+        input: {
+          originEngagementId: selectedEngagementId,
+          internalAuditProcessId: selectedInternalAuditProcessId,
+          internalAuditRiskId: selectedInternalAuditRiskId,
+          internalAuditControlId: selectedInternalAuditControlId,
+          internalAuditTestId: selectedInternalAuditTestId,
+          workpaperId: newInternalAuditFindingWorkpaperId || null,
+          repeatedFromFindingId: newInternalAuditFindingRepeatedFromId || null,
+          reference: newInternalAuditFindingReference.trim() || null,
+          title: newInternalAuditFindingTitle.trim(),
+          conditionText: newInternalAuditFindingCondition.trim(),
+          criteriaText: newInternalAuditFindingCriteria.trim() || null,
+          causeText: newInternalAuditFindingCause.trim() || null,
+          riskEffectText: newInternalAuditFindingRiskEffect.trim() || null,
+          recommendationText: newInternalAuditFindingRecommendation.trim() || null,
+          riskClassification:
+            newInternalAuditFindingRiskClassification.trim() ||
+            selectedInternalAuditRisk?.riskClassification ||
+            null,
+          actorId: null,
+        },
+      });
+      await refreshInternalAuditFindingLists(created.internalAuditFindingId);
+      const [followups, evidence] = await Promise.all([
+        invoke<InternalAuditFindingFollowup[]>(
+          "list_internal_audit_finding_followups",
+          { internalAuditFindingId: created.internalAuditFindingId },
+        ),
+        invoke<InternalAuditFindingEvidence[]>(
+          "list_internal_audit_finding_evidence",
+          { internalAuditFindingId: created.internalAuditFindingId },
+        ),
+      ]);
+      setInternalAuditFindingFollowups(followups);
+      setInternalAuditFindingEvidence(evidence);
+      setNewInternalAuditFindingReference("");
+      setNewInternalAuditFindingTitle("");
+      setNewInternalAuditFindingCondition("");
+      setNewInternalAuditFindingCriteria("");
+      setNewInternalAuditFindingCause("");
+      setNewInternalAuditFindingRiskEffect("");
+      setNewInternalAuditFindingRecommendation("");
+      setNewInternalAuditFindingRiskClassification("");
+      setNewInternalAuditFindingWorkpaperId("");
+      setNewInternalAuditFindingRepeatedFromId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitInternalAuditFindingFollowup(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedInternalAuditFindingId || !findingFollowupTrackingEngagementId) return;
+
+    if (
+      ["MANAGEMENT_RESPONDED", "RISK_ACCEPTED"].includes(findingFollowupStatus) &&
+      !findingManagementResponse.trim()
+    ) {
+      setError("The selected finding status requires a management response.");
+      return;
+    }
+    if (
+      findingFollowupStatus === "ACTION_IN_PROGRESS" &&
+      (!findingManagementResponse.trim() ||
+        !findingActionOwner.trim() ||
+        !findingTargetDate)
+    ) {
+      setError(
+        "Action in progress requires management response, action owner, and target date.",
+      );
+      return;
+    }
+    if (
+      findingFollowupStatus === "IMPLEMENTED_PENDING_VERIFICATION" &&
+      !findingFollowupText.trim()
+    ) {
+      setError("Implemented pending verification requires follow-up details.");
+      return;
+    }
+    if (
+      findingFollowupStatus === "CLOSED" &&
+      !findingVerificationConclusion.trim()
+    ) {
+      setError("Closing a finding requires a verification conclusion.");
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      const created = await invoke<InternalAuditFindingFollowup>(
+        "create_internal_audit_finding_followup",
+        {
+          input: {
+            internalAuditFindingId: selectedInternalAuditFindingId,
+            trackingEngagementId: findingFollowupTrackingEngagementId,
+            status: findingFollowupStatus,
+            managementResponse: findingManagementResponse.trim() || null,
+            actionOwner: findingActionOwner.trim() || null,
+            targetDate: findingTargetDate || null,
+            followUpText: findingFollowupText.trim() || null,
+            verificationConclusion: findingVerificationConclusion.trim() || null,
+            actorId: null,
+          },
+        },
+      );
+      const [followups, evidence] = await Promise.all([
+        invoke<InternalAuditFindingFollowup[]>(
+          "list_internal_audit_finding_followups",
+          { internalAuditFindingId: selectedInternalAuditFindingId },
+        ),
+        invoke<InternalAuditFindingEvidence[]>(
+          "list_internal_audit_finding_evidence",
+          { internalAuditFindingId: selectedInternalAuditFindingId },
+        ),
+      ]);
+      setInternalAuditFindingFollowups(followups);
+      setInternalAuditFindingEvidence(evidence);
+      setFindingEvidenceFollowupId(created.internalAuditFindingFollowupId);
+      await refreshInternalAuditFindingLists(selectedInternalAuditFindingId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchFindingEvidence() {
+    const queryText = findingEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setFindingEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setFindingEvidenceSearchResults(results);
+      setSelectedFindingEvidenceDocument(null);
+      setFindingEvidenceVersionHistory([]);
+      setSelectedFindingControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setFindingEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectFindingEvidenceDocument(document: SearchResult) {
+    setFindingEvidenceSearchBusy(true);
+    setSelectedFindingEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setFindingEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedFindingControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setFindingEvidenceVersionHistory([]);
+      setSelectedFindingControlledVersionId("");
+    } finally {
+      setFindingEvidenceSearchBusy(false);
+    }
+  }
+
+  async function linkInternalAuditFindingEvidence() {
+    if (!selectedInternalAuditFindingId || !selectedFindingControlledVersionId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<InternalAuditFindingEvidence>(
+        "create_internal_audit_finding_evidence_link",
+        {
+          internalAuditFindingId: selectedInternalAuditFindingId,
+          internalAuditFindingFollowupId: findingEvidenceFollowupId || null,
+          controlledEvidenceVersionId: selectedFindingControlledVersionId,
+          description: findingEvidenceDescription.trim() || null,
+        },
+      );
+      const evidence = await invoke<InternalAuditFindingEvidence[]>(
+        "list_internal_audit_finding_evidence",
+        { internalAuditFindingId: selectedInternalAuditFindingId },
+      );
+      setInternalAuditFindingEvidence(evidence);
+      setFindingEvidenceDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
   async function searchComplianceEvidence() {
     const queryText = complianceEvidenceSearchQuery.trim();
     if (!queryText) return;
