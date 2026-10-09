@@ -5,8 +5,10 @@ mod launcher;
 mod ledger;
 mod normal_data;
 pub mod normal_data_comparison;
+mod normal_data_csv;
 mod normal_data_datasets;
 mod normal_data_recipes;
+mod normal_data_run;
 pub mod normal_data_source_reader;
 mod persistence;
 mod preview;
@@ -2475,6 +2477,35 @@ fn create_normal_data_comparison_recipe(
             amount_columns: &input.amount_columns,
             tolerance_minor_units: input.tolerance_minor_units,
         },
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn run_normal_data_comparison(
+    normal_data_comparison_recipe_version_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<normal_data_run::ComparisonRunRecord, String> {
+    validate_uuid(
+        &normal_data_comparison_recipe_version_id,
+        "normal-data-comparison-recipe-version",
+    )?;
+    normal_data_run::execute_comparison(database.path(), &normal_data_comparison_recipe_version_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_normal_data_comparison_runs(
+    normal_data_comparison_recipe_version_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<normal_data_run::ComparisonRunRecord>, String> {
+    validate_uuid(
+        &normal_data_comparison_recipe_version_id,
+        "normal-data-comparison-recipe-version",
+    )?;
+    normal_data_run::list_comparison_runs(
+        database.path(),
+        &normal_data_comparison_recipe_version_id,
     )
     .map_err(|error| error.to_string())
 }
@@ -5136,6 +5167,8 @@ pub fn run() {
             list_normal_data_datasets,
             create_normal_data_comparison_recipe,
             list_normal_data_comparison_recipes,
+            run_normal_data_comparison,
+            list_normal_data_comparison_runs,
             declare_normal_data_column_semantic,
             list_normal_data_column_semantics,
             create_client,
