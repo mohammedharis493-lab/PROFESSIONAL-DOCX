@@ -5,6 +5,31 @@
 
 ---
 
+## Current product direction — Normal Data Mode (2026-10-09)
+
+Professional DocX is a common professional document **and data** platform. Statutory audit, internal audit, due diligence, compliance and reconciliation are specialist workflows layered on shared search, document, storage and deterministic-data capabilities. **Normal Data Mode is a first-class capability**, not an audit engagement with controls hidden.
+
+A normal data workspace must function without a client, engagement, workpaper, reviewer, PBC request, audit sign-off or controlled-evidence capture. Linked files remain linked by default. Dataset selection uses existing stable application identities and Rust-resolved approved storage boundaries; arbitrary frontend filesystem paths are forbidden. Working-data outputs are not automatically controlled evidence.
+
+### Delivery sequence
+
+1. **Architecture (ADR):** Adopt `docs/architecture/ADR_NORMAL_DATA_MODE.md` as the initial design boundary; further implementation decisions require focused review.
+2. **Backend foundation:** Introduce a minimal engagement-independent workspace/dataset/source-version model, explicit semantic column roles, immutable deterministic recipe versions and append-only execution/run history. Persist sufficient exact-source provenance to prevent a changed linked file from rewriting historical meaning. Avoid premature rewriting of specialist tables.
+3. **First deterministic comparison:** Compare two explicitly selected datasets using confirmed keys, numeric fields and **period basis**. A filing-period comparison groups by filing period even when invoice date differs; preserve invoice month as distinct metadata. Classify A-only, B-only, both, changed amounts, duplicates and period movements deterministically.
+4. **Frontend:** Provide Normal Data entry, workspace creation, source selection, column-role confirmation, comparison configuration, differences, and exact historical run reopening.
+5. **Optional promotion:** Explicitly bind exact dataset/run versions to later engagement/workpaper workflows and capture controlled evidence only where required by policy.
+
+### Acceptance and security gates
+
+- No audit vocabulary or engagement is required for ordinary data analysis.
+- The selected business period determines comparison grouping; invoice date must not silently override a filing period.
+- Immutable recipe/run history binds exact inputs, version/fingerprint, parameters and result digest/counts.
+- Same inputs plus the same deterministic recipe produce the same result; AI may suggest or explain, but cannot silently change official calculations or exceptions.
+- No arbitrary paths cross the frontend/native boundary; existing canonical-path, managed-store, controlled-evidence, provenance and hash-verification invariants remain intact.
+- Each logical unit uses the protected `develop` PR workflow, with exact-head CI + Security, review-thread and base-change revalidation. No branch-protection bypasses.
+
+---
+
 ## 1. Product Principles
 
 These principles are architectural constraints and should not be weakened silently in later phases.
