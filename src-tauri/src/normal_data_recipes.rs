@@ -262,7 +262,7 @@ mod tests {
     fn recipe_configuration_requires_confirmed_non_duplicate_fields() {
         let id_a = Uuid::new_v4().to_string();
         let id_b = Uuid::new_v4().to_string();
-        let mut columns = vec!["Taxable value".to_string()];
+        let columns = vec!["Taxable value".to_string()];
         let mut definition = RecipeDefinition {
             normal_data_workspace_id: "workspace",
             name: " Filing-vs-Invoice ",
