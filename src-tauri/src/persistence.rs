@@ -18535,8 +18535,7 @@ mod tests {
         fs::create_dir_all(database.path.parent().expect("database parent"))
             .expect("create database parent");
         {
-            let mut connection =
-                open_configured_connection(&database.path).expect("open database");
+            let mut connection = open_configured_connection(&database.path).expect("open database");
             ensure_migration_history_table(&connection).expect("migration history");
             for migration in &MIGRATIONS[..25] {
                 let checksum = migration_checksum(migration.sql);
@@ -18550,8 +18549,7 @@ mod tests {
         }
 
         initialize_database(&database.path).expect("migrate v25 to v26");
-        let connection =
-            open_configured_connection(&database.path).expect("upgraded database");
+        let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
@@ -18563,7 +18561,8 @@ mod tests {
                     'normal_data_datasets', 'normal_data_dataset_versions',
                     'normal_data_column_semantics'
                  )",
-                [], |row| row.get(0),
+                [],
+                |row| row.get(0),
             )
             .expect("dataset tables");
         assert_eq!(tables, 3);
@@ -18578,7 +18577,8 @@ mod tests {
                     'trg_normal_data_column_semantics_no_update',
                     'trg_normal_data_column_semantics_no_delete'
                  )",
-                [], |row| row.get(0),
+                [],
+                |row| row.get(0),
             )
             .expect("immutability triggers");
         assert_eq!(triggers, 6);
