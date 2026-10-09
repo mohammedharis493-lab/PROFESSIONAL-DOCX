@@ -2463,8 +2463,7 @@ fn create_normal_data_workspace(
 fn list_normal_data_workspaces(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<Vec<normal_data::WorkspaceRecord>, String> {
-    normal_data::list_workspaces(database.path())
-        .map_err(|error| error.to_string())
+    normal_data::list_workspaces(database.path()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
