@@ -713,6 +713,183 @@ impl From<persistence::InternalAuditTestEvidenceRecord> for InternalAuditTestEvi
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditFindingDto {
+    internal_audit_finding_id: String,
+    origin_engagement_id: String,
+    origin_engagement_name: String,
+    internal_audit_process_id: String,
+    process_name: String,
+    internal_audit_risk_id: Option<String>,
+    internal_audit_control_id: Option<String>,
+    internal_audit_test_id: Option<String>,
+    workpaper_id: Option<String>,
+    repeated_from_finding_id: Option<String>,
+    reference: Option<String>,
+    title: String,
+    condition_text: String,
+    criteria_text: Option<String>,
+    cause_text: Option<String>,
+    risk_effect_text: Option<String>,
+    recommendation_text: Option<String>,
+    risk_classification: Option<String>,
+    created_at_ms: i64,
+    latest_followup_id: String,
+    latest_tracking_engagement_id: String,
+    latest_tracking_engagement_name: String,
+    latest_sequence_number: u64,
+    latest_status: String,
+    latest_management_response: Option<String>,
+    latest_action_owner: Option<String>,
+    latest_target_date: Option<String>,
+    latest_follow_up_text: Option<String>,
+    latest_verification_conclusion: Option<String>,
+    latest_actor_id: Option<String>,
+    latest_occurred_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditFindingRecord> for InternalAuditFindingDto {
+    fn from(value: persistence::InternalAuditFindingRecord) -> Self {
+        Self {
+            internal_audit_finding_id: value.internal_audit_finding_id,
+            origin_engagement_id: value.origin_engagement_id,
+            origin_engagement_name: value.origin_engagement_name,
+            internal_audit_process_id: value.internal_audit_process_id,
+            process_name: value.process_name,
+            internal_audit_risk_id: value.internal_audit_risk_id,
+            internal_audit_control_id: value.internal_audit_control_id,
+            internal_audit_test_id: value.internal_audit_test_id,
+            workpaper_id: value.workpaper_id,
+            repeated_from_finding_id: value.repeated_from_finding_id,
+            reference: value.reference,
+            title: value.title,
+            condition_text: value.condition_text,
+            criteria_text: value.criteria_text,
+            cause_text: value.cause_text,
+            risk_effect_text: value.risk_effect_text,
+            recommendation_text: value.recommendation_text,
+            risk_classification: value.risk_classification,
+            created_at_ms: value.created_at_ms,
+            latest_followup_id: value.latest_followup_id,
+            latest_tracking_engagement_id: value.latest_tracking_engagement_id,
+            latest_tracking_engagement_name: value.latest_tracking_engagement_name,
+            latest_sequence_number: value.latest_sequence_number,
+            latest_status: value.latest_status,
+            latest_management_response: value.latest_management_response,
+            latest_action_owner: value.latest_action_owner,
+            latest_target_date: value.latest_target_date,
+            latest_follow_up_text: value.latest_follow_up_text,
+            latest_verification_conclusion: value.latest_verification_conclusion,
+            latest_actor_id: value.latest_actor_id,
+            latest_occurred_at_ms: value.latest_occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditFindingFollowupDto {
+    internal_audit_finding_followup_id: String,
+    internal_audit_finding_id: String,
+    tracking_engagement_id: String,
+    tracking_engagement_name: String,
+    sequence_number: u64,
+    status: String,
+    management_response: Option<String>,
+    action_owner: Option<String>,
+    target_date: Option<String>,
+    follow_up_text: Option<String>,
+    verification_conclusion: Option<String>,
+    actor_id: Option<String>,
+    occurred_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditFindingFollowupRecord> for InternalAuditFindingFollowupDto {
+    fn from(value: persistence::InternalAuditFindingFollowupRecord) -> Self {
+        Self {
+            internal_audit_finding_followup_id: value.internal_audit_finding_followup_id,
+            internal_audit_finding_id: value.internal_audit_finding_id,
+            tracking_engagement_id: value.tracking_engagement_id,
+            tracking_engagement_name: value.tracking_engagement_name,
+            sequence_number: value.sequence_number,
+            status: value.status,
+            management_response: value.management_response,
+            action_owner: value.action_owner,
+            target_date: value.target_date,
+            follow_up_text: value.follow_up_text,
+            verification_conclusion: value.verification_conclusion,
+            actor_id: value.actor_id,
+            occurred_at_ms: value.occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditFindingEvidenceDto {
+    internal_audit_finding_evidence_link_id: String,
+    internal_audit_finding_id: String,
+    internal_audit_finding_followup_id: Option<String>,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    description: Option<String>,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::InternalAuditFindingEvidenceRecord> for InternalAuditFindingEvidenceDto {
+    fn from(value: persistence::InternalAuditFindingEvidenceRecord) -> Self {
+        Self {
+            internal_audit_finding_evidence_link_id: value.internal_audit_finding_evidence_link_id,
+            internal_audit_finding_id: value.internal_audit_finding_id,
+            internal_audit_finding_followup_id: value.internal_audit_finding_followup_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            description: value.description,
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditFindingInputDto {
+    origin_engagement_id: String,
+    internal_audit_process_id: String,
+    internal_audit_risk_id: Option<String>,
+    internal_audit_control_id: Option<String>,
+    internal_audit_test_id: Option<String>,
+    workpaper_id: Option<String>,
+    repeated_from_finding_id: Option<String>,
+    reference: Option<String>,
+    title: String,
+    condition_text: String,
+    criteria_text: Option<String>,
+    cause_text: Option<String>,
+    risk_effect_text: Option<String>,
+    recommendation_text: Option<String>,
+    risk_classification: Option<String>,
+    actor_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InternalAuditFindingFollowupInputDto {
+    internal_audit_finding_id: String,
+    tracking_engagement_id: String,
+    status: String,
+    management_response: Option<String>,
+    action_owner: Option<String>,
+    target_date: Option<String>,
+    follow_up_text: Option<String>,
+    verification_conclusion: Option<String>,
+    actor_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InternalAuditProcessInputDto {
@@ -2285,6 +2462,154 @@ fn list_internal_audit_test_evidence(
 }
 
 #[tauri::command]
+fn create_internal_audit_finding(
+    input: InternalAuditFindingInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditFindingDto, String> {
+    validate_uuid(&input.origin_engagement_id, "origin-engagement")?;
+    validate_uuid(&input.internal_audit_process_id, "internal-audit-process")?;
+    validate_optional_uuid(
+        input.internal_audit_risk_id.as_deref(),
+        "internal-audit-risk",
+    )?;
+    validate_optional_uuid(
+        input.internal_audit_control_id.as_deref(),
+        "internal-audit-control",
+    )?;
+    validate_optional_uuid(
+        input.internal_audit_test_id.as_deref(),
+        "internal-audit-test",
+    )?;
+    validate_optional_uuid(input.workpaper_id.as_deref(), "workpaper")?;
+    validate_optional_uuid(
+        input.repeated_from_finding_id.as_deref(),
+        "repeated-internal-audit-finding",
+    )?;
+
+    persistence::create_internal_audit_finding(
+        database.path(),
+        persistence::InternalAuditFindingDefinition {
+            origin_engagement_id: &input.origin_engagement_id,
+            internal_audit_process_id: &input.internal_audit_process_id,
+            internal_audit_risk_id: input.internal_audit_risk_id.as_deref(),
+            internal_audit_control_id: input.internal_audit_control_id.as_deref(),
+            internal_audit_test_id: input.internal_audit_test_id.as_deref(),
+            workpaper_id: input.workpaper_id.as_deref(),
+            repeated_from_finding_id: input.repeated_from_finding_id.as_deref(),
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            condition_text: &input.condition_text,
+            criteria_text: input.criteria_text.as_deref(),
+            cause_text: input.cause_text.as_deref(),
+            risk_effect_text: input.risk_effect_text.as_deref(),
+            recommendation_text: input.recommendation_text.as_deref(),
+            risk_classification: input.risk_classification.as_deref(),
+            actor_id: input.actor_id.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_findings_for_engagement(
+    engagement_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditFindingDto>, String> {
+    validate_uuid(&engagement_id, "engagement")?;
+    persistence::list_internal_audit_findings_for_engagement(database.path(), &engagement_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_findings_for_client(
+    client_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditFindingDto>, String> {
+    validate_uuid(&client_id, "client")?;
+    persistence::list_internal_audit_findings_for_client(database.path(), &client_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_finding_followup(
+    input: InternalAuditFindingFollowupInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditFindingFollowupDto, String> {
+    validate_uuid(&input.internal_audit_finding_id, "internal-audit-finding")?;
+    validate_uuid(&input.tracking_engagement_id, "tracking-engagement")?;
+    persistence::create_internal_audit_finding_followup(
+        database.path(),
+        persistence::InternalAuditFindingFollowupDefinition {
+            internal_audit_finding_id: &input.internal_audit_finding_id,
+            tracking_engagement_id: &input.tracking_engagement_id,
+            status: &input.status,
+            management_response: input.management_response.as_deref(),
+            action_owner: input.action_owner.as_deref(),
+            target_date: input.target_date.as_deref(),
+            follow_up_text: input.follow_up_text.as_deref(),
+            verification_conclusion: input.verification_conclusion.as_deref(),
+            actor_id: input.actor_id.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_finding_followups(
+    internal_audit_finding_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditFindingFollowupDto>, String> {
+    validate_uuid(&internal_audit_finding_id, "internal-audit-finding")?;
+    persistence::list_internal_audit_finding_followups(database.path(), &internal_audit_finding_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_internal_audit_finding_evidence_link(
+    internal_audit_finding_id: String,
+    internal_audit_finding_followup_id: Option<String>,
+    controlled_evidence_version_id: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<InternalAuditFindingEvidenceDto, String> {
+    validate_uuid(&internal_audit_finding_id, "internal-audit-finding")?;
+    validate_optional_uuid(
+        internal_audit_finding_followup_id.as_deref(),
+        "internal-audit-finding-followup",
+    )?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+
+    persistence::create_internal_audit_finding_evidence_link(
+        database.path(),
+        &internal_audit_finding_id,
+        internal_audit_finding_followup_id.as_deref(),
+        &controlled_evidence_version_id,
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_internal_audit_finding_evidence(
+    internal_audit_finding_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<InternalAuditFindingEvidenceDto>, String> {
+    validate_uuid(&internal_audit_finding_id, "internal-audit-finding")?;
+    persistence::list_internal_audit_finding_evidence(database.path(), &internal_audit_finding_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_ledger_from_controlled_evidence(
     input: LedgerImportInputDto,
     database: State<'_, persistence::DatabaseState>,
@@ -3851,6 +4176,13 @@ pub fn run() {
             list_internal_audit_tests,
             create_internal_audit_test_evidence_link,
             list_internal_audit_test_evidence,
+            create_internal_audit_finding,
+            list_internal_audit_findings_for_engagement,
+            list_internal_audit_findings_for_client,
+            create_internal_audit_finding_followup,
+            list_internal_audit_finding_followups,
+            create_internal_audit_finding_evidence_link,
+            list_internal_audit_finding_evidence,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,

@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 20;
+const LATEST_SCHEMA_VERSION: i64 = 21;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -128,6 +128,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20,
         name: "internal_audit",
         sql: include_str!("../migrations/0020_internal_audit.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "internal_audit_findings",
+        sql: include_str!("../migrations/0021_internal_audit_findings.sql"),
     },
 ];
 
@@ -541,6 +546,112 @@ pub struct InternalAuditTestDefinition<'a> {
 pub struct InternalAuditTestEvidenceRecord {
     pub internal_audit_test_evidence_link_id: String,
     pub internal_audit_test_id: String,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingRecord {
+    pub internal_audit_finding_id: String,
+    pub origin_engagement_id: String,
+    pub origin_engagement_name: String,
+    pub internal_audit_process_id: String,
+    pub process_name: String,
+    pub internal_audit_risk_id: Option<String>,
+    pub internal_audit_control_id: Option<String>,
+    pub internal_audit_test_id: Option<String>,
+    pub workpaper_id: Option<String>,
+    pub repeated_from_finding_id: Option<String>,
+    pub reference: Option<String>,
+    pub title: String,
+    pub condition_text: String,
+    pub criteria_text: Option<String>,
+    pub cause_text: Option<String>,
+    pub risk_effect_text: Option<String>,
+    pub recommendation_text: Option<String>,
+    pub risk_classification: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_followup_id: String,
+    pub latest_tracking_engagement_id: String,
+    pub latest_tracking_engagement_name: String,
+    pub latest_sequence_number: u64,
+    pub latest_status: String,
+    pub latest_management_response: Option<String>,
+    pub latest_action_owner: Option<String>,
+    pub latest_target_date: Option<String>,
+    pub latest_follow_up_text: Option<String>,
+    pub latest_verification_conclusion: Option<String>,
+    pub latest_actor_id: Option<String>,
+    pub latest_occurred_at_ms: i64,
+}
+
+pub struct InternalAuditFindingDefinition<'a> {
+    pub origin_engagement_id: &'a str,
+    pub internal_audit_process_id: &'a str,
+    pub internal_audit_risk_id: Option<&'a str>,
+    pub internal_audit_control_id: Option<&'a str>,
+    pub internal_audit_test_id: Option<&'a str>,
+    pub workpaper_id: Option<&'a str>,
+    pub repeated_from_finding_id: Option<&'a str>,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub condition_text: &'a str,
+    pub criteria_text: Option<&'a str>,
+    pub cause_text: Option<&'a str>,
+    pub risk_effect_text: Option<&'a str>,
+    pub recommendation_text: Option<&'a str>,
+    pub risk_classification: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingFollowupRecord {
+    pub internal_audit_finding_followup_id: String,
+    pub internal_audit_finding_id: String,
+    pub tracking_engagement_id: String,
+    pub tracking_engagement_name: String,
+    pub sequence_number: u64,
+    pub status: String,
+    pub management_response: Option<String>,
+    pub action_owner: Option<String>,
+    pub target_date: Option<String>,
+    pub follow_up_text: Option<String>,
+    pub verification_conclusion: Option<String>,
+    pub actor_id: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct InternalAuditFindingFollowupDefinition<'a> {
+    pub internal_audit_finding_id: &'a str,
+    pub tracking_engagement_id: &'a str,
+    pub status: &'a str,
+    pub management_response: Option<&'a str>,
+    pub action_owner: Option<&'a str>,
+    pub target_date: Option<&'a str>,
+    pub follow_up_text: Option<&'a str>,
+    pub verification_conclusion: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+struct InternalAuditFindingFollowupSnapshot {
+    origin_client_id: String,
+    sequence_number: i64,
+    management_response: Option<String>,
+    action_owner: Option<String>,
+    target_date: Option<String>,
+    follow_up_text: Option<String>,
+    verification_conclusion: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalAuditFindingEvidenceRecord {
+    pub internal_audit_finding_evidence_link_id: String,
+    pub internal_audit_finding_id: String,
+    pub internal_audit_finding_followup_id: Option<String>,
     pub controlled_evidence_version_id: String,
     pub document_id: String,
     pub source_content_version_id: String,
@@ -4511,6 +4622,25 @@ fn normalize_internal_audit_status(value: &str) -> Result<String, PersistenceErr
     Ok(status)
 }
 
+fn normalize_internal_audit_finding_status(value: &str) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if matches!(
+        status.as_str(),
+        "OPEN"
+            | "MANAGEMENT_RESPONDED"
+            | "ACTION_IN_PROGRESS"
+            | "IMPLEMENTED_PENDING_VERIFICATION"
+            | "CLOSED"
+            | "RISK_ACCEPTED"
+    ) {
+        Ok(status)
+    } else {
+        Err(PersistenceError::Configuration(
+            "internal audit finding status is not supported".to_string(),
+        ))
+    }
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
@@ -7474,6 +7604,1090 @@ pub fn list_internal_audit_test_evidence(
             source_sha256: row.get(5)?,
             description: row.get(6)?,
             linked_at_ms: row.get(7)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+fn internal_audit_finding_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<InternalAuditFindingRecord> {
+    let latest_sequence_number: i64 = row.get(22)?;
+    Ok(InternalAuditFindingRecord {
+        internal_audit_finding_id: row.get(0)?,
+        origin_engagement_id: row.get(1)?,
+        origin_engagement_name: row.get(2)?,
+        internal_audit_process_id: row.get(3)?,
+        process_name: row.get(4)?,
+        internal_audit_risk_id: row.get(5)?,
+        internal_audit_control_id: row.get(6)?,
+        internal_audit_test_id: row.get(7)?,
+        workpaper_id: row.get(8)?,
+        repeated_from_finding_id: row.get(9)?,
+        reference: row.get(10)?,
+        title: row.get(11)?,
+        condition_text: row.get(12)?,
+        criteria_text: row.get(13)?,
+        cause_text: row.get(14)?,
+        risk_effect_text: row.get(15)?,
+        recommendation_text: row.get(16)?,
+        risk_classification: row.get(17)?,
+        created_at_ms: row.get(18)?,
+        latest_followup_id: row.get(19)?,
+        latest_tracking_engagement_id: row.get(20)?,
+        latest_tracking_engagement_name: row.get(21)?,
+        latest_sequence_number: latest_sequence_number.max(0) as u64,
+        latest_status: row.get(23)?,
+        latest_management_response: row.get(24)?,
+        latest_action_owner: row.get(25)?,
+        latest_target_date: row.get(26)?,
+        latest_follow_up_text: row.get(27)?,
+        latest_verification_conclusion: row.get(28)?,
+        latest_actor_id: row.get(29)?,
+        latest_occurred_at_ms: row.get(30)?,
+    })
+}
+
+fn internal_audit_findings_select_sql(where_clause: &str) -> String {
+    format!(
+        "SELECT
+            f.internal_audit_finding_id,
+            f.origin_engagement_id,
+            origin_engagement.name,
+            f.internal_audit_process_id,
+            process.name,
+            f.internal_audit_risk_id,
+            f.internal_audit_control_id,
+            f.internal_audit_test_id,
+            f.workpaper_id,
+            f.repeated_from_finding_id,
+            f.reference,
+            f.title,
+            f.condition_text,
+            f.criteria_text,
+            f.cause_text,
+            f.risk_effect_text,
+            f.recommendation_text,
+            f.risk_classification,
+            f.created_at_ms,
+            latest_followup.internal_audit_finding_followup_id,
+            latest_followup.tracking_engagement_id,
+            tracking_engagement.name,
+            latest_followup.sequence_number,
+            latest_followup.status,
+            latest_followup.management_response,
+            latest_followup.action_owner,
+            latest_followup.target_date,
+            latest_followup.follow_up_text,
+            latest_followup.verification_conclusion,
+            latest_followup.actor_id,
+            latest_followup.occurred_at_ms
+         FROM internal_audit_findings f
+         JOIN engagements origin_engagement
+           ON origin_engagement.engagement_id = f.origin_engagement_id
+         JOIN internal_audit_processes process
+           ON process.internal_audit_process_id = f.internal_audit_process_id
+         JOIN internal_audit_finding_followups latest_followup
+           ON latest_followup.internal_audit_finding_followup_id = (
+                SELECT followup.internal_audit_finding_followup_id
+                FROM internal_audit_finding_followups followup
+                WHERE followup.internal_audit_finding_id = f.internal_audit_finding_id
+                ORDER BY followup.sequence_number DESC
+                LIMIT 1
+           )
+         JOIN engagements tracking_engagement
+           ON tracking_engagement.engagement_id = latest_followup.tracking_engagement_id
+         {where_clause}
+         ORDER BY
+            CASE latest_followup.status
+                WHEN 'OPEN' THEN 0
+                WHEN 'MANAGEMENT_RESPONDED' THEN 1
+                WHEN 'ACTION_IN_PROGRESS' THEN 2
+                WHEN 'IMPLEMENTED_PENDING_VERIFICATION' THEN 3
+                WHEN 'RISK_ACCEPTED' THEN 4
+                WHEN 'CLOSED' THEN 5
+                ELSE 6
+            END,
+            COALESCE(latest_followup.target_date, '9999-12-31'),
+            f.created_at_ms,
+            f.internal_audit_finding_id"
+    )
+}
+
+pub fn create_internal_audit_finding(
+    database_path: &Path,
+    definition: InternalAuditFindingDefinition<'_>,
+) -> Result<InternalAuditFindingRecord, PersistenceError> {
+    let InternalAuditFindingDefinition {
+        origin_engagement_id,
+        internal_audit_process_id,
+        internal_audit_risk_id,
+        internal_audit_control_id,
+        internal_audit_test_id,
+        workpaper_id,
+        repeated_from_finding_id,
+        reference,
+        title,
+        condition_text,
+        criteria_text,
+        cause_text,
+        risk_effect_text,
+        recommendation_text,
+        risk_classification,
+        actor_id,
+    } = definition;
+
+    let reference =
+        normalize_internal_audit_optional_text(reference, "internal audit finding reference", 100)?;
+    let title = normalize_domain_label(title, "internal audit finding title", 500)?;
+    let condition_text = normalize_internal_audit_optional_text(
+        Some(condition_text),
+        "internal audit finding condition",
+        20_000,
+    )?
+    .ok_or_else(|| {
+        PersistenceError::Configuration("internal audit finding condition is required".to_string())
+    })?;
+    let criteria_text = normalize_internal_audit_optional_text(
+        criteria_text,
+        "internal audit finding criteria",
+        20_000,
+    )?;
+    let cause_text =
+        normalize_internal_audit_optional_text(cause_text, "internal audit finding cause", 20_000)?;
+    let risk_effect_text = normalize_internal_audit_optional_text(
+        risk_effect_text,
+        "internal audit finding risk or effect",
+        20_000,
+    )?;
+    let recommendation_text = normalize_internal_audit_optional_text(
+        recommendation_text,
+        "internal audit finding recommendation",
+        20_000,
+    )?;
+    let risk_classification = normalize_internal_audit_optional_text(
+        risk_classification,
+        "internal audit finding risk classification",
+        120,
+    )?;
+    let actor_id =
+        normalize_internal_audit_optional_text(actor_id, "internal audit finding actor", 240)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let origin_engagement: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT client_id, name
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [origin_engagement_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((origin_client_id, origin_engagement_name)) = origin_engagement else {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {origin_engagement_id} does not exist"
+        )));
+    };
+
+    let process: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT engagement_id, name
+             FROM internal_audit_processes
+             WHERE internal_audit_process_id = ?1",
+            [internal_audit_process_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((process_engagement_id, process_name)) = process else {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit process {internal_audit_process_id} does not exist"
+        )));
+    };
+    if process_engagement_id != origin_engagement_id {
+        return Err(PersistenceError::Configuration(
+            "internal audit finding process must belong to the origin engagement".to_string(),
+        ));
+    }
+
+    let mut resolved_risk_id = internal_audit_risk_id.map(str::to_string);
+    let mut resolved_control_id = internal_audit_control_id.map(str::to_string);
+    let resolved_test_id = internal_audit_test_id.map(str::to_string);
+
+    if let Some(test_id) = internal_audit_test_id {
+        let chain: Option<(String, String, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    control.internal_audit_control_id,
+                    risk.internal_audit_risk_id,
+                    process.internal_audit_process_id,
+                    process.engagement_id
+                 FROM internal_audit_tests test
+                 JOIN internal_audit_controls control
+                   ON control.internal_audit_control_id = test.internal_audit_control_id
+                 JOIN internal_audit_risks risk
+                   ON risk.internal_audit_risk_id = control.internal_audit_risk_id
+                 JOIN internal_audit_objectives objective
+                   ON objective.internal_audit_objective_id = risk.internal_audit_objective_id
+                 JOIN internal_audit_processes process
+                   ON process.internal_audit_process_id = objective.internal_audit_process_id
+                 WHERE test.internal_audit_test_id = ?1",
+                [test_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((chain_control_id, chain_risk_id, chain_process_id, chain_engagement_id)) = chain
+        else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit test {test_id} does not exist"
+            )));
+        };
+        if chain_process_id != internal_audit_process_id
+            || chain_engagement_id != origin_engagement_id
+        {
+            return Err(PersistenceError::Configuration(
+                "internal audit finding test must belong to the selected process and engagement"
+                    .to_string(),
+            ));
+        }
+        if let Some(control_id) = internal_audit_control_id {
+            if control_id != chain_control_id {
+                return Err(PersistenceError::Configuration(
+                    "internal audit finding control does not match the selected test".to_string(),
+                ));
+            }
+        }
+        if let Some(risk_id) = internal_audit_risk_id {
+            if risk_id != chain_risk_id {
+                return Err(PersistenceError::Configuration(
+                    "internal audit finding risk does not match the selected test".to_string(),
+                ));
+            }
+        }
+        resolved_control_id = Some(chain_control_id);
+        resolved_risk_id = Some(chain_risk_id);
+    } else if let Some(control_id) = internal_audit_control_id {
+        let chain: Option<(String, String, String)> = transaction
+            .query_row(
+                "SELECT
+                    risk.internal_audit_risk_id,
+                    process.internal_audit_process_id,
+                    process.engagement_id
+                 FROM internal_audit_controls control
+                 JOIN internal_audit_risks risk
+                   ON risk.internal_audit_risk_id = control.internal_audit_risk_id
+                 JOIN internal_audit_objectives objective
+                   ON objective.internal_audit_objective_id = risk.internal_audit_objective_id
+                 JOIN internal_audit_processes process
+                   ON process.internal_audit_process_id = objective.internal_audit_process_id
+                 WHERE control.internal_audit_control_id = ?1",
+                [control_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((chain_risk_id, chain_process_id, chain_engagement_id)) = chain else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit control {control_id} does not exist"
+            )));
+        };
+        if chain_process_id != internal_audit_process_id
+            || chain_engagement_id != origin_engagement_id
+        {
+            return Err(PersistenceError::Configuration(
+                "internal audit finding control must belong to the selected process and engagement"
+                    .to_string(),
+            ));
+        }
+        if let Some(risk_id) = internal_audit_risk_id {
+            if risk_id != chain_risk_id {
+                return Err(PersistenceError::Configuration(
+                    "internal audit finding risk does not match the selected control".to_string(),
+                ));
+            }
+        }
+        resolved_risk_id = Some(chain_risk_id);
+    } else if let Some(risk_id) = internal_audit_risk_id {
+        let chain: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT process.internal_audit_process_id, process.engagement_id
+                 FROM internal_audit_risks risk
+                 JOIN internal_audit_objectives objective
+                   ON objective.internal_audit_objective_id = risk.internal_audit_objective_id
+                 JOIN internal_audit_processes process
+                   ON process.internal_audit_process_id = objective.internal_audit_process_id
+                 WHERE risk.internal_audit_risk_id = ?1",
+                [risk_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((chain_process_id, chain_engagement_id)) = chain else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit risk {risk_id} does not exist"
+            )));
+        };
+        if chain_process_id != internal_audit_process_id
+            || chain_engagement_id != origin_engagement_id
+        {
+            return Err(PersistenceError::Configuration(
+                "internal audit finding risk must belong to the selected process and engagement"
+                    .to_string(),
+            ));
+        }
+    }
+
+    if let Some(workpaper_id) = workpaper_id {
+        let workpaper_engagement_id: Option<String> = transaction
+            .query_row(
+                "SELECT engagement_id
+                 FROM workpapers
+                 WHERE workpaper_id = ?1",
+                [workpaper_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(workpaper_engagement_id) = workpaper_engagement_id else {
+            return Err(PersistenceError::Configuration(format!(
+                "workpaper {workpaper_id} does not exist"
+            )));
+        };
+        if workpaper_engagement_id != origin_engagement_id {
+            return Err(PersistenceError::Configuration(
+                "internal audit finding workpaper must belong to the origin engagement".to_string(),
+            ));
+        }
+    }
+
+    if let Some(repeated_from_finding_id) = repeated_from_finding_id {
+        let repeated_client_id: Option<String> = transaction
+            .query_row(
+                "SELECT engagement.client_id
+                 FROM internal_audit_findings finding
+                 JOIN engagements engagement
+                   ON engagement.engagement_id = finding.origin_engagement_id
+                 WHERE finding.internal_audit_finding_id = ?1",
+                [repeated_from_finding_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(repeated_client_id) = repeated_client_id else {
+            return Err(PersistenceError::Configuration(format!(
+                "repeated internal audit finding {repeated_from_finding_id} does not exist"
+            )));
+        };
+        if repeated_client_id != origin_client_id {
+            return Err(PersistenceError::Configuration(
+                "repeated internal audit findings must belong to the same client".to_string(),
+            ));
+        }
+    }
+
+    let internal_audit_finding_id = Uuid::new_v4().to_string();
+    let internal_audit_finding_followup_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO internal_audit_findings (
+            internal_audit_finding_id,
+            origin_engagement_id,
+            internal_audit_process_id,
+            internal_audit_risk_id,
+            internal_audit_control_id,
+            internal_audit_test_id,
+            workpaper_id,
+            repeated_from_finding_id,
+            reference,
+            title,
+            condition_text,
+            criteria_text,
+            cause_text,
+            risk_effect_text,
+            recommendation_text,
+            risk_classification,
+            created_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+         )",
+        params![
+            &internal_audit_finding_id,
+            origin_engagement_id,
+            internal_audit_process_id,
+            resolved_risk_id.as_deref(),
+            resolved_control_id.as_deref(),
+            resolved_test_id.as_deref(),
+            workpaper_id,
+            repeated_from_finding_id,
+            reference.as_deref(),
+            &title,
+            &condition_text,
+            criteria_text.as_deref(),
+            cause_text.as_deref(),
+            risk_effect_text.as_deref(),
+            recommendation_text.as_deref(),
+            risk_classification.as_deref(),
+            now
+        ],
+    )?;
+
+    transaction.execute(
+        "INSERT INTO internal_audit_finding_followups (
+            internal_audit_finding_followup_id,
+            internal_audit_finding_id,
+            tracking_engagement_id,
+            sequence_number,
+            status,
+            management_response,
+            action_owner,
+            target_date,
+            follow_up_text,
+            verification_conclusion,
+            actor_id,
+            occurred_at_ms
+         ) VALUES (?1, ?2, ?3, 1, 'OPEN', NULL, NULL, NULL, NULL, NULL, ?4, ?5)",
+        params![
+            &internal_audit_finding_followup_id,
+            &internal_audit_finding_id,
+            origin_engagement_id,
+            actor_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_FINDING_CREATED",
+            entity_type: "INTERNAL_AUDIT_FINDING",
+            entity_id: &internal_audit_finding_id,
+            related_entity_type: Some("INTERNAL_AUDIT_PROCESS"),
+            related_entity_id: Some(internal_audit_process_id),
+            occurred_at_ms: now,
+            details: json!({
+                "originEngagementId": origin_engagement_id,
+                "riskId": resolved_risk_id,
+                "controlId": resolved_control_id,
+                "testId": resolved_test_id,
+                "workpaperId": workpaper_id,
+                "repeatedFromFindingId": repeated_from_finding_id,
+                "reference": reference,
+                "title": title,
+                "initialStatus": "OPEN"
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+
+    Ok(InternalAuditFindingRecord {
+        internal_audit_finding_id,
+        origin_engagement_id: origin_engagement_id.to_string(),
+        origin_engagement_name: origin_engagement_name.clone(),
+        internal_audit_process_id: internal_audit_process_id.to_string(),
+        process_name,
+        internal_audit_risk_id: resolved_risk_id,
+        internal_audit_control_id: resolved_control_id,
+        internal_audit_test_id: resolved_test_id,
+        workpaper_id: workpaper_id.map(str::to_string),
+        repeated_from_finding_id: repeated_from_finding_id.map(str::to_string),
+        reference,
+        title,
+        condition_text,
+        criteria_text,
+        cause_text,
+        risk_effect_text,
+        recommendation_text,
+        risk_classification,
+        created_at_ms: now,
+        latest_followup_id: internal_audit_finding_followup_id,
+        latest_tracking_engagement_id: origin_engagement_id.to_string(),
+        latest_tracking_engagement_name: origin_engagement_name,
+        latest_sequence_number: 1,
+        latest_status: "OPEN".to_string(),
+        latest_management_response: None,
+        latest_action_owner: None,
+        latest_target_date: None,
+        latest_follow_up_text: None,
+        latest_verification_conclusion: None,
+        latest_actor_id: actor_id,
+        latest_occurred_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_findings_for_engagement(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Vec<InternalAuditFindingRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let sql = internal_audit_findings_select_sql(
+        "WHERE f.origin_engagement_id = ?1
+            OR EXISTS (
+                SELECT 1
+                FROM internal_audit_finding_followups engagement_followup
+                WHERE engagement_followup.internal_audit_finding_id =
+                      f.internal_audit_finding_id
+                  AND engagement_followup.tracking_engagement_id = ?1
+            )",
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map([engagement_id], internal_audit_finding_record_from_row)?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_internal_audit_findings_for_client(
+    database_path: &Path,
+    client_id: &str,
+) -> Result<Vec<InternalAuditFindingRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let client_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM clients
+            WHERE client_id = ?1
+              AND archived_at_ms IS NULL
+        )",
+        [client_id],
+        |row| row.get(0),
+    )?;
+    if !client_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "client {client_id} does not exist"
+        )));
+    }
+
+    let sql = internal_audit_findings_select_sql("WHERE origin_engagement.client_id = ?1");
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map([client_id], internal_audit_finding_record_from_row)?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_finding_followup(
+    database_path: &Path,
+    definition: InternalAuditFindingFollowupDefinition<'_>,
+) -> Result<InternalAuditFindingFollowupRecord, PersistenceError> {
+    let InternalAuditFindingFollowupDefinition {
+        internal_audit_finding_id,
+        tracking_engagement_id,
+        status,
+        management_response,
+        action_owner,
+        target_date,
+        follow_up_text,
+        verification_conclusion,
+        actor_id,
+    } = definition;
+
+    let status = normalize_internal_audit_finding_status(status)?;
+    let normalized_management_response = normalize_internal_audit_optional_text(
+        management_response,
+        "internal audit finding management response",
+        20_000,
+    )?;
+    let normalized_action_owner = normalize_internal_audit_optional_text(
+        action_owner,
+        "internal audit finding action owner",
+        500,
+    )?;
+    let normalized_target_date =
+        normalize_statutory_compliance_date(target_date, "internal audit finding target date")?;
+    let normalized_follow_up_text = normalize_internal_audit_optional_text(
+        follow_up_text,
+        "internal audit finding follow-up",
+        20_000,
+    )?;
+    let normalized_verification_conclusion = normalize_internal_audit_optional_text(
+        verification_conclusion,
+        "internal audit finding verification conclusion",
+        20_000,
+    )?;
+    let normalized_actor_id =
+        normalize_internal_audit_optional_text(actor_id, "internal audit finding actor", 240)?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let current: Option<InternalAuditFindingFollowupSnapshot> = transaction
+        .query_row(
+            "SELECT
+                origin_engagement.client_id,
+                latest.sequence_number,
+                latest.management_response,
+                latest.action_owner,
+                latest.target_date,
+                latest.follow_up_text,
+                latest.verification_conclusion
+             FROM internal_audit_findings finding
+             JOIN engagements origin_engagement
+               ON origin_engagement.engagement_id = finding.origin_engagement_id
+             JOIN internal_audit_finding_followups latest
+               ON latest.internal_audit_finding_followup_id = (
+                    SELECT followup.internal_audit_finding_followup_id
+                    FROM internal_audit_finding_followups followup
+                    WHERE followup.internal_audit_finding_id =
+                          finding.internal_audit_finding_id
+                    ORDER BY followup.sequence_number DESC
+                    LIMIT 1
+               )
+             WHERE finding.internal_audit_finding_id = ?1",
+            [internal_audit_finding_id],
+            |row| {
+                Ok(InternalAuditFindingFollowupSnapshot {
+                    origin_client_id: row.get(0)?,
+                    sequence_number: row.get(1)?,
+                    management_response: row.get(2)?,
+                    action_owner: row.get(3)?,
+                    target_date: row.get(4)?,
+                    follow_up_text: row.get(5)?,
+                    verification_conclusion: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(current) = current else {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit finding {internal_audit_finding_id} does not exist"
+        )));
+    };
+
+    let tracking_engagement: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT client_id, name
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [tracking_engagement_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((tracking_client_id, tracking_engagement_name)) = tracking_engagement else {
+        return Err(PersistenceError::Configuration(format!(
+            "tracking engagement {tracking_engagement_id} does not exist"
+        )));
+    };
+    if tracking_client_id != current.origin_client_id {
+        return Err(PersistenceError::Configuration(
+            "internal audit finding follow-up must remain within the same client".to_string(),
+        ));
+    }
+
+    let management_response = if management_response.is_some() {
+        normalized_management_response
+    } else {
+        current.management_response
+    };
+    let action_owner = if action_owner.is_some() {
+        normalized_action_owner
+    } else {
+        current.action_owner
+    };
+    let target_date = if target_date.is_some() {
+        normalized_target_date
+    } else {
+        current.target_date
+    };
+    let follow_up_text = if follow_up_text.is_some() {
+        normalized_follow_up_text
+    } else {
+        current.follow_up_text
+    };
+    let verification_conclusion = if verification_conclusion.is_some() {
+        normalized_verification_conclusion
+    } else {
+        current.verification_conclusion
+    };
+
+    match status.as_str() {
+        "MANAGEMENT_RESPONDED" | "RISK_ACCEPTED" if management_response.is_none() => {
+            return Err(PersistenceError::Configuration(
+                "management response is required for the selected finding status".to_string(),
+            ));
+        }
+        "ACTION_IN_PROGRESS"
+            if management_response.is_none() || action_owner.is_none() || target_date.is_none() =>
+        {
+            return Err(PersistenceError::Configuration(
+                "action in progress requires management response, action owner, and target date"
+                    .to_string(),
+            ));
+        }
+        "IMPLEMENTED_PENDING_VERIFICATION" if follow_up_text.is_none() => {
+            return Err(PersistenceError::Configuration(
+                "implemented pending verification requires follow-up details".to_string(),
+            ));
+        }
+        "CLOSED" if verification_conclusion.is_none() => {
+            return Err(PersistenceError::Configuration(
+                "closed findings require a verification conclusion".to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    let next_sequence_number = current.sequence_number.checked_add(1).ok_or_else(|| {
+        PersistenceError::Configuration(
+            "internal audit finding follow-up sequence exceeds supported range".to_string(),
+        )
+    })?;
+    let internal_audit_finding_followup_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+
+    transaction.execute(
+        "INSERT INTO internal_audit_finding_followups (
+            internal_audit_finding_followup_id,
+            internal_audit_finding_id,
+            tracking_engagement_id,
+            sequence_number,
+            status,
+            management_response,
+            action_owner,
+            target_date,
+            follow_up_text,
+            verification_conclusion,
+            actor_id,
+            occurred_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            &internal_audit_finding_followup_id,
+            internal_audit_finding_id,
+            tracking_engagement_id,
+            next_sequence_number,
+            &status,
+            management_response.as_deref(),
+            action_owner.as_deref(),
+            target_date.as_deref(),
+            follow_up_text.as_deref(),
+            verification_conclusion.as_deref(),
+            normalized_actor_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_FINDING_FOLLOWUP_CREATED",
+            entity_type: "INTERNAL_AUDIT_FINDING_FOLLOWUP",
+            entity_id: &internal_audit_finding_followup_id,
+            related_entity_type: Some("INTERNAL_AUDIT_FINDING"),
+            related_entity_id: Some(internal_audit_finding_id),
+            occurred_at_ms: now,
+            details: json!({
+                "trackingEngagementId": tracking_engagement_id,
+                "sequenceNumber": next_sequence_number,
+                "status": status,
+                "actionOwner": action_owner,
+                "targetDate": target_date
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(InternalAuditFindingFollowupRecord {
+        internal_audit_finding_followup_id,
+        internal_audit_finding_id: internal_audit_finding_id.to_string(),
+        tracking_engagement_id: tracking_engagement_id.to_string(),
+        tracking_engagement_name,
+        sequence_number: next_sequence_number.max(0) as u64,
+        status,
+        management_response,
+        action_owner,
+        target_date,
+        follow_up_text,
+        verification_conclusion,
+        actor_id: normalized_actor_id,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_finding_followups(
+    database_path: &Path,
+    internal_audit_finding_id: &str,
+) -> Result<Vec<InternalAuditFindingFollowupRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let finding_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_findings
+            WHERE internal_audit_finding_id = ?1
+        )",
+        [internal_audit_finding_id],
+        |row| row.get(0),
+    )?;
+    if !finding_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit finding {internal_audit_finding_id} does not exist"
+        )));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT
+            followup.internal_audit_finding_followup_id,
+            followup.internal_audit_finding_id,
+            followup.tracking_engagement_id,
+            engagement.name,
+            followup.sequence_number,
+            followup.status,
+            followup.management_response,
+            followup.action_owner,
+            followup.target_date,
+            followup.follow_up_text,
+            followup.verification_conclusion,
+            followup.actor_id,
+            followup.occurred_at_ms
+         FROM internal_audit_finding_followups followup
+         JOIN engagements engagement
+           ON engagement.engagement_id = followup.tracking_engagement_id
+         WHERE followup.internal_audit_finding_id = ?1
+         ORDER BY followup.sequence_number, followup.internal_audit_finding_followup_id",
+    )?;
+    let rows = statement.query_map([internal_audit_finding_id], |row| {
+        let sequence_number: i64 = row.get(4)?;
+        Ok(InternalAuditFindingFollowupRecord {
+            internal_audit_finding_followup_id: row.get(0)?,
+            internal_audit_finding_id: row.get(1)?,
+            tracking_engagement_id: row.get(2)?,
+            tracking_engagement_name: row.get(3)?,
+            sequence_number: sequence_number.max(0) as u64,
+            status: row.get(5)?,
+            management_response: row.get(6)?,
+            action_owner: row.get(7)?,
+            target_date: row.get(8)?,
+            follow_up_text: row.get(9)?,
+            verification_conclusion: row.get(10)?,
+            actor_id: row.get(11)?,
+            occurred_at_ms: row.get(12)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_internal_audit_finding_evidence_link(
+    database_path: &Path,
+    internal_audit_finding_id: &str,
+    internal_audit_finding_followup_id: Option<&str>,
+    controlled_evidence_version_id: &str,
+    description: Option<&str>,
+) -> Result<InternalAuditFindingEvidenceRecord, PersistenceError> {
+    let description = normalize_internal_audit_optional_text(
+        description,
+        "internal audit finding evidence description",
+        2_000,
+    )?;
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let finding_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_findings
+            WHERE internal_audit_finding_id = ?1
+        )",
+        [internal_audit_finding_id],
+        |row| row.get(0),
+    )?;
+    if !finding_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "internal audit finding {internal_audit_finding_id} does not exist"
+        )));
+    }
+
+    if let Some(followup_id) = internal_audit_finding_followup_id {
+        let followup_finding_id: Option<String> = transaction
+            .query_row(
+                "SELECT internal_audit_finding_id
+                 FROM internal_audit_finding_followups
+                 WHERE internal_audit_finding_followup_id = ?1",
+                [followup_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(followup_finding_id) = followup_finding_id else {
+            return Err(PersistenceError::Configuration(format!(
+                "internal audit finding follow-up {followup_id} does not exist"
+            )));
+        };
+        if followup_finding_id != internal_audit_finding_id {
+            return Err(PersistenceError::Configuration(
+                "internal audit finding evidence follow-up must belong to the finding".to_string(),
+            ));
+        }
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "internal audit finding evidence must be retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "internal audit finding evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let evidence_scope_key = internal_audit_finding_followup_id.unwrap_or("FINDING");
+    let duplicate: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM internal_audit_finding_evidence_links
+            WHERE internal_audit_finding_id = ?1
+              AND evidence_scope_key = ?2
+              AND controlled_evidence_version_id = ?3
+        )",
+        params![
+            internal_audit_finding_id,
+            evidence_scope_key,
+            controlled_evidence_version_id
+        ],
+        |row| row.get(0),
+    )?;
+    if duplicate {
+        return Err(PersistenceError::Configuration(
+            "this controlled evidence version is already linked in the selected finding context"
+                .to_string(),
+        ));
+    }
+
+    let internal_audit_finding_evidence_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO internal_audit_finding_evidence_links (
+            internal_audit_finding_evidence_link_id,
+            internal_audit_finding_id,
+            internal_audit_finding_followup_id,
+            evidence_scope_key,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &internal_audit_finding_evidence_link_id,
+            internal_audit_finding_id,
+            internal_audit_finding_followup_id,
+            evidence_scope_key,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            description.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "INTERNAL_AUDIT_FINDING_EVIDENCE_LINKED",
+            entity_type: "INTERNAL_AUDIT_FINDING_EVIDENCE",
+            entity_id: &internal_audit_finding_evidence_link_id,
+            related_entity_type: Some("INTERNAL_AUDIT_FINDING"),
+            related_entity_id: Some(internal_audit_finding_id),
+            occurred_at_ms: now,
+            details: json!({
+                "followupId": internal_audit_finding_followup_id,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256)
+            }),
+        },
+    )?;
+
+    transaction.commit()?;
+    Ok(InternalAuditFindingEvidenceRecord {
+        internal_audit_finding_evidence_link_id,
+        internal_audit_finding_id: internal_audit_finding_id.to_string(),
+        internal_audit_finding_followup_id: internal_audit_finding_followup_id.map(str::to_string),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        description,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_internal_audit_finding_evidence(
+    database_path: &Path,
+    internal_audit_finding_id: &str,
+) -> Result<Vec<InternalAuditFindingEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            internal_audit_finding_evidence_link_id,
+            internal_audit_finding_id,
+            internal_audit_finding_followup_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         FROM internal_audit_finding_evidence_links
+         WHERE internal_audit_finding_id = ?1
+         ORDER BY linked_at_ms, internal_audit_finding_evidence_link_id",
+    )?;
+    let rows = statement.query_map([internal_audit_finding_id], |row| {
+        Ok(InternalAuditFindingEvidenceRecord {
+            internal_audit_finding_evidence_link_id: row.get(0)?,
+            internal_audit_finding_id: row.get(1)?,
+            internal_audit_finding_followup_id: row.get(2)?,
+            controlled_evidence_version_id: row.get(3)?,
+            document_id: row.get(4)?,
+            source_content_version_id: row.get(5)?,
+            source_sha256: row.get(6)?,
+            description: row.get(7)?,
+            linked_at_ms: row.get(8)?,
         })
     })?;
     let mut result = Vec::new();
@@ -13893,7 +15107,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 20);
+        assert_eq!(migration_count, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -13959,14 +15173,17 @@ mod tests {
                        'internal_audit_risks',
                        'internal_audit_controls',
                        'internal_audit_tests',
-                       'internal_audit_test_evidence_links'
+                       'internal_audit_test_evidence_links',
+                       'internal_audit_findings',
+                       'internal_audit_finding_followups',
+                       'internal_audit_finding_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 60);
+        assert_eq!(table_count, 63);
     }
 
     #[test]
@@ -14002,7 +15219,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14050,7 +15267,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_exists: i64 = connection
             .query_row(
@@ -14099,7 +15316,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14144,14 +15361,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_exists: bool = connection
             .query_row(
@@ -14193,14 +15410,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14250,14 +15467,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14302,14 +15519,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14354,14 +15571,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14406,14 +15623,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14457,14 +15674,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14508,14 +15725,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14572,14 +15789,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -14631,14 +15848,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14682,14 +15899,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_exists: bool = connection
             .query_row(
@@ -14731,14 +15948,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14782,14 +15999,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_exists: bool = connection
             .query_row(
@@ -14832,14 +16049,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14885,14 +16102,14 @@ mod tests {
             assert_eq!(user_version, 18);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14937,14 +16154,14 @@ mod tests {
             assert_eq!(user_version, 19);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 20");
+        initialize_database(&database.path).expect("database should upgrade to version 21");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 20);
+        assert_eq!(user_version, 21);
 
         let table_count: i64 = connection
             .query_row(
@@ -14963,6 +16180,58 @@ mod tests {
             )
             .expect("internal audit tables should exist");
         assert_eq!(table_count, 6);
+    }
+
+    #[test]
+    fn twenty_first_migration_adds_internal_audit_finding_history() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..20] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 20);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 21");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 21);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'internal_audit_findings',
+                       'internal_audit_finding_followups',
+                       'internal_audit_finding_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("internal audit finding tables should exist");
+        assert_eq!(table_count, 3);
     }
 
     #[test]
@@ -15096,6 +16365,339 @@ mod tests {
         assert!(missing_evidence
             .to_string()
             .contains("controlled evidence version"));
+
+        let finding = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &engagement.engagement_id,
+                internal_audit_process_id: &process.internal_audit_process_id,
+                internal_audit_risk_id: Some(&risk.internal_audit_risk_id),
+                internal_audit_control_id: Some(&control.internal_audit_control_id),
+                internal_audit_test_id: Some(&test.internal_audit_test_id),
+                workpaper_id: None,
+                repeated_from_finding_id: None,
+                reference: Some("F-01"),
+                title: "Purchase orders approved after commitment",
+                condition_text:
+                    "Three sampled purchase orders were approved after supplier commitment.",
+                criteria_text: Some(
+                    "Delegation policy requires approval before a purchase commitment is made.",
+                ),
+                cause_text: Some("Workflow allows retrospective approval."),
+                risk_effect_text: Some(
+                    "Unauthorized or inappropriate commitments may be entered into.",
+                ),
+                recommendation_text: Some(
+                    "Prevent commitment until the configured approval workflow is complete.",
+                ),
+                risk_classification: Some("Operational"),
+                actor_id: Some("auditor-1"),
+            },
+        )
+        .expect("finding should create");
+        assert_eq!(finding.latest_status, "OPEN");
+        assert_eq!(finding.latest_sequence_number, 1);
+        assert_eq!(
+            finding.internal_audit_control_id.as_deref(),
+            Some(control.internal_audit_control_id.as_str())
+        );
+        assert_eq!(
+            finding.internal_audit_test_id.as_deref(),
+            Some(test.internal_audit_test_id.as_str())
+        );
+
+        let finding_records =
+            list_internal_audit_findings_for_engagement(&database.path, &engagement.engagement_id)
+                .expect("engagement findings should load");
+        assert_eq!(finding_records.len(), 1);
+        assert_eq!(
+            finding_records[0].internal_audit_finding_id,
+            finding.internal_audit_finding_id
+        );
+
+        let missing_finding_evidence = create_internal_audit_finding_evidence_link(
+            &database.path,
+            &finding.internal_audit_finding_id,
+            None,
+            &Uuid::new_v4().to_string(),
+            Some("Finding support"),
+        )
+        .expect_err("unknown finding controlled evidence must fail");
+        assert!(missing_finding_evidence
+            .to_string()
+            .contains("controlled evidence version"));
+
+        let incomplete_action = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &engagement.engagement_id,
+                status: "ACTION_IN_PROGRESS",
+                management_response: Some("Management agrees to remediate."),
+                action_owner: None,
+                target_date: Some("2027-03-31"),
+                follow_up_text: None,
+                verification_conclusion: None,
+                actor_id: Some("auditor-1"),
+            },
+        )
+        .expect_err("action without owner must fail");
+        assert!(incomplete_action.to_string().contains("action owner"));
+
+        let management_response = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &engagement.engagement_id,
+                status: "MANAGEMENT_RESPONDED",
+                management_response: Some(
+                    "Management agrees and will block retrospective approvals.",
+                ),
+                action_owner: None,
+                target_date: None,
+                follow_up_text: None,
+                verification_conclusion: None,
+                actor_id: Some("management-1"),
+            },
+        )
+        .expect("management response should append");
+        assert_eq!(management_response.sequence_number, 2);
+
+        let followup_engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Procure-to-Pay follow-up audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("same-client follow-up engagement");
+
+        let action = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &followup_engagement.engagement_id,
+                status: "ACTION_IN_PROGRESS",
+                management_response: None,
+                action_owner: Some("Procurement Head"),
+                target_date: Some("2027-06-30"),
+                follow_up_text: Some("Configuration change is in progress."),
+                verification_conclusion: None,
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("same-client later engagement should continue finding");
+        assert_eq!(action.sequence_number, 3);
+        assert_eq!(
+            action.management_response.as_deref(),
+            Some("Management agrees and will block retrospective approvals.")
+        );
+        assert_eq!(action.action_owner.as_deref(), Some("Procurement Head"));
+
+        let other_client =
+            create_client(&database.path, "Unrelated Internal Audit Client").expect("other client");
+        let other_engagement = create_engagement(
+            &database.path,
+            &other_client.client_id,
+            &service.service_type_id,
+            "Unrelated internal audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("other engagement");
+
+        let cross_client_followup = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &other_engagement.engagement_id,
+                status: "OPEN",
+                management_response: None,
+                action_owner: None,
+                target_date: None,
+                follow_up_text: Some("Should not be accepted."),
+                verification_conclusion: None,
+                actor_id: Some("auditor-other"),
+            },
+        )
+        .expect_err("cross-client follow-up must fail");
+        assert!(cross_client_followup.to_string().contains("same client"));
+
+        let closed = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &followup_engagement.engagement_id,
+                status: "CLOSED",
+                management_response: None,
+                action_owner: None,
+                target_date: None,
+                follow_up_text: Some(
+                    "Re-tested the workflow in the follow-up engagement with no exceptions.",
+                ),
+                verification_conclusion: Some(
+                    "Remediation is operating effectively and the finding is closed.",
+                ),
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("verified finding should close");
+        assert_eq!(closed.sequence_number, 4);
+        assert_eq!(closed.status, "CLOSED");
+
+        let followups = list_internal_audit_finding_followups(
+            &database.path,
+            &finding.internal_audit_finding_id,
+        )
+        .expect("follow-up history");
+        assert_eq!(followups.len(), 4);
+        assert_eq!(followups[0].status, "OPEN");
+        assert_eq!(followups[3].status, "CLOSED");
+
+        let origin_view =
+            list_internal_audit_findings_for_engagement(&database.path, &engagement.engagement_id)
+                .expect("origin engagement findings");
+        assert_eq!(origin_view.len(), 1);
+        assert_eq!(origin_view[0].latest_status, "CLOSED");
+        assert_eq!(
+            origin_view[0].latest_tracking_engagement_id,
+            followup_engagement.engagement_id
+        );
+
+        let followup_view = list_internal_audit_findings_for_engagement(
+            &database.path,
+            &followup_engagement.engagement_id,
+        )
+        .expect("follow-up engagement findings");
+        assert_eq!(followup_view.len(), 1);
+        assert_eq!(
+            followup_view[0].internal_audit_finding_id,
+            finding.internal_audit_finding_id
+        );
+
+        let client_findings =
+            list_internal_audit_findings_for_client(&database.path, &client.client_id)
+                .expect("client findings");
+        assert_eq!(client_findings.len(), 1);
+
+        let followup_process = create_internal_audit_process(
+            &database.path,
+            InternalAuditProcessDefinition {
+                engagement_id: &followup_engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: Some("Follow-up period process."),
+                display_order: 10,
+                status: "ACTIVE",
+            },
+        )
+        .expect("follow-up process");
+
+        let repeated_finding = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &followup_engagement.engagement_id,
+                internal_audit_process_id: &followup_process.internal_audit_process_id,
+                internal_audit_risk_id: None,
+                internal_audit_control_id: None,
+                internal_audit_test_id: None,
+                workpaper_id: None,
+                repeated_from_finding_id: Some(&finding.internal_audit_finding_id),
+                reference: Some("F-02"),
+                title: "Approval timing issue recurred",
+                condition_text: "A new instance of delayed approval was identified.",
+                criteria_text: None,
+                cause_text: None,
+                risk_effect_text: Some("The prior issue has recurred in the new period."),
+                recommendation_text: Some("Extend preventive validation to all purchase channels."),
+                risk_classification: Some("Operational"),
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("same-client repeated finding should create");
+        assert_eq!(
+            repeated_finding.repeated_from_finding_id.as_deref(),
+            Some(finding.internal_audit_finding_id.as_str())
+        );
+
+        let other_process = create_internal_audit_process(
+            &database.path,
+            InternalAuditProcessDefinition {
+                engagement_id: &other_engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: None,
+                display_order: 10,
+                status: "ACTIVE",
+            },
+        )
+        .expect("other process");
+
+        let cross_client_repeat = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &other_engagement.engagement_id,
+                internal_audit_process_id: &other_process.internal_audit_process_id,
+                internal_audit_risk_id: None,
+                internal_audit_control_id: None,
+                internal_audit_test_id: None,
+                workpaper_id: None,
+                repeated_from_finding_id: Some(&finding.internal_audit_finding_id),
+                reference: Some("F-X"),
+                title: "Invalid cross-client repeat",
+                condition_text: "This should be rejected.",
+                criteria_text: None,
+                cause_text: None,
+                risk_effect_text: None,
+                recommendation_text: None,
+                risk_classification: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("cross-client repeated finding must fail");
+        assert!(cross_client_repeat.to_string().contains("same client"));
+
+        let client_findings =
+            list_internal_audit_findings_for_client(&database.path, &client.client_id)
+                .expect("cross-engagement client findings");
+        assert_eq!(client_findings.len(), 2);
+        assert!(client_findings
+            .iter()
+            .any(|item| { item.internal_audit_finding_id == finding.internal_audit_finding_id }));
+        assert!(client_findings.iter().any(|item| {
+            item.internal_audit_finding_id == repeated_finding.internal_audit_finding_id
+        }));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let finding_mutation = connection
+            .execute(
+                "UPDATE internal_audit_findings
+                 SET title = 'Mutated'
+                 WHERE internal_audit_finding_id = ?1",
+                [&finding.internal_audit_finding_id],
+            )
+            .expect_err("findings must be immutable");
+        assert!(finding_mutation
+            .to_string()
+            .contains("internal audit findings are immutable"));
+
+        let followup_mutation = connection
+            .execute(
+                "UPDATE internal_audit_finding_followups
+                 SET status = 'OPEN'
+                 WHERE internal_audit_finding_followup_id = ?1",
+                [&closed.internal_audit_finding_followup_id],
+            )
+            .expect_err("finding follow-ups must be immutable");
+        assert!(followup_mutation
+            .to_string()
+            .contains("finding follow-ups are immutable"));
     }
 
     #[test]
