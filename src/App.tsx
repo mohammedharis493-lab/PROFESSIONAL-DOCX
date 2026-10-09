@@ -348,6 +348,54 @@ type DueDiligenceRequestEvidence = {
   linkedAtMs: number;
 };
 
+type DueDiligenceIssue = {
+  dueDiligenceIssueId: string;
+  dueDiligenceWorkspaceId: string;
+  dueDiligenceSectionId: string | null;
+  sectionName: string | null;
+  dueDiligenceRequestId: string | null;
+  requestTitle: string | null;
+  issueType: string;
+  reference: string | null;
+  title: string;
+  description: string | null;
+  category: string | null;
+  severity: string | null;
+  createdAtMs: number;
+  latestEventId: string;
+  latestSequenceNumber: number;
+  latestStatus: string;
+  latestInternalConclusion: string | null;
+  latestDealImpact: string | null;
+  latestRecommendation: string | null;
+  latestActorId: string | null;
+  latestOccurredAtMs: number;
+};
+
+type DueDiligenceIssueEvent = {
+  dueDiligenceIssueEventId: string;
+  dueDiligenceIssueId: string;
+  sequenceNumber: number;
+  status: string;
+  internalConclusion: string | null;
+  dealImpact: string | null;
+  recommendation: string | null;
+  actorId: string | null;
+  occurredAtMs: number;
+};
+
+type DueDiligenceIssueEvidence = {
+  dueDiligenceIssueEvidenceLinkId: string;
+  dueDiligenceIssueId: string;
+  dueDiligenceIssueEventId: string | null;
+  controlledEvidenceVersionId: string;
+  documentId: string;
+  sourceContentVersionId: string;
+  sourceSha256Hex: string;
+  description: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1571,6 +1619,40 @@ export default function App() {
   const [dueDiligenceEvidenceEventId, setDueDiligenceEvidenceEventId] = useState("");
   const [dueDiligenceEvidenceDescription, setDueDiligenceEvidenceDescription] = useState("");
   const [dueDiligenceEvidenceSearchBusy, setDueDiligenceEvidenceSearchBusy] = useState(false);
+  const [dueDiligenceIssues, setDueDiligenceIssues] = useState<DueDiligenceIssue[]>([]);
+  const [selectedDueDiligenceIssueId, setSelectedDueDiligenceIssueId] =
+    useState<string | null>(null);
+  const [dueDiligenceIssueEvents, setDueDiligenceIssueEvents] =
+    useState<DueDiligenceIssueEvent[]>([]);
+  const [dueDiligenceIssueEvidence, setDueDiligenceIssueEvidence] =
+    useState<DueDiligenceIssueEvidence[]>([]);
+  const [newDueDiligenceIssueType, setNewDueDiligenceIssueType] = useState("FINDING");
+  const [newDueDiligenceIssueSectionId, setNewDueDiligenceIssueSectionId] = useState("");
+  const [newDueDiligenceIssueRequestId, setNewDueDiligenceIssueRequestId] = useState("");
+  const [newDueDiligenceIssueReference, setNewDueDiligenceIssueReference] = useState("");
+  const [newDueDiligenceIssueTitle, setNewDueDiligenceIssueTitle] = useState("");
+  const [newDueDiligenceIssueDescription, setNewDueDiligenceIssueDescription] = useState("");
+  const [newDueDiligenceIssueCategory, setNewDueDiligenceIssueCategory] = useState("");
+  const [newDueDiligenceIssueSeverity, setNewDueDiligenceIssueSeverity] = useState("");
+  const [dueDiligenceIssueStatus, setDueDiligenceIssueStatus] = useState("OPEN");
+  const [dueDiligenceIssueConclusion, setDueDiligenceIssueConclusion] = useState("");
+  const [dueDiligenceIssueDealImpact, setDueDiligenceIssueDealImpact] = useState("");
+  const [dueDiligenceIssueRecommendation, setDueDiligenceIssueRecommendation] = useState("");
+  const [dueDiligenceIssueEvidenceSearchQuery, setDueDiligenceIssueEvidenceSearchQuery] =
+    useState("");
+  const [dueDiligenceIssueEvidenceSearchResults, setDueDiligenceIssueEvidenceSearchResults] =
+    useState<SearchResult[]>([]);
+  const [selectedDueDiligenceIssueEvidenceDocument, setSelectedDueDiligenceIssueEvidenceDocument] =
+    useState<SearchResult | null>(null);
+  const [dueDiligenceIssueEvidenceVersionHistory, setDueDiligenceIssueEvidenceVersionHistory] =
+    useState<DocumentVersionHistoryEntry[]>([]);
+  const [selectedDueDiligenceIssueControlledVersionId, setSelectedDueDiligenceIssueControlledVersionId] =
+    useState("");
+  const [dueDiligenceIssueEvidenceEventId, setDueDiligenceIssueEvidenceEventId] = useState("");
+  const [dueDiligenceIssueEvidenceDescription, setDueDiligenceIssueEvidenceDescription] =
+    useState("");
+  const [dueDiligenceIssueEvidenceSearchBusy, setDueDiligenceIssueEvidenceSearchBusy] =
+    useState(false);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -2030,6 +2112,15 @@ export default function App() {
     setDueDiligenceEvidenceVersionHistory([]);
     setSelectedDueDiligenceControlledVersionId("");
     setDueDiligenceEvidenceEventId("");
+    setDueDiligenceIssues([]);
+    setSelectedDueDiligenceIssueId(null);
+    setDueDiligenceIssueEvents([]);
+    setDueDiligenceIssueEvidence([]);
+    setDueDiligenceIssueEvidenceSearchResults([]);
+    setSelectedDueDiligenceIssueEvidenceDocument(null);
+    setDueDiligenceIssueEvidenceVersionHistory([]);
+    setSelectedDueDiligenceIssueControlledVersionId("");
+    setDueDiligenceIssueEvidenceEventId("");
     try {
       const [
         areas,
@@ -4681,20 +4772,45 @@ export default function App() {
     );
   }
 
+  async function loadDueDiligenceIssueDetails(dueDiligenceIssueId: string) {
+    const [events, evidence] = await Promise.all([
+      invoke<DueDiligenceIssueEvent[]>("list_due_diligence_issue_events", {
+        dueDiligenceIssueId,
+      }),
+      invoke<DueDiligenceIssueEvidence[]>("list_due_diligence_issue_evidence", {
+        dueDiligenceIssueId,
+      }),
+    ]);
+    setDueDiligenceIssueEvents(events);
+    setDueDiligenceIssueEvidence(evidence);
+    setDueDiligenceIssueStatus(
+      events.length ? events[events.length - 1].status : "OPEN",
+    );
+    setDueDiligenceIssueEvidenceEventId(
+      events.length ? events[events.length - 1].dueDiligenceIssueEventId : "",
+    );
+  }
+
   async function refreshDueDiligenceWorkspaceDetails(
     dueDiligenceWorkspaceId: string,
     preferredRequestId?: string | null,
+    preferredIssueId?: string | null,
   ) {
-    const [sections, requests] = await Promise.all([
+    const [sections, requests, issues] = await Promise.all([
       invoke<DueDiligenceSection[]>("list_due_diligence_sections", {
         dueDiligenceWorkspaceId,
       }),
       invoke<DueDiligenceRequest[]>("list_due_diligence_requests", {
         dueDiligenceWorkspaceId,
       }),
+      invoke<DueDiligenceIssue[]>("list_due_diligence_issues", {
+        dueDiligenceWorkspaceId,
+      }),
     ]);
     setDueDiligenceSections(sections);
     setDueDiligenceRequests(requests);
+    setDueDiligenceIssues(issues);
+
     const requestId =
       preferredRequestId && requests.some((item) => item.dueDiligenceRequestId === preferredRequestId)
         ? preferredRequestId
@@ -4706,6 +4822,20 @@ export default function App() {
       setDueDiligenceRequestEvents([]);
       setDueDiligenceRequestEvidence([]);
       setDueDiligenceEvidenceEventId("");
+    }
+
+    const requestedIssueId = preferredIssueId ?? selectedDueDiligenceIssueId;
+    const issueId =
+      requestedIssueId && issues.some((item) => item.dueDiligenceIssueId === requestedIssueId)
+        ? requestedIssueId
+        : issues[0]?.dueDiligenceIssueId ?? null;
+    setSelectedDueDiligenceIssueId(issueId);
+    if (issueId) {
+      await loadDueDiligenceIssueDetails(issueId);
+    } else {
+      setDueDiligenceIssueEvents([]);
+      setDueDiligenceIssueEvidence([]);
+      setDueDiligenceIssueEvidenceEventId("");
     }
   }
 
@@ -4928,6 +5058,177 @@ export default function App() {
       );
       setDueDiligenceRequestEvidence(evidence);
       setDueDiligenceEvidenceDescription("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssue(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!dueDiligenceWorkspace || !newDueDiligenceIssueTitle.trim()) return;
+
+    setWorkspaceBusy(true);
+    try {
+      const issue = await invoke<DueDiligenceIssue>("create_due_diligence_issue", {
+        input: {
+          dueDiligenceWorkspaceId: dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+          dueDiligenceSectionId: newDueDiligenceIssueSectionId || null,
+          dueDiligenceRequestId: newDueDiligenceIssueRequestId || null,
+          issueType: newDueDiligenceIssueType,
+          reference: newDueDiligenceIssueReference.trim() || null,
+          title: newDueDiligenceIssueTitle.trim(),
+          description: newDueDiligenceIssueDescription.trim() || null,
+          category: newDueDiligenceIssueCategory.trim() || null,
+          severity: newDueDiligenceIssueSeverity.trim() || null,
+          actorId: null,
+        },
+      });
+      setNewDueDiligenceIssueReference("");
+      setNewDueDiligenceIssueTitle("");
+      setNewDueDiligenceIssueDescription("");
+      setNewDueDiligenceIssueCategory("");
+      setNewDueDiligenceIssueSeverity("");
+      await refreshDueDiligenceWorkspaceDetails(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        selectedDueDiligenceRequestId,
+        issue.dueDiligenceIssueId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceIssue(dueDiligenceIssueId: string | null) {
+    setSelectedDueDiligenceIssueId(dueDiligenceIssueId);
+    setDueDiligenceIssueEvents([]);
+    setDueDiligenceIssueEvidence([]);
+    setDueDiligenceIssueEvidenceEventId("");
+    setDueDiligenceIssueEvidenceSearchResults([]);
+    setSelectedDueDiligenceIssueEvidenceDocument(null);
+    setDueDiligenceIssueEvidenceVersionHistory([]);
+    setSelectedDueDiligenceIssueControlledVersionId("");
+    setDueDiligenceIssueEvidenceDescription("");
+    if (!dueDiligenceIssueId) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await loadDueDiligenceIssueDetails(dueDiligenceIssueId);
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssueEvent(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedDueDiligenceIssueId || !dueDiligenceWorkspace) return;
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<DueDiligenceIssueEvent>("create_due_diligence_issue_event", {
+        input: {
+          dueDiligenceIssueId: selectedDueDiligenceIssueId,
+          status: dueDiligenceIssueStatus,
+          internalConclusion: dueDiligenceIssueConclusion.trim() || null,
+          dealImpact: dueDiligenceIssueDealImpact.trim() || null,
+          recommendation: dueDiligenceIssueRecommendation.trim() || null,
+          actorId: null,
+        },
+      });
+      setDueDiligenceIssueConclusion("");
+      setDueDiligenceIssueDealImpact("");
+      setDueDiligenceIssueRecommendation("");
+      await refreshDueDiligenceWorkspaceDetails(
+        dueDiligenceWorkspace.dueDiligenceWorkspaceId,
+        selectedDueDiligenceRequestId,
+        selectedDueDiligenceIssueId,
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function searchDueDiligenceIssueEvidence() {
+    const queryText = dueDiligenceIssueEvidenceSearchQuery.trim();
+    if (!queryText) return;
+
+    setDueDiligenceIssueEvidenceSearchBusy(true);
+    try {
+      const results = await invoke<SearchResult[]>("search_documents", {
+        query: queryText,
+        limit: 12,
+      });
+      setDueDiligenceIssueEvidenceSearchResults(results);
+      setSelectedDueDiligenceIssueEvidenceDocument(null);
+      setDueDiligenceIssueEvidenceVersionHistory([]);
+      setSelectedDueDiligenceIssueControlledVersionId("");
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+    } finally {
+      setDueDiligenceIssueEvidenceSearchBusy(false);
+    }
+  }
+
+  async function selectDueDiligenceIssueEvidenceDocument(document: SearchResult) {
+    setDueDiligenceIssueEvidenceSearchBusy(true);
+    setSelectedDueDiligenceIssueEvidenceDocument(document);
+    try {
+      const history = await invoke<DocumentVersionHistoryEntry[]>(
+        "list_document_version_history",
+        { documentId: document.documentId },
+      );
+      setDueDiligenceIssueEvidenceVersionHistory(history);
+      const controlled = history.find(
+        (entry) =>
+          entry.controlledEvidenceVersionId &&
+          entry.controlledVerificationState === "HASH_VERIFIED",
+      );
+      setSelectedDueDiligenceIssueControlledVersionId(
+        controlled?.controlledEvidenceVersionId ?? "",
+      );
+    } catch (workspaceError) {
+      setError(String(workspaceError));
+      setDueDiligenceIssueEvidenceVersionHistory([]);
+      setSelectedDueDiligenceIssueControlledVersionId("");
+    } finally {
+      setDueDiligenceIssueEvidenceSearchBusy(false);
+    }
+  }
+
+  async function submitDueDiligenceIssueEvidence(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (!selectedDueDiligenceIssueId || !selectedDueDiligenceIssueControlledVersionId) {
+      return;
+    }
+
+    setWorkspaceBusy(true);
+    try {
+      await invoke<DueDiligenceIssueEvidence>(
+        "create_due_diligence_issue_evidence_link",
+        {
+          dueDiligenceIssueId: selectedDueDiligenceIssueId,
+          dueDiligenceIssueEventId: dueDiligenceIssueEvidenceEventId || null,
+          controlledEvidenceVersionId: selectedDueDiligenceIssueControlledVersionId,
+          description: dueDiligenceIssueEvidenceDescription.trim() || null,
+        },
+      );
+      const evidence = await invoke<DueDiligenceIssueEvidence[]>(
+        "list_due_diligence_issue_evidence",
+        { dueDiligenceIssueId: selectedDueDiligenceIssueId },
+      );
+      setDueDiligenceIssueEvidence(evidence);
+      setDueDiligenceIssueEvidenceDescription("");
     } catch (workspaceError) {
       setError(String(workspaceError));
     } finally {
@@ -6555,6 +6856,16 @@ export default function App() {
     ) ?? null;
   const dueDiligenceControlledEvidenceVersions =
     dueDiligenceEvidenceVersionHistory.filter(
+      (entry) =>
+        entry.controlledEvidenceVersionId &&
+        entry.controlledVerificationState === "HASH_VERIFIED",
+    );
+  const selectedDueDiligenceIssue =
+    dueDiligenceIssues.find(
+      (item) => item.dueDiligenceIssueId === selectedDueDiligenceIssueId,
+    ) ?? null;
+  const dueDiligenceIssueControlledEvidenceVersions =
+    dueDiligenceIssueEvidenceVersionHistory.filter(
       (entry) =>
         entry.controlledEvidenceVersionId &&
         entry.controlledVerificationState === "HASH_VERIFIED",
@@ -10757,6 +11068,493 @@ export default function App() {
                     ) : (
                       <div className="empty-result">
                         Create the internal DD workspace before adding requests.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="workspace-grid workspace-grid-two">
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">DD FINDINGS · INTERNAL ONLY</span>
+                        <h3>Findings & deal issues</h3>
+                      </div>
+                    </div>
+
+                    {dueDiligenceWorkspace ? (
+                      <>
+                        <p className="evidence-integrity-note">
+                          These records are internal application work product. No external DD
+                          access is enabled by this workflow.
+                        </p>
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitDueDiligenceIssue}
+                        >
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Issue type</span>
+                              <select
+                                value={newDueDiligenceIssueType}
+                                onChange={(event) =>
+                                  setNewDueDiligenceIssueType(event.target.value)
+                                }
+                              >
+                                <option value="FINDING">Finding</option>
+                                <option value="DEAL_ISSUE">Deal issue</option>
+                              </select>
+                            </label>
+                            <label>
+                              <span>Reference</span>
+                              <input
+                                value={newDueDiligenceIssueReference}
+                                onChange={(event) =>
+                                  setNewDueDiligenceIssueReference(event.target.value)
+                                }
+                                placeholder="FDD-F01"
+                                maxLength={100}
+                              />
+                            </label>
+                            <label>
+                              <span>Related request</span>
+                              <select
+                                value={newDueDiligenceIssueRequestId}
+                                onChange={(event) => {
+                                  const requestId = event.target.value;
+                                  setNewDueDiligenceIssueRequestId(requestId);
+                                  const request = dueDiligenceRequests.find(
+                                    (item) => item.dueDiligenceRequestId === requestId,
+                                  );
+                                  setNewDueDiligenceIssueSectionId(
+                                    request?.dueDiligenceSectionId ?? "",
+                                  );
+                                }}
+                              >
+                                <option value="">No linked request</option>
+                                {dueDiligenceRequests.map((request) => (
+                                  <option
+                                    key={request.dueDiligenceRequestId}
+                                    value={request.dueDiligenceRequestId}
+                                  >
+                                    {request.reference ? request.reference + " · " : ""}
+                                    {request.title}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Section</span>
+                              <select
+                                value={newDueDiligenceIssueSectionId}
+                                onChange={(event) =>
+                                  setNewDueDiligenceIssueSectionId(event.target.value)
+                                }
+                                disabled={Boolean(newDueDiligenceIssueRequestId)}
+                              >
+                                <option value="">Unsectioned</option>
+                                {dueDiligenceSections.map((section) => (
+                                  <option
+                                    key={section.dueDiligenceSectionId}
+                                    value={section.dueDiligenceSectionId}
+                                  >
+                                    {section.code ? section.code + " · " : ""}
+                                    {section.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <label>
+                            <span>Title</span>
+                            <input
+                              value={newDueDiligenceIssueTitle}
+                              onChange={(event) =>
+                                setNewDueDiligenceIssueTitle(event.target.value)
+                              }
+                              placeholder="Revenue concentration materially exceeds management presentation"
+                              maxLength={500}
+                            />
+                          </label>
+                          <label>
+                            <span>Description</span>
+                            <textarea
+                              value={newDueDiligenceIssueDescription}
+                              onChange={(event) =>
+                                setNewDueDiligenceIssueDescription(event.target.value)
+                              }
+                              placeholder="Describe the internal finding or deal issue"
+                              maxLength={16000}
+                            />
+                          </label>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Category</span>
+                              <input
+                                value={newDueDiligenceIssueCategory}
+                                onChange={(event) =>
+                                  setNewDueDiligenceIssueCategory(event.target.value)
+                                }
+                                placeholder="Quality of earnings"
+                                maxLength={240}
+                              />
+                            </label>
+                            <label>
+                              <span>Severity</span>
+                              <input
+                                value={newDueDiligenceIssueSeverity}
+                                onChange={(event) =>
+                                  setNewDueDiligenceIssueSeverity(event.target.value)
+                                }
+                                placeholder="High"
+                                maxLength={160}
+                              />
+                            </label>
+                          </div>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy || !newDueDiligenceIssueTitle.trim()}
+                          >
+                            Create internal issue
+                          </button>
+                        </form>
+
+                        <div className="workspace-mini-list">
+                          {dueDiligenceIssues.length ? (
+                            dueDiligenceIssues.map((issue) => (
+                              <button
+                                className={`workspace-list-row${selectedDueDiligenceIssueId === issue.dueDiligenceIssueId ? " workspace-list-row-active" : ""}`}
+                                type="button"
+                                key={issue.dueDiligenceIssueId}
+                                onClick={() =>
+                                  void selectDueDiligenceIssue(issue.dueDiligenceIssueId)
+                                }
+                              >
+                                <span>
+                                  <strong>
+                                    {issue.reference ? issue.reference + " · " : ""}
+                                    {issue.title}
+                                  </strong>
+                                  <small>
+                                    {issue.issueType.replaceAll("_", " ")} ·{" "}
+                                    {issue.latestStatus.replaceAll("_", " ")} · sequence{" "}
+                                    {issue.latestSequenceNumber}
+                                  </small>
+                                  <small>
+                                    {issue.sectionName ?? "Unsectioned"}
+                                    {issue.requestTitle ? ` · request: ${issue.requestTitle}` : ""}
+                                    {issue.severity ? ` · severity: ${issue.severity}` : ""}
+                                  </small>
+                                </span>
+                                <span className="workspace-row-action">Review →</span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              No internal findings or deal issues have been recorded yet.
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="empty-result">
+                        Create the internal DD workspace before recording findings.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="workspace-card">
+                    <div className="workspace-card-heading">
+                      <div>
+                        <span className="workspace-label">DD ISSUE REVIEW · INTERNAL ONLY</span>
+                        <h3>Append-only conclusion & deal impact</h3>
+                      </div>
+                    </div>
+
+                    {selectedDueDiligenceIssue ? (
+                      <>
+                        <div className="workspace-mini-list">
+                          <span>
+                            <strong>
+                              {selectedDueDiligenceIssue.reference
+                                ? selectedDueDiligenceIssue.reference + " · "
+                                : ""}
+                              {selectedDueDiligenceIssue.title}
+                            </strong>
+                            <small>
+                              {selectedDueDiligenceIssue.issueType.replaceAll("_", " ")} ·{" "}
+                              {selectedDueDiligenceIssue.latestStatus.replaceAll("_", " ")} ·
+                              sequence {selectedDueDiligenceIssue.latestSequenceNumber}
+                            </small>
+                            {selectedDueDiligenceIssue.description ? (
+                              <small>{selectedDueDiligenceIssue.description}</small>
+                            ) : null}
+                            {selectedDueDiligenceIssue.latestInternalConclusion ? (
+                              <small>
+                                Latest conclusion:{" "}
+                                {selectedDueDiligenceIssue.latestInternalConclusion}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceIssue.latestDealImpact ? (
+                              <small>
+                                Latest deal impact: {selectedDueDiligenceIssue.latestDealImpact}
+                              </small>
+                            ) : null}
+                            {selectedDueDiligenceIssue.latestRecommendation ? (
+                              <small>
+                                Latest recommendation:{" "}
+                                {selectedDueDiligenceIssue.latestRecommendation}
+                              </small>
+                            ) : null}
+                          </span>
+                        </div>
+
+                        <form
+                          className="workspace-form compact"
+                          onSubmit={submitDueDiligenceIssueEvent}
+                        >
+                          <label>
+                            <span>Status</span>
+                            <select
+                              value={dueDiligenceIssueStatus}
+                              onChange={(event) =>
+                                setDueDiligenceIssueStatus(event.target.value)
+                              }
+                            >
+                              <option value="OPEN">Open</option>
+                              <option value="UNDER_REVIEW">Under review</option>
+                              <option value="CONFIRMED">Confirmed</option>
+                              <option value="RESOLVED">Resolved</option>
+                              <option value="CLOSED">Closed</option>
+                              <option value="DROPPED">Dropped</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>Internal conclusion</span>
+                            <textarea
+                              value={dueDiligenceIssueConclusion}
+                              onChange={(event) =>
+                                setDueDiligenceIssueConclusion(event.target.value)
+                              }
+                              placeholder="Internal conclusion based on current diligence evidence"
+                              maxLength={16000}
+                            />
+                          </label>
+                          <label>
+                            <span>Deal impact</span>
+                            <textarea
+                              value={dueDiligenceIssueDealImpact}
+                              onChange={(event) =>
+                                setDueDiligenceIssueDealImpact(event.target.value)
+                              }
+                              placeholder="Valuation, SPA, working-capital, tax, compliance, or closing impact"
+                              maxLength={16000}
+                            />
+                          </label>
+                          <label>
+                            <span>Recommendation</span>
+                            <textarea
+                              value={dueDiligenceIssueRecommendation}
+                              onChange={(event) =>
+                                setDueDiligenceIssueRecommendation(event.target.value)
+                              }
+                              placeholder="Internal recommendation or required follow-up"
+                              maxLength={16000}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button"
+                            type="submit"
+                            disabled={workspaceBusy}
+                          >
+                            Append issue event
+                          </button>
+                        </form>
+
+                        <div className="workspace-mini-list">
+                          {dueDiligenceIssueEvents.map((issueEvent) => (
+                            <span key={issueEvent.dueDiligenceIssueEventId}>
+                              <strong>
+                                #{issueEvent.sequenceNumber} ·{" "}
+                                {issueEvent.status.replaceAll("_", " ")}
+                              </strong>
+                              <small>{formatTimestamp(issueEvent.occurredAtMs)}</small>
+                              {issueEvent.internalConclusion ? (
+                                <small>Conclusion: {issueEvent.internalConclusion}</small>
+                              ) : null}
+                              {issueEvent.dealImpact ? (
+                                <small>Deal impact: {issueEvent.dealImpact}</small>
+                              ) : null}
+                              {issueEvent.recommendation ? (
+                                <small>Recommendation: {issueEvent.recommendation}</small>
+                              ) : null}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="workspace-form compact">
+                          <span className="workspace-label">EXACT CONTROLLED EVIDENCE</span>
+                          <div className="workspace-grid workspace-grid-two">
+                            <label>
+                              <span>Search evidence</span>
+                              <input
+                                value={dueDiligenceIssueEvidenceSearchQuery}
+                                onChange={(event) =>
+                                  setDueDiligenceIssueEvidenceSearchQuery(event.target.value)
+                                }
+                                placeholder="Search document name or content"
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => void searchDueDiligenceIssueEvidence()}
+                              disabled={
+                                dueDiligenceIssueEvidenceSearchBusy ||
+                                !dueDiligenceIssueEvidenceSearchQuery.trim()
+                              }
+                            >
+                              {dueDiligenceIssueEvidenceSearchBusy ? "Searching…" : "Search"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {dueDiligenceIssueEvidenceSearchResults.length ? (
+                          <div className="workspace-mini-list">
+                            {dueDiligenceIssueEvidenceSearchResults.map((result) => (
+                              <button
+                                className={`workspace-list-row${selectedDueDiligenceIssueEvidenceDocument?.documentId === result.documentId ? " workspace-list-row-active" : ""}`}
+                                type="button"
+                                key={result.documentId}
+                                onClick={() =>
+                                  void selectDueDiligenceIssueEvidenceDocument(result)
+                                }
+                              >
+                                <span>
+                                  <strong>{result.name}</strong>
+                                  <small>{result.path}</small>
+                                </span>
+                                <span className="workspace-row-action">Select →</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {selectedDueDiligenceIssueEvidenceDocument ? (
+                          <form
+                            className="workspace-form compact"
+                            onSubmit={submitDueDiligenceIssueEvidence}
+                          >
+                            <label>
+                              <span>Exact controlled version</span>
+                              <select
+                                value={selectedDueDiligenceIssueControlledVersionId}
+                                onChange={(event) =>
+                                  setSelectedDueDiligenceIssueControlledVersionId(
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value="">Select controlled evidence</option>
+                                {dueDiligenceIssueControlledEvidenceVersions.map((entry) => (
+                                  <option
+                                    key={
+                                      entry.controlledEvidenceVersionId ??
+                                      entry.contentVersionId
+                                    }
+                                    value={entry.controlledEvidenceVersionId ?? ""}
+                                  >
+                                    v{entry.controlledVersionNumber ?? "?"} · captured{" "}
+                                    {formatTimestamp(entry.capturedAtMs)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Evidence scope</span>
+                              <select
+                                value={dueDiligenceIssueEvidenceEventId}
+                                onChange={(event) =>
+                                  setDueDiligenceIssueEvidenceEventId(event.target.value)
+                                }
+                              >
+                                <option value="">Issue-level evidence</option>
+                                {dueDiligenceIssueEvents.map((issueEvent) => (
+                                  <option
+                                    key={issueEvent.dueDiligenceIssueEventId}
+                                    value={issueEvent.dueDiligenceIssueEventId}
+                                  >
+                                    Event #{issueEvent.sequenceNumber} ·{" "}
+                                    {issueEvent.status.replaceAll("_", " ")}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>Description</span>
+                              <input
+                                value={dueDiligenceIssueEvidenceDescription}
+                                onChange={(event) =>
+                                  setDueDiligenceIssueEvidenceDescription(event.target.value)
+                                }
+                                placeholder="What this exact evidence supports"
+                                maxLength={1000}
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="submit"
+                              disabled={
+                                workspaceBusy ||
+                                !selectedDueDiligenceIssueControlledVersionId
+                              }
+                            >
+                              Link exact controlled evidence
+                            </button>
+                            {!dueDiligenceIssueControlledEvidenceVersions.length ? (
+                              <p className="evidence-integrity-note">
+                                This document has no hash-verified controlled version yet. Capture
+                                it as controlled evidence before linking it to the internal issue.
+                              </p>
+                            ) : null}
+                          </form>
+                        ) : null}
+
+                        <div className="workspace-mini-list">
+                          {dueDiligenceIssueEvidence.length ? (
+                            dueDiligenceIssueEvidence.map((evidence) => (
+                              <span key={evidence.dueDiligenceIssueEvidenceLinkId}>
+                                <strong>
+                                  {evidence.dueDiligenceIssueEventId
+                                    ? "Event-scoped evidence"
+                                    : "Issue evidence"}
+                                </strong>
+                                <small>
+                                  Controlled ID{" "}
+                                  {evidence.controlledEvidenceVersionId.slice(0, 18)}… · source
+                                  SHA {evidence.sourceSha256Hex.slice(0, 16)}…
+                                </small>
+                                <small>{formatTimestamp(evidence.linkedAtMs)}</small>
+                                {evidence.description ? (
+                                  <small>{evidence.description}</small>
+                                ) : null}
+                              </span>
+                            ))
+                          ) : (
+                            <div className="empty-result">
+                              No exact controlled evidence is linked to this issue yet.
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : dueDiligenceWorkspace ? (
+                      <div className="empty-result">
+                        Create or select an internal finding or deal issue to review its history.
+                      </div>
+                    ) : (
+                      <div className="empty-result">
+                        Create the internal DD workspace before reviewing issues.
                       </div>
                     )}
                   </div>
