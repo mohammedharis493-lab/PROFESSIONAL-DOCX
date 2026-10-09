@@ -16726,7 +16726,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 22);
+        assert_eq!(migration_count, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -16800,14 +16800,17 @@ mod tests {
                        'due_diligence_sections',
                        'due_diligence_requests',
                        'due_diligence_request_events',
-                       'due_diligence_request_evidence_links'
+                       'due_diligence_request_evidence_links',
+                       'due_diligence_issues',
+                       'due_diligence_issue_events',
+                       'due_diligence_issue_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 68);
+        assert_eq!(table_count, 71);
     }
 
     #[test]
@@ -16843,7 +16846,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -16891,7 +16894,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_exists: i64 = connection
             .query_row(
@@ -16940,7 +16943,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -16985,14 +16988,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_exists: bool = connection
             .query_row(
@@ -17034,14 +17037,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17091,14 +17094,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17143,14 +17146,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17195,14 +17198,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17247,14 +17250,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17298,14 +17301,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17349,14 +17352,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17413,14 +17416,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -17472,14 +17475,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17523,14 +17526,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_exists: bool = connection
             .query_row(
@@ -17572,14 +17575,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17623,14 +17626,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_exists: bool = connection
             .query_row(
@@ -17673,14 +17676,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17726,14 +17729,14 @@ mod tests {
             assert_eq!(user_version, 18);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17778,14 +17781,14 @@ mod tests {
             assert_eq!(user_version, 19);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17833,14 +17836,14 @@ mod tests {
             assert_eq!(user_version, 20);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17885,14 +17888,14 @@ mod tests {
             assert_eq!(user_version, 21);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 22");
+        initialize_database(&database.path).expect("database should upgrade to version 23");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 22);
+        assert_eq!(user_version, 23);
 
         let table_count: i64 = connection
             .query_row(
@@ -17910,6 +17913,58 @@ mod tests {
             )
             .expect("due diligence tables should exist");
         assert_eq!(table_count, 5);
+    }
+
+    #[test]
+    fn twenty_third_migration_adds_due_diligence_issue_workflow() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..22] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 22);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 23");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 23);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'due_diligence_issues',
+                       'due_diligence_issue_events',
+                       'due_diligence_issue_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("due diligence issue tables should exist");
+        assert_eq!(table_count, 3);
     }
 
     #[test]
@@ -18265,6 +18320,110 @@ mod tests {
             Some(response.due_diligence_request_event_id.as_str())
         );
 
+        let issue = create_due_diligence_issue(
+            &database.path,
+            DueDiligenceIssueDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&revenue.due_diligence_section_id),
+                due_diligence_request_id: Some(&request.due_diligence_request_id),
+                issue_type: "finding",
+                reference: Some("DD-F-01"),
+                title: "Quarter-end revenue cut-off requires follow-up",
+                description: Some(
+                    "The revenue bridge indicates a concentration of adjustments at quarter end.",
+                ),
+                category: Some("Financial DD"),
+                severity: Some("High"),
+                actor_id: Some("dd-reviewer-1"),
+            },
+        )
+        .expect("due diligence issue should create");
+        assert_eq!(issue.issue_type, "FINDING");
+        assert_eq!(issue.latest_status, "OPEN");
+        assert_eq!(issue.latest_sequence_number, 1);
+        assert_eq!(
+            issue.due_diligence_request_id.as_deref(),
+            Some(request.due_diligence_request_id.as_str())
+        );
+
+        let workspace_issues =
+            list_due_diligence_issues(&database.path, &workspace.due_diligence_workspace_id)
+                .expect("workspace issues should load");
+        assert_eq!(workspace_issues.len(), 1);
+        assert_eq!(
+            workspace_issues[0].due_diligence_issue_id,
+            issue.due_diligence_issue_id
+        );
+
+        let cross_workspace_issue = create_due_diligence_issue(
+            &database.path,
+            DueDiligenceIssueDefinition {
+                due_diligence_workspace_id: &other_workspace.due_diligence_workspace_id,
+                due_diligence_section_id: None,
+                due_diligence_request_id: Some(&request.due_diligence_request_id),
+                issue_type: "DEAL_ISSUE",
+                reference: None,
+                title: "Invalid cross-workspace issue",
+                description: None,
+                category: None,
+                severity: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("issue request must belong to the same workspace");
+        assert!(cross_workspace_issue.to_string().contains("same workspace"));
+
+        let review_event = create_due_diligence_issue_event(
+            &database.path,
+            DueDiligenceIssueEventDefinition {
+                due_diligence_issue_id: &issue.due_diligence_issue_id,
+                status: "UNDER_REVIEW",
+                internal_conclusion: Some(
+                    "Cut-off testing is required before confirming the issue.",
+                ),
+                deal_impact: Some("Potential working-capital and quality-of-earnings impact."),
+                recommendation: Some("Perform targeted quarter-end cut-off testing."),
+                actor_id: Some("dd-reviewer-2"),
+            },
+        )
+        .expect("issue review event should append");
+        assert_eq!(review_event.sequence_number, 2);
+        assert_eq!(review_event.status, "UNDER_REVIEW");
+
+        let issue_events =
+            list_due_diligence_issue_events(&database.path, &issue.due_diligence_issue_id)
+                .expect("issue history should load");
+        assert_eq!(
+            issue_events
+                .iter()
+                .map(|event| event.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OPEN", "UNDER_REVIEW"]
+        );
+
+        let issue_evidence = create_due_diligence_issue_evidence_link(
+            &database.path,
+            &issue.due_diligence_issue_id,
+            Some(&review_event.due_diligence_issue_event_id),
+            &controlled_evidence_version_id,
+            Some("Revenue bridge supporting the DD issue assessment."),
+        )
+        .expect("issue evidence should link");
+        assert_eq!(issue_evidence.document_id, document_id);
+        assert_eq!(issue_evidence.source_content_version_id, content_version_id);
+        assert_eq!(issue_evidence.source_sha256, source_sha256);
+
+        let issue_evidence_links =
+            list_due_diligence_issue_evidence(&database.path, &issue.due_diligence_issue_id)
+                .expect("issue evidence links should load");
+        assert_eq!(issue_evidence_links.len(), 1);
+        assert_eq!(
+            issue_evidence_links[0]
+                .due_diligence_issue_event_id
+                .as_deref(),
+            Some(review_event.due_diligence_issue_event_id.as_str())
+        );
+
         let connection =
             open_configured_connection(&database.path).expect("database should reopen");
         let request_mutation = connection
@@ -18290,6 +18449,42 @@ mod tests {
         assert!(event_mutation
             .to_string()
             .contains("due diligence request events are immutable"));
+
+        let issue_mutation = connection
+            .execute(
+                "UPDATE due_diligence_issues
+                 SET title = 'Mutated'
+                 WHERE due_diligence_issue_id = ?1",
+                [&issue.due_diligence_issue_id],
+            )
+            .expect_err("issues must be immutable");
+        assert!(issue_mutation
+            .to_string()
+            .contains("due diligence issues are immutable"));
+
+        let issue_event_mutation = connection
+            .execute(
+                "UPDATE due_diligence_issue_events
+                 SET status = 'CLOSED'
+                 WHERE due_diligence_issue_event_id = ?1",
+                [&review_event.due_diligence_issue_event_id],
+            )
+            .expect_err("issue events must be immutable");
+        assert!(issue_event_mutation
+            .to_string()
+            .contains("due diligence issue events are immutable"));
+
+        let issue_evidence_mutation = connection
+            .execute(
+                "UPDATE due_diligence_issue_evidence_links
+                 SET description = 'Mutated'
+                 WHERE due_diligence_issue_evidence_link_id = ?1",
+                [&issue_evidence.due_diligence_issue_evidence_link_id],
+            )
+            .expect_err("issue evidence links must be immutable");
+        assert!(issue_evidence_mutation
+            .to_string()
+            .contains("due diligence issue evidence links are immutable"));
     }
 
     #[test]
