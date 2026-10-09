@@ -396,6 +396,54 @@ type DueDiligenceIssueEvidence = {
   linkedAtMs: number;
 };
 
+type DueDiligenceReport = {
+  dueDiligenceReportId: string;
+  dueDiligenceWorkspaceId: string;
+  latestVersionId: string;
+  latestVersionNumber: number;
+  latestTitle: string;
+  latestExecutiveSummary: string | null;
+  latestScopeSummary: string | null;
+  latestOverallConclusion: string | null;
+  latestIssueCount: number;
+  latestIssueSnapshotHashHex: string;
+  latestCreatedBy: string | null;
+  latestCreatedAtMs: number;
+  createdAtMs: number;
+};
+
+type DueDiligenceReportVersion = {
+  dueDiligenceReportVersionId: string;
+  dueDiligenceReportId: string;
+  versionNumber: number;
+  title: string;
+  executiveSummary: string | null;
+  scopeSummary: string | null;
+  overallConclusion: string | null;
+  issueCount: number;
+  issueSnapshotHashHex: string;
+  createdBy: string | null;
+  createdAtMs: number;
+};
+
+type DueDiligenceReportIssue = {
+  dueDiligenceReportIssueLinkId: string;
+  dueDiligenceReportVersionId: string;
+  dueDiligenceIssueId: string;
+  dueDiligenceIssueEventId: string;
+  issueType: string;
+  reference: string | null;
+  title: string;
+  category: string | null;
+  severity: string | null;
+  sequenceNumber: number;
+  status: string;
+  internalConclusion: string | null;
+  dealImpact: string | null;
+  recommendation: string | null;
+  linkedAtMs: number;
+};
+
 type EngagementArea = {
   engagementAreaId: string;
   engagementId: string;
@@ -1653,6 +1701,22 @@ export default function App() {
     useState("");
   const [dueDiligenceIssueEvidenceSearchBusy, setDueDiligenceIssueEvidenceSearchBusy] =
     useState(false);
+  const [dueDiligenceReports, setDueDiligenceReports] = useState<DueDiligenceReport[]>([]);
+  const [selectedDueDiligenceReportId, setSelectedDueDiligenceReportId] =
+    useState<string | null>(null);
+  const [dueDiligenceReportVersions, setDueDiligenceReportVersions] =
+    useState<DueDiligenceReportVersion[]>([]);
+  const [selectedDueDiligenceReportVersionId, setSelectedDueDiligenceReportVersionId] =
+    useState<string | null>(null);
+  const [dueDiligenceReportVersionIssues, setDueDiligenceReportVersionIssues] =
+    useState<DueDiligenceReportIssue[]>([]);
+  const [dueDiligenceReportTitle, setDueDiligenceReportTitle] = useState("");
+  const [dueDiligenceReportExecutiveSummary, setDueDiligenceReportExecutiveSummary] =
+    useState("");
+  const [dueDiligenceReportScopeSummary, setDueDiligenceReportScopeSummary] = useState("");
+  const [dueDiligenceReportOverallConclusion, setDueDiligenceReportOverallConclusion] =
+    useState("");
+  const [dueDiligenceReportIssueIds, setDueDiligenceReportIssueIds] = useState<string[]>([]);
   const [ledgerImports, setLedgerImports] = useState<LedgerImport[]>([]);
   const [selectedLedgerImportId, setSelectedLedgerImportId] = useState<string | null>(null);
   const [ledgerEvidenceSearchQuery, setLedgerEvidenceSearchQuery] = useState("");
@@ -2121,6 +2185,16 @@ export default function App() {
     setDueDiligenceIssueEvidenceVersionHistory([]);
     setSelectedDueDiligenceIssueControlledVersionId("");
     setDueDiligenceIssueEvidenceEventId("");
+    setDueDiligenceReports([]);
+    setSelectedDueDiligenceReportId(null);
+    setDueDiligenceReportVersions([]);
+    setSelectedDueDiligenceReportVersionId(null);
+    setDueDiligenceReportVersionIssues([]);
+    setDueDiligenceReportTitle("");
+    setDueDiligenceReportExecutiveSummary("");
+    setDueDiligenceReportScopeSummary("");
+    setDueDiligenceReportOverallConclusion("");
+    setDueDiligenceReportIssueIds([]);
     try {
       const [
         areas,
