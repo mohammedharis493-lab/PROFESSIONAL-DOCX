@@ -4743,9 +4743,7 @@ fn normalize_internal_audit_finding_status(value: &str) -> Result<String, Persis
     }
 }
 
-fn normalize_due_diligence_request_status(
-    value: &str,
-) -> Result<String, PersistenceError> {
+fn normalize_due_diligence_request_status(value: &str) -> Result<String, PersistenceError> {
     let status = workflow_state_key(value);
     if matches!(
         status.as_str(),
@@ -9065,8 +9063,7 @@ pub fn create_due_diligence_request(
     let title = normalize_domain_label(definition.title, "due diligence request title", 500)?;
     let reference = normalize_optional_domain_text(definition.reference, 100);
     let description = normalize_optional_domain_text(definition.description, 8000);
-    let requested_from_party =
-        normalize_optional_domain_text(definition.requested_from_party, 240);
+    let requested_from_party = normalize_optional_domain_text(definition.requested_from_party, 240);
     let due_date = normalize_optional_domain_text(definition.due_date, 40);
     let internal_notes = normalize_optional_domain_text(definition.internal_notes, 8000);
     let actor_id = normalize_optional_domain_text(definition.actor_id, 160);
@@ -9289,13 +9286,10 @@ pub fn create_due_diligence_request_event(
 ) -> Result<DueDiligenceRequestEventRecord, PersistenceError> {
     let status = normalize_due_diligence_request_status(definition.status)?;
     let response_text = normalize_optional_domain_text(definition.response_text, 16000);
-    let internal_assessment =
-        normalize_optional_domain_text(definition.internal_assessment, 16000);
+    let internal_assessment = normalize_optional_domain_text(definition.internal_assessment, 16000);
     let actor_id = normalize_optional_domain_text(definition.actor_id, 160);
 
-    if matches!(status.as_str(), "PARTIALLY_RESPONDED" | "RESPONDED")
-        && response_text.is_none()
-    {
+    if matches!(status.as_str(), "PARTIALLY_RESPONDED" | "RESPONDED") && response_text.is_none() {
         return Err(PersistenceError::Configuration(
             "due diligence response text is required for responded status".to_string(),
         ));
@@ -9500,7 +9494,8 @@ pub fn create_due_diligence_request_evidence_link(
     };
     if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
         return Err(PersistenceError::Configuration(
-            "due diligence evidence requires retained hash-verified controlled evidence".to_string(),
+            "due diligence evidence requires retained hash-verified controlled evidence"
+                .to_string(),
         ));
     }
     if source_sha256.len() != 32 {
@@ -17395,11 +17390,9 @@ mod tests {
         .expect("closed event");
         assert_eq!(closed.sequence_number, 3);
 
-        let requests = list_due_diligence_requests(
-            &database.path,
-            &workspace.due_diligence_workspace_id,
-        )
-        .expect("requests");
+        let requests =
+            list_due_diligence_requests(&database.path, &workspace.due_diligence_workspace_id)
+                .expect("requests");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].latest_status, "CLOSED");
         assert_eq!(requests[0].latest_sequence_number, 3);
@@ -17552,11 +17545,9 @@ mod tests {
         .to_string()
         .contains("same request"));
 
-        let evidence_links = list_due_diligence_request_evidence(
-            &database.path,
-            &request.due_diligence_request_id,
-        )
-        .expect("evidence links");
+        let evidence_links =
+            list_due_diligence_request_evidence(&database.path, &request.due_diligence_request_id)
+                .expect("evidence links");
         assert_eq!(evidence_links.len(), 1);
         assert_eq!(
             evidence_links[0].due_diligence_request_event_id.as_deref(),
