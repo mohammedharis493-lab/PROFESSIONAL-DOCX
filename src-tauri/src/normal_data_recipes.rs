@@ -286,7 +286,6 @@ mod tests {
         definition.tolerance_minor_units = -1;
         assert!(validate_definition(&definition).is_err());
         definition.tolerance_minor_units = 0;
-        columns.push("taxable VALUE".to_string());
         // Distinct names are checked case-insensitively by the definition validator.
         assert!(validate_definition(&RecipeDefinition {
             amount_columns: &["Tax".to_string(), "tax".to_string()],
