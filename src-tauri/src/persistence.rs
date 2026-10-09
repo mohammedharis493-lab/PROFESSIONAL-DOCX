@@ -4925,6 +4925,27 @@ fn normalize_due_diligence_issue_status(value: &str) -> Result<String, Persisten
     }
 }
 
+fn normalize_due_diligence_report_text(
+    value: Option<&str>,
+    field_name: &str,
+    max_chars: usize,
+) -> Result<Option<String>, PersistenceError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let count = value.chars().count();
+    if count > max_chars
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(PersistenceError::Configuration(format!(
+            "{field_name} must contain at most {max_chars} printable characters"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
 fn normalize_ledger_account_key(value: &str) -> Result<String, PersistenceError> {
     let normalized = value
         .split_whitespace()
@@ -10374,6 +10395,467 @@ pub fn list_due_diligence_issue_evidence(
         })
     })?;
 
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+fn insert_due_diligence_report_version(
+    transaction: &rusqlite::Transaction<'_>,
+    due_diligence_report_id: &str,
+    due_diligence_workspace_id: &str,
+    version_number: u64,
+    definition: DueDiligenceReportVersionDefinition<'_>,
+) -> Result<DueDiligenceReportVersionRecord, PersistenceError> {
+    let title = normalize_domain_label(definition.title, "due diligence report title", 500)?;
+    let executive_summary = normalize_due_diligence_report_text(
+        definition.executive_summary,
+        "due diligence report executive summary",
+        32_000,
+    )?;
+    let scope_summary = normalize_due_diligence_report_text(
+        definition.scope_summary,
+        "due diligence report scope summary",
+        32_000,
+    )?;
+    let overall_conclusion = normalize_due_diligence_report_text(
+        definition.overall_conclusion,
+        "due diligence report overall conclusion",
+        32_000,
+    )?;
+    let created_by = normalize_optional_domain_text(definition.created_by, 160);
+
+    if definition.issue_ids.len() > 500 {
+        return Err(PersistenceError::Configuration(
+            "due diligence report version cannot contain more than 500 issues".to_string(),
+        ));
+    }
+
+    let mut issue_snapshots = BTreeMap::<String, String>::new();
+    for issue_id in definition.issue_ids {
+        if issue_snapshots.contains_key(issue_id) {
+            return Err(PersistenceError::Configuration(
+                "due diligence report issue IDs must be unique".to_string(),
+            ));
+        }
+
+        let issue: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT
+                    i.due_diligence_workspace_id,
+                    e.due_diligence_issue_event_id
+                 FROM due_diligence_issues i
+                 JOIN due_diligence_issue_events e
+                   ON e.due_diligence_issue_id = i.due_diligence_issue_id
+                 WHERE i.due_diligence_issue_id = ?1
+                 ORDER BY e.sequence_number DESC
+                 LIMIT 1",
+                [issue_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((issue_workspace_id, issue_event_id)) = issue else {
+            return Err(PersistenceError::Configuration(format!(
+                "due diligence issue {issue_id} does not exist"
+            )));
+        };
+        if issue_workspace_id != due_diligence_workspace_id {
+            return Err(PersistenceError::Configuration(
+                "due diligence report issues must belong to the same workspace".to_string(),
+            ));
+        }
+        issue_snapshots.insert(issue_id.clone(), issue_event_id);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"PROFESSIONAL-DOCX-DD-REPORT-ISSUES-V1");
+    for (issue_id, issue_event_id) in &issue_snapshots {
+        hasher.update((issue_id.len() as u64).to_be_bytes());
+        hasher.update(issue_id.as_bytes());
+        hasher.update((issue_event_id.len() as u64).to_be_bytes());
+        hasher.update(issue_event_id.as_bytes());
+    }
+    let issue_snapshot_hash = hasher.finalize().to_vec();
+
+    let due_diligence_report_version_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_report_versions (
+            due_diligence_report_version_id,
+            due_diligence_report_id,
+            version_number,
+            title,
+            executive_summary,
+            scope_summary,
+            overall_conclusion,
+            issue_count,
+            issue_snapshot_hash,
+            created_by,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &due_diligence_report_version_id,
+            due_diligence_report_id,
+            u64_to_i64(version_number)?,
+            &title,
+            executive_summary.as_deref(),
+            scope_summary.as_deref(),
+            overall_conclusion.as_deref(),
+            u64_to_i64(issue_snapshots.len() as u64)?,
+            &issue_snapshot_hash,
+            created_by.as_deref(),
+            now
+        ],
+    )?;
+
+    for (issue_id, issue_event_id) in &issue_snapshots {
+        transaction.execute(
+            "INSERT INTO due_diligence_report_issue_links (
+                due_diligence_report_issue_link_id,
+                due_diligence_report_version_id,
+                due_diligence_issue_id,
+                due_diligence_issue_event_id,
+                linked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                Uuid::new_v4().to_string(),
+                &due_diligence_report_version_id,
+                issue_id,
+                issue_event_id,
+                now
+            ],
+        )?;
+    }
+
+    Ok(DueDiligenceReportVersionRecord {
+        due_diligence_report_version_id,
+        due_diligence_report_id: due_diligence_report_id.to_string(),
+        version_number,
+        title,
+        executive_summary,
+        scope_summary,
+        overall_conclusion,
+        issue_count: issue_snapshots.len() as u64,
+        issue_snapshot_hash,
+        created_by,
+        created_at_ms: now,
+    })
+}
+
+pub fn create_due_diligence_report(
+    database_path: &Path,
+    due_diligence_workspace_id: &str,
+    definition: DueDiligenceReportVersionDefinition<'_>,
+) -> Result<DueDiligenceReportRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let workspace_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM due_diligence_workspaces
+            WHERE due_diligence_workspace_id = ?1
+        )",
+        [due_diligence_workspace_id],
+        |row| row.get(0),
+    )?;
+    if !workspace_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence workspace {due_diligence_workspace_id} does not exist"
+        )));
+    }
+
+    let due_diligence_report_id = Uuid::new_v4().to_string();
+    let created_at_ms = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_reports (
+            due_diligence_report_id,
+            due_diligence_workspace_id,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3)",
+        params![
+            &due_diligence_report_id,
+            due_diligence_workspace_id,
+            created_at_ms
+        ],
+    )?;
+
+    let version = insert_due_diligence_report_version(
+        &transaction,
+        &due_diligence_report_id,
+        due_diligence_workspace_id,
+        1,
+        definition,
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_REPORT_CREATED",
+            entity_type: "DUE_DILIGENCE_REPORT",
+            entity_id: &due_diligence_report_id,
+            related_entity_type: Some("DUE_DILIGENCE_WORKSPACE"),
+            related_entity_id: Some(due_diligence_workspace_id),
+            occurred_at_ms: version.created_at_ms,
+            details: json!({
+                "reportVersionId": version.due_diligence_report_version_id,
+                "versionNumber": version.version_number,
+                "issueCount": version.issue_count,
+                "issueSnapshotHash": bytes_to_lower_hex(&version.issue_snapshot_hash)
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceReportRecord {
+        due_diligence_report_id,
+        due_diligence_workspace_id: due_diligence_workspace_id.to_string(),
+        latest_version_id: version.due_diligence_report_version_id,
+        latest_version_number: version.version_number,
+        latest_title: version.title,
+        latest_executive_summary: version.executive_summary,
+        latest_scope_summary: version.scope_summary,
+        latest_overall_conclusion: version.overall_conclusion,
+        latest_issue_count: version.issue_count,
+        latest_issue_snapshot_hash: version.issue_snapshot_hash,
+        latest_created_by: version.created_by,
+        latest_created_at_ms: version.created_at_ms,
+        created_at_ms,
+    })
+}
+
+pub fn publish_due_diligence_report_version(
+    database_path: &Path,
+    due_diligence_report_id: &str,
+    definition: DueDiligenceReportVersionDefinition<'_>,
+) -> Result<DueDiligenceReportRecord, PersistenceError> {
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let report: Option<(String, i64)> = transaction
+        .query_row(
+            "SELECT due_diligence_workspace_id, created_at_ms
+             FROM due_diligence_reports
+             WHERE due_diligence_report_id = ?1",
+            [due_diligence_report_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((due_diligence_workspace_id, created_at_ms)) = report else {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence report {due_diligence_report_id} does not exist"
+        )));
+    };
+
+    let latest_version_number: i64 = transaction.query_row(
+        "SELECT MAX(version_number)
+         FROM due_diligence_report_versions
+         WHERE due_diligence_report_id = ?1",
+        [due_diligence_report_id],
+        |row| row.get(0),
+    )?;
+    let next_version = latest_version_number.checked_add(1).ok_or_else(|| {
+        PersistenceError::Configuration(
+            "due diligence report version exceeds supported range".to_string(),
+        )
+    })?;
+
+    let version = insert_due_diligence_report_version(
+        &transaction,
+        due_diligence_report_id,
+        &due_diligence_workspace_id,
+        next_version.max(0) as u64,
+        definition,
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_REPORT_VERSION_PUBLISHED",
+            entity_type: "DUE_DILIGENCE_REPORT_VERSION",
+            entity_id: &version.due_diligence_report_version_id,
+            related_entity_type: Some("DUE_DILIGENCE_REPORT"),
+            related_entity_id: Some(due_diligence_report_id),
+            occurred_at_ms: version.created_at_ms,
+            details: json!({
+                "versionNumber": version.version_number,
+                "issueCount": version.issue_count,
+                "issueSnapshotHash": bytes_to_lower_hex(&version.issue_snapshot_hash)
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceReportRecord {
+        due_diligence_report_id: due_diligence_report_id.to_string(),
+        due_diligence_workspace_id,
+        latest_version_id: version.due_diligence_report_version_id,
+        latest_version_number: version.version_number,
+        latest_title: version.title,
+        latest_executive_summary: version.executive_summary,
+        latest_scope_summary: version.scope_summary,
+        latest_overall_conclusion: version.overall_conclusion,
+        latest_issue_count: version.issue_count,
+        latest_issue_snapshot_hash: version.issue_snapshot_hash,
+        latest_created_by: version.created_by,
+        latest_created_at_ms: version.created_at_ms,
+        created_at_ms,
+    })
+}
+
+pub fn list_due_diligence_reports(
+    database_path: &Path,
+    due_diligence_workspace_id: &str,
+) -> Result<Vec<DueDiligenceReportRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            r.due_diligence_report_id,
+            r.due_diligence_workspace_id,
+            v.due_diligence_report_version_id,
+            v.version_number,
+            v.title,
+            v.executive_summary,
+            v.scope_summary,
+            v.overall_conclusion,
+            v.issue_count,
+            v.issue_snapshot_hash,
+            v.created_by,
+            v.created_at_ms,
+            r.created_at_ms
+         FROM due_diligence_reports r
+         JOIN due_diligence_report_versions v
+           ON v.due_diligence_report_id = r.due_diligence_report_id
+          AND v.version_number = (
+              SELECT MAX(v2.version_number)
+              FROM due_diligence_report_versions v2
+              WHERE v2.due_diligence_report_id = r.due_diligence_report_id
+          )
+         WHERE r.due_diligence_workspace_id = ?1
+         ORDER BY v.created_at_ms DESC, r.due_diligence_report_id",
+    )?;
+    let rows = statement.query_map([due_diligence_workspace_id], |row| {
+        let version_number: i64 = row.get(3)?;
+        let issue_count: i64 = row.get(8)?;
+        Ok(DueDiligenceReportRecord {
+            due_diligence_report_id: row.get(0)?,
+            due_diligence_workspace_id: row.get(1)?,
+            latest_version_id: row.get(2)?,
+            latest_version_number: version_number.max(0) as u64,
+            latest_title: row.get(4)?,
+            latest_executive_summary: row.get(5)?,
+            latest_scope_summary: row.get(6)?,
+            latest_overall_conclusion: row.get(7)?,
+            latest_issue_count: issue_count.max(0) as u64,
+            latest_issue_snapshot_hash: row.get(9)?,
+            latest_created_by: row.get(10)?,
+            latest_created_at_ms: row.get(11)?,
+            created_at_ms: row.get(12)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_due_diligence_report_versions(
+    database_path: &Path,
+    due_diligence_report_id: &str,
+) -> Result<Vec<DueDiligenceReportVersionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            due_diligence_report_version_id,
+            due_diligence_report_id,
+            version_number,
+            title,
+            executive_summary,
+            scope_summary,
+            overall_conclusion,
+            issue_count,
+            issue_snapshot_hash,
+            created_by,
+            created_at_ms
+         FROM due_diligence_report_versions
+         WHERE due_diligence_report_id = ?1
+         ORDER BY version_number",
+    )?;
+    let rows = statement.query_map([due_diligence_report_id], |row| {
+        let version_number: i64 = row.get(2)?;
+        let issue_count: i64 = row.get(7)?;
+        Ok(DueDiligenceReportVersionRecord {
+            due_diligence_report_version_id: row.get(0)?,
+            due_diligence_report_id: row.get(1)?,
+            version_number: version_number.max(0) as u64,
+            title: row.get(3)?,
+            executive_summary: row.get(4)?,
+            scope_summary: row.get(5)?,
+            overall_conclusion: row.get(6)?,
+            issue_count: issue_count.max(0) as u64,
+            issue_snapshot_hash: row.get(8)?,
+            created_by: row.get(9)?,
+            created_at_ms: row.get(10)?,
+        })
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn list_due_diligence_report_version_issues(
+    database_path: &Path,
+    due_diligence_report_version_id: &str,
+) -> Result<Vec<DueDiligenceReportIssueRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            l.due_diligence_report_issue_link_id,
+            l.due_diligence_report_version_id,
+            i.due_diligence_issue_id,
+            e.due_diligence_issue_event_id,
+            i.issue_type,
+            i.reference,
+            i.title,
+            i.category,
+            i.severity,
+            e.sequence_number,
+            e.status,
+            e.internal_conclusion,
+            e.deal_impact,
+            e.recommendation,
+            l.linked_at_ms
+         FROM due_diligence_report_issue_links l
+         JOIN due_diligence_issues i
+           ON i.due_diligence_issue_id = l.due_diligence_issue_id
+         JOIN due_diligence_issue_events e
+           ON e.due_diligence_issue_event_id = l.due_diligence_issue_event_id
+          AND e.due_diligence_issue_id = i.due_diligence_issue_id
+         WHERE l.due_diligence_report_version_id = ?1
+         ORDER BY i.issue_type, COALESCE(i.reference, ''), i.title, i.due_diligence_issue_id",
+    )?;
+    let rows = statement.query_map([due_diligence_report_version_id], |row| {
+        let sequence_number: i64 = row.get(9)?;
+        Ok(DueDiligenceReportIssueRecord {
+            due_diligence_report_issue_link_id: row.get(0)?,
+            due_diligence_report_version_id: row.get(1)?,
+            due_diligence_issue_id: row.get(2)?,
+            due_diligence_issue_event_id: row.get(3)?,
+            issue_type: row.get(4)?,
+            reference: row.get(5)?,
+            title: row.get(6)?,
+            category: row.get(7)?,
+            severity: row.get(8)?,
+            sequence_number: sequence_number.max(0) as u64,
+            status: row.get(10)?,
+            internal_conclusion: row.get(11)?,
+            deal_impact: row.get(12)?,
+            recommendation: row.get(13)?,
+            linked_at_ms: row.get(14)?,
+        })
+    })?;
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
