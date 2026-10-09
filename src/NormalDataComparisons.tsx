@@ -455,7 +455,7 @@ export default function NormalDataComparisons({
               {" "}{selectedRun.result.entries.length.toLocaleString()} classified keys.
               Matching keys are omitted from this preview; all summary counts and hashes
               come from stored immutable history.
-              Large signed amount differences are not converted to potentially lossy JavaScript numbers.
+              Amount deltas are intentionally omitted: JavaScript JSON parsing can lose precision for large signed integers.
             </p>
           </>
         ) : <p className="normal-data-meta">No completed runs for this recipe version.</p>}
