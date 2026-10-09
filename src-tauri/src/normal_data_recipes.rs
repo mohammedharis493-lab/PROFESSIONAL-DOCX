@@ -68,10 +68,14 @@ fn validate_definition(
         _ => return Err(invalid("unsupported comparison period basis")),
     };
     for column in [input.period_column_a, input.period_column_b] {
-        if column.trim().is_empty() || column.trim() != column
-            || column.chars().count() > 240 || column.chars().any(char::is_control)
+        if column.trim().is_empty()
+            || column.trim() != column
+            || column.chars().count() > 240
+            || column.chars().any(char::is_control)
         {
-            return Err(invalid("selected period column must be a printable declared name"));
+            return Err(invalid(
+                "selected period column must be a printable declared name",
+            ));
         }
     }
     if input.amount_columns.is_empty() || input.amount_columns.len() > 32 {
@@ -138,7 +142,12 @@ pub fn create_recipe(
                   AND column_name = ?2 COLLATE NOCASE
                   AND semantic_role = ?3 AND data_type = ?4
              )",
-            params![dataset_version_id, selected_period_column, period_role, period_type],
+            params![
+                dataset_version_id,
+                selected_period_column,
+                period_role,
+                period_type
+            ],
             |row| row.get(0),
         )?;
         if !selected_period_role {
