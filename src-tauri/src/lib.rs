@@ -1046,6 +1046,146 @@ impl From<persistence::DueDiligenceRequestEvidenceRecord> for DueDiligenceReques
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceIssueDto {
+    due_diligence_issue_id: String,
+    due_diligence_workspace_id: String,
+    due_diligence_section_id: Option<String>,
+    section_name: Option<String>,
+    due_diligence_request_id: Option<String>,
+    request_title: Option<String>,
+    issue_type: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    category: Option<String>,
+    severity: Option<String>,
+    created_at_ms: i64,
+    latest_event_id: String,
+    latest_sequence_number: u64,
+    latest_status: String,
+    latest_internal_conclusion: Option<String>,
+    latest_deal_impact: Option<String>,
+    latest_recommendation: Option<String>,
+    latest_actor_id: Option<String>,
+    latest_occurred_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceIssueRecord> for DueDiligenceIssueDto {
+    fn from(value: persistence::DueDiligenceIssueRecord) -> Self {
+        Self {
+            due_diligence_issue_id: value.due_diligence_issue_id,
+            due_diligence_workspace_id: value.due_diligence_workspace_id,
+            due_diligence_section_id: value.due_diligence_section_id,
+            section_name: value.section_name,
+            due_diligence_request_id: value.due_diligence_request_id,
+            request_title: value.request_title,
+            issue_type: value.issue_type,
+            reference: value.reference,
+            title: value.title,
+            description: value.description,
+            category: value.category,
+            severity: value.severity,
+            created_at_ms: value.created_at_ms,
+            latest_event_id: value.latest_event_id,
+            latest_sequence_number: value.latest_sequence_number,
+            latest_status: value.latest_status,
+            latest_internal_conclusion: value.latest_internal_conclusion,
+            latest_deal_impact: value.latest_deal_impact,
+            latest_recommendation: value.latest_recommendation,
+            latest_actor_id: value.latest_actor_id,
+            latest_occurred_at_ms: value.latest_occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceIssueInputDto {
+    due_diligence_workspace_id: String,
+    due_diligence_section_id: Option<String>,
+    due_diligence_request_id: Option<String>,
+    issue_type: String,
+    reference: Option<String>,
+    title: String,
+    description: Option<String>,
+    category: Option<String>,
+    severity: Option<String>,
+    actor_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceIssueEventDto {
+    due_diligence_issue_event_id: String,
+    due_diligence_issue_id: String,
+    sequence_number: u64,
+    status: String,
+    internal_conclusion: Option<String>,
+    deal_impact: Option<String>,
+    recommendation: Option<String>,
+    actor_id: Option<String>,
+    occurred_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceIssueEventRecord> for DueDiligenceIssueEventDto {
+    fn from(value: persistence::DueDiligenceIssueEventRecord) -> Self {
+        Self {
+            due_diligence_issue_event_id: value.due_diligence_issue_event_id,
+            due_diligence_issue_id: value.due_diligence_issue_id,
+            sequence_number: value.sequence_number,
+            status: value.status,
+            internal_conclusion: value.internal_conclusion,
+            deal_impact: value.deal_impact,
+            recommendation: value.recommendation,
+            actor_id: value.actor_id,
+            occurred_at_ms: value.occurred_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceIssueEventInputDto {
+    due_diligence_issue_id: String,
+    status: String,
+    internal_conclusion: Option<String>,
+    deal_impact: Option<String>,
+    recommendation: Option<String>,
+    actor_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceIssueEvidenceDto {
+    due_diligence_issue_evidence_link_id: String,
+    due_diligence_issue_id: String,
+    due_diligence_issue_event_id: Option<String>,
+    controlled_evidence_version_id: String,
+    document_id: String,
+    source_content_version_id: String,
+    source_sha256_hex: String,
+    description: Option<String>,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceIssueEvidenceRecord> for DueDiligenceIssueEvidenceDto {
+    fn from(value: persistence::DueDiligenceIssueEvidenceRecord) -> Self {
+        Self {
+            due_diligence_issue_evidence_link_id: value.due_diligence_issue_evidence_link_id,
+            due_diligence_issue_id: value.due_diligence_issue_id,
+            due_diligence_issue_event_id: value.due_diligence_issue_event_id,
+            controlled_evidence_version_id: value.controlled_evidence_version_id,
+            document_id: value.document_id,
+            source_content_version_id: value.source_content_version_id,
+            source_sha256_hex: hex_bytes(&value.source_sha256),
+            description: value.description,
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InternalAuditFindingInputDto {
@@ -2969,6 +3109,123 @@ fn list_due_diligence_request_evidence(
 }
 
 #[tauri::command]
+fn create_due_diligence_issue(
+    input: DueDiligenceIssueInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<DueDiligenceIssueDto, String> {
+    validate_uuid(&input.due_diligence_workspace_id, "due-diligence-workspace")?;
+    validate_optional_uuid(
+        input.due_diligence_section_id.as_deref(),
+        "due-diligence-section",
+    )?;
+    validate_optional_uuid(
+        input.due_diligence_request_id.as_deref(),
+        "due-diligence-request",
+    )?;
+
+    persistence::create_due_diligence_issue(
+        database.path(),
+        persistence::DueDiligenceIssueDefinition {
+            due_diligence_workspace_id: &input.due_diligence_workspace_id,
+            due_diligence_section_id: input.due_diligence_section_id.as_deref(),
+            due_diligence_request_id: input.due_diligence_request_id.as_deref(),
+            issue_type: &input.issue_type,
+            reference: input.reference.as_deref(),
+            title: &input.title,
+            description: input.description.as_deref(),
+            category: input.category.as_deref(),
+            severity: input.severity.as_deref(),
+            actor_id: input.actor_id.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_issues(
+    due_diligence_workspace_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceIssueDto>, String> {
+    validate_uuid(&due_diligence_workspace_id, "due-diligence-workspace")?;
+    persistence::list_due_diligence_issues(database.path(), &due_diligence_workspace_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_due_diligence_issue_event(
+    input: DueDiligenceIssueEventInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<DueDiligenceIssueEventDto, String> {
+    validate_uuid(&input.due_diligence_issue_id, "due-diligence-issue")?;
+    persistence::create_due_diligence_issue_event(
+        database.path(),
+        persistence::DueDiligenceIssueEventDefinition {
+            due_diligence_issue_id: &input.due_diligence_issue_id,
+            status: &input.status,
+            internal_conclusion: input.internal_conclusion.as_deref(),
+            deal_impact: input.deal_impact.as_deref(),
+            recommendation: input.recommendation.as_deref(),
+            actor_id: input.actor_id.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_issue_events(
+    due_diligence_issue_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceIssueEventDto>, String> {
+    validate_uuid(&due_diligence_issue_id, "due-diligence-issue")?;
+    persistence::list_due_diligence_issue_events(database.path(), &due_diligence_issue_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_due_diligence_issue_evidence_link(
+    due_diligence_issue_id: String,
+    due_diligence_issue_event_id: Option<String>,
+    controlled_evidence_version_id: String,
+    description: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<DueDiligenceIssueEvidenceDto, String> {
+    validate_uuid(&due_diligence_issue_id, "due-diligence-issue")?;
+    validate_optional_uuid(
+        due_diligence_issue_event_id.as_deref(),
+        "due-diligence-issue-event",
+    )?;
+    validate_uuid(
+        &controlled_evidence_version_id,
+        "controlled-evidence-version",
+    )?;
+
+    persistence::create_due_diligence_issue_evidence_link(
+        database.path(),
+        &due_diligence_issue_id,
+        due_diligence_issue_event_id.as_deref(),
+        &controlled_evidence_version_id,
+        description.as_deref(),
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_issue_evidence(
+    due_diligence_issue_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceIssueEvidenceDto>, String> {
+    validate_uuid(&due_diligence_issue_id, "due-diligence-issue")?;
+    persistence::list_due_diligence_issue_evidence(database.path(), &due_diligence_issue_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn import_ledger_from_controlled_evidence(
     input: LedgerImportInputDto,
     database: State<'_, persistence::DatabaseState>,
@@ -4552,6 +4809,12 @@ pub fn run() {
             list_due_diligence_request_events,
             create_due_diligence_request_evidence_link,
             list_due_diligence_request_evidence,
+            create_due_diligence_issue,
+            list_due_diligence_issues,
+            create_due_diligence_issue_event,
+            list_due_diligence_issue_events,
+            create_due_diligence_issue_evidence_link,
+            list_due_diligence_issue_evidence,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,
