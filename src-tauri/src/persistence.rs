@@ -16389,6 +16389,345 @@ mod tests {
         assert!(missing_evidence
             .to_string()
             .contains("controlled evidence version"));
+
+        let finding = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &engagement.engagement_id,
+                internal_audit_process_id: &process.internal_audit_process_id,
+                internal_audit_risk_id: Some(&risk.internal_audit_risk_id),
+                internal_audit_control_id: Some(&control.internal_audit_control_id),
+                internal_audit_test_id: Some(&test.internal_audit_test_id),
+                workpaper_id: None,
+                repeated_from_finding_id: None,
+                reference: Some("F-01"),
+                title: "Purchase orders approved after commitment",
+                condition_text:
+                    "Three sampled purchase orders were approved after supplier commitment.",
+                criteria_text: Some(
+                    "Delegation policy requires approval before a purchase commitment is made.",
+                ),
+                cause_text: Some("Workflow allows retrospective approval."),
+                risk_effect_text: Some(
+                    "Unauthorized or inappropriate commitments may be entered into.",
+                ),
+                recommendation_text: Some(
+                    "Prevent commitment until the configured approval workflow is complete.",
+                ),
+                risk_classification: Some("Operational"),
+                actor_id: Some("auditor-1"),
+            },
+        )
+        .expect("finding should create");
+        assert_eq!(finding.latest_status, "OPEN");
+        assert_eq!(finding.latest_sequence_number, 1);
+        assert_eq!(
+            finding.internal_audit_control_id.as_deref(),
+            Some(control.internal_audit_control_id.as_str())
+        );
+        assert_eq!(
+            finding.internal_audit_test_id.as_deref(),
+            Some(test.internal_audit_test_id.as_str())
+        );
+
+        let finding_records =
+            list_internal_audit_findings_for_engagement(&database.path, &engagement.engagement_id)
+                .expect("engagement findings should load");
+        assert_eq!(finding_records.len(), 1);
+        assert_eq!(
+            finding_records[0].internal_audit_finding_id,
+            finding.internal_audit_finding_id
+        );
+
+        let missing_finding_evidence = create_internal_audit_finding_evidence_link(
+            &database.path,
+            &finding.internal_audit_finding_id,
+            None,
+            &Uuid::new_v4().to_string(),
+            Some("Finding support"),
+        )
+        .expect_err("unknown finding controlled evidence must fail");
+        assert!(missing_finding_evidence
+            .to_string()
+            .contains("controlled evidence version"));
+
+        let incomplete_action = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &engagement.engagement_id,
+                status: "ACTION_IN_PROGRESS",
+                management_response: Some("Management agrees to remediate."),
+                action_owner: None,
+                target_date: Some("2027-03-31"),
+                follow_up_text: None,
+                verification_conclusion: None,
+                actor_id: Some("auditor-1"),
+            },
+        )
+        .expect_err("action without owner must fail");
+        assert!(incomplete_action
+            .to_string()
+            .contains("action owner"));
+
+        let management_response = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &engagement.engagement_id,
+                status: "MANAGEMENT_RESPONDED",
+                management_response: Some(
+                    "Management agrees and will block retrospective approvals.",
+                ),
+                action_owner: None,
+                target_date: None,
+                follow_up_text: None,
+                verification_conclusion: None,
+                actor_id: Some("management-1"),
+            },
+        )
+        .expect("management response should append");
+        assert_eq!(management_response.sequence_number, 2);
+
+        let followup_engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Procure-to-Pay follow-up audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("same-client follow-up engagement");
+
+        let action = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &followup_engagement.engagement_id,
+                status: "ACTION_IN_PROGRESS",
+                management_response: None,
+                action_owner: Some("Procurement Head"),
+                target_date: Some("2027-06-30"),
+                follow_up_text: Some("Configuration change is in progress."),
+                verification_conclusion: None,
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("same-client later engagement should continue finding");
+        assert_eq!(action.sequence_number, 3);
+        assert_eq!(
+            action.management_response.as_deref(),
+            Some("Management agrees and will block retrospective approvals.")
+        );
+        assert_eq!(action.action_owner.as_deref(), Some("Procurement Head"));
+
+        let other_client =
+            create_client(&database.path, "Unrelated Internal Audit Client").expect("other client");
+        let other_engagement = create_engagement(
+            &database.path,
+            &other_client.client_id,
+            &service.service_type_id,
+            "Unrelated internal audit",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("other engagement");
+
+        let cross_client_followup = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &other_engagement.engagement_id,
+                status: "OPEN",
+                management_response: None,
+                action_owner: None,
+                target_date: None,
+                follow_up_text: Some("Should not be accepted."),
+                verification_conclusion: None,
+                actor_id: Some("auditor-other"),
+            },
+        )
+        .expect_err("cross-client follow-up must fail");
+        assert!(cross_client_followup
+            .to_string()
+            .contains("same client"));
+
+        let closed = create_internal_audit_finding_followup(
+            &database.path,
+            InternalAuditFindingFollowupDefinition {
+                internal_audit_finding_id: &finding.internal_audit_finding_id,
+                tracking_engagement_id: &followup_engagement.engagement_id,
+                status: "CLOSED",
+                management_response: None,
+                action_owner: None,
+                target_date: None,
+                follow_up_text: Some(
+                    "Re-tested the workflow in the follow-up engagement with no exceptions.",
+                ),
+                verification_conclusion: Some(
+                    "Remediation is operating effectively and the finding is closed.",
+                ),
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("verified finding should close");
+        assert_eq!(closed.sequence_number, 4);
+        assert_eq!(closed.status, "CLOSED");
+
+        let followups = list_internal_audit_finding_followups(
+            &database.path,
+            &finding.internal_audit_finding_id,
+        )
+        .expect("follow-up history");
+        assert_eq!(followups.len(), 4);
+        assert_eq!(followups[0].status, "OPEN");
+        assert_eq!(followups[3].status, "CLOSED");
+
+        let origin_view =
+            list_internal_audit_findings_for_engagement(&database.path, &engagement.engagement_id)
+                .expect("origin engagement findings");
+        assert_eq!(origin_view.len(), 1);
+        assert_eq!(origin_view[0].latest_status, "CLOSED");
+        assert_eq!(
+            origin_view[0].latest_tracking_engagement_id,
+            followup_engagement.engagement_id
+        );
+
+        let followup_view = list_internal_audit_findings_for_engagement(
+            &database.path,
+            &followup_engagement.engagement_id,
+        )
+        .expect("follow-up engagement findings");
+        assert_eq!(followup_view.len(), 1);
+        assert_eq!(
+            followup_view[0].internal_audit_finding_id,
+            finding.internal_audit_finding_id
+        );
+
+        let client_findings =
+            list_internal_audit_findings_for_client(&database.path, &client.client_id)
+                .expect("client findings");
+        assert_eq!(client_findings.len(), 1);
+
+        let followup_process = create_internal_audit_process(
+            &database.path,
+            InternalAuditProcessDefinition {
+                engagement_id: &followup_engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: Some("Follow-up period process."),
+                display_order: 10,
+                status: "ACTIVE",
+            },
+        )
+        .expect("follow-up process");
+
+        let repeated_finding = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &followup_engagement.engagement_id,
+                internal_audit_process_id: &followup_process.internal_audit_process_id,
+                internal_audit_risk_id: None,
+                internal_audit_control_id: None,
+                internal_audit_test_id: None,
+                workpaper_id: None,
+                repeated_from_finding_id: Some(&finding.internal_audit_finding_id),
+                reference: Some("F-02"),
+                title: "Approval timing issue recurred",
+                condition_text: "A new instance of delayed approval was identified.",
+                criteria_text: None,
+                cause_text: None,
+                risk_effect_text: Some("The prior issue has recurred in the new period."),
+                recommendation_text: Some("Extend preventive validation to all purchase channels."),
+                risk_classification: Some("Operational"),
+                actor_id: Some("auditor-2"),
+            },
+        )
+        .expect("same-client repeated finding should create");
+        assert_eq!(
+            repeated_finding.repeated_from_finding_id.as_deref(),
+            Some(finding.internal_audit_finding_id.as_str())
+        );
+
+        let other_process = create_internal_audit_process(
+            &database.path,
+            InternalAuditProcessDefinition {
+                engagement_id: &other_engagement.engagement_id,
+                parent_process_id: None,
+                code: Some("P2P"),
+                name: "Procure-to-Pay",
+                description: None,
+                display_order: 10,
+                status: "ACTIVE",
+            },
+        )
+        .expect("other process");
+
+        let cross_client_repeat = create_internal_audit_finding(
+            &database.path,
+            InternalAuditFindingDefinition {
+                origin_engagement_id: &other_engagement.engagement_id,
+                internal_audit_process_id: &other_process.internal_audit_process_id,
+                internal_audit_risk_id: None,
+                internal_audit_control_id: None,
+                internal_audit_test_id: None,
+                workpaper_id: None,
+                repeated_from_finding_id: Some(&finding.internal_audit_finding_id),
+                reference: Some("F-X"),
+                title: "Invalid cross-client repeat",
+                condition_text: "This should be rejected.",
+                criteria_text: None,
+                cause_text: None,
+                risk_effect_text: None,
+                recommendation_text: None,
+                risk_classification: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("cross-client repeated finding must fail");
+        assert!(cross_client_repeat
+            .to_string()
+            .contains("same client"));
+
+        let client_findings =
+            list_internal_audit_findings_for_client(&database.path, &client.client_id)
+                .expect("cross-engagement client findings");
+        assert_eq!(client_findings.len(), 2);
+        assert!(client_findings.iter().any(|item| {
+            item.internal_audit_finding_id == finding.internal_audit_finding_id
+        }));
+        assert!(client_findings.iter().any(|item| {
+            item.internal_audit_finding_id == repeated_finding.internal_audit_finding_id
+        }));
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let finding_mutation = connection
+            .execute(
+                "UPDATE internal_audit_findings
+                 SET title = 'Mutated'
+                 WHERE internal_audit_finding_id = ?1",
+                [&finding.internal_audit_finding_id],
+            )
+            .expect_err("findings must be immutable");
+        assert!(finding_mutation
+            .to_string()
+            .contains("internal audit findings are immutable"));
+
+        let followup_mutation = connection
+            .execute(
+                "UPDATE internal_audit_finding_followups
+                 SET status = 'OPEN'
+                 WHERE internal_audit_finding_followup_id = ?1",
+                [&closed.internal_audit_finding_followup_id],
+            )
+            .expect_err("finding follow-ups must be immutable");
+        assert!(followup_mutation
+            .to_string()
+            .contains("finding follow-ups are immutable"));
     }
 
     #[test]
