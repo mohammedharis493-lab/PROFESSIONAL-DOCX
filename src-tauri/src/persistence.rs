@@ -19003,6 +19003,119 @@ mod tests {
             vec!["OPEN", "UNDER_REVIEW"]
         );
 
+        let report_issue_ids = vec![issue.due_diligence_issue_id.clone()];
+        let report_v1 = create_due_diligence_report(
+            &database.path,
+            &workspace.due_diligence_workspace_id,
+            DueDiligenceReportVersionDefinition {
+                title: "Acquisition due diligence report",
+                executive_summary: Some("Initial internal diligence summary.\nRevenue cut-off remains under review."),
+                scope_summary: Some("Financial due diligence focused on revenue quality and cut-off."),
+                overall_conclusion: Some("Further work is required before confirming the issue."),
+                issue_ids: &report_issue_ids,
+                created_by: Some("dd-reviewer-2"),
+            },
+        )
+        .expect("report v1 should create");
+        assert_eq!(report_v1.latest_version_number, 1);
+        assert_eq!(report_v1.latest_issue_count, 1);
+        assert_eq!(report_v1.latest_issue_snapshot_hash.len(), 32);
+
+        let report_v1_issues = list_due_diligence_report_version_issues(
+            &database.path,
+            &report_v1.latest_version_id,
+        )
+        .expect("report v1 issue snapshot");
+        assert_eq!(report_v1_issues.len(), 1);
+        assert_eq!(
+            report_v1_issues[0].due_diligence_issue_event_id,
+            review_event.due_diligence_issue_event_id
+        );
+        assert_eq!(report_v1_issues[0].status, "UNDER_REVIEW");
+
+        let confirmed_event = create_due_diligence_issue_event(
+            &database.path,
+            DueDiligenceIssueEventDefinition {
+                due_diligence_issue_id: &issue.due_diligence_issue_id,
+                status: "CONFIRMED",
+                internal_conclusion: Some("Quarter-end cut-off exceptions are confirmed."),
+                deal_impact: Some("Confirmed quality-of-earnings adjustment is required."),
+                recommendation: Some("Reflect the adjustment in the transaction model."),
+                actor_id: Some("dd-reviewer-2"),
+            },
+        )
+        .expect("confirmed issue event should append");
+        assert_eq!(confirmed_event.sequence_number, 3);
+
+        let report_v2 = publish_due_diligence_report_version(
+            &database.path,
+            &report_v1.due_diligence_report_id,
+            DueDiligenceReportVersionDefinition {
+                title: "Acquisition due diligence report",
+                executive_summary: Some("Updated internal diligence summary.\nRevenue cut-off issue is confirmed."),
+                scope_summary: Some("Financial due diligence focused on revenue quality and cut-off."),
+                overall_conclusion: Some("A quality-of-earnings adjustment should be reflected in deal analysis."),
+                issue_ids: &report_issue_ids,
+                created_by: Some("dd-reviewer-2"),
+            },
+        )
+        .expect("report v2 should publish");
+        assert_eq!(report_v2.latest_version_number, 2);
+        assert_ne!(
+            report_v1.latest_issue_snapshot_hash,
+            report_v2.latest_issue_snapshot_hash
+        );
+
+        let report_versions =
+            list_due_diligence_report_versions(&database.path, &report_v1.due_diligence_report_id)
+                .expect("report versions");
+        assert_eq!(report_versions.len(), 2);
+        assert_eq!(report_versions[0].version_number, 1);
+        assert_eq!(report_versions[1].version_number, 2);
+
+        let report_v1_issues_after_update = list_due_diligence_report_version_issues(
+            &database.path,
+            &report_v1.latest_version_id,
+        )
+        .expect("report v1 should remain exact");
+        assert_eq!(
+            report_v1_issues_after_update[0].due_diligence_issue_event_id,
+            review_event.due_diligence_issue_event_id
+        );
+
+        let report_v2_issues = list_due_diligence_report_version_issues(
+            &database.path,
+            &report_v2.latest_version_id,
+        )
+        .expect("report v2 issue snapshot");
+        assert_eq!(
+            report_v2_issues[0].due_diligence_issue_event_id,
+            confirmed_event.due_diligence_issue_event_id
+        );
+        assert_eq!(report_v2_issues[0].status, "CONFIRMED");
+
+        let reports =
+            list_due_diligence_reports(&database.path, &workspace.due_diligence_workspace_id)
+                .expect("workspace reports");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].latest_version_number, 2);
+        assert_eq!(reports[0].latest_issue_count, 1);
+
+        let cross_workspace_report = create_due_diligence_report(
+            &database.path,
+            &other_workspace.due_diligence_workspace_id,
+            DueDiligenceReportVersionDefinition {
+                title: "Invalid cross-workspace report",
+                executive_summary: None,
+                scope_summary: None,
+                overall_conclusion: None,
+                issue_ids: &report_issue_ids,
+                created_by: None,
+            },
+        )
+        .expect_err("report issue must belong to the same workspace");
+        assert!(cross_workspace_report.to_string().contains("same workspace"));
+
         let issue_evidence = create_due_diligence_issue_evidence_link(
             &database.path,
             &issue.due_diligence_issue_id,
@@ -19087,6 +19200,32 @@ mod tests {
         assert!(issue_evidence_mutation
             .to_string()
             .contains("due diligence issue evidence links are immutable"));
+
+        let report_version_mutation = connection
+            .execute(
+                "UPDATE due_diligence_report_versions
+                 SET title = 'Mutated'
+                 WHERE due_diligence_report_version_id = ?1",
+                [&report_v1.latest_version_id],
+            )
+            .expect_err("report versions must be immutable");
+        assert!(report_version_mutation
+            .to_string()
+            .contains("due diligence report versions are immutable"));
+
+        let report_issue_link_id = &report_v1_issues_after_update[0]
+            .due_diligence_report_issue_link_id;
+        let report_issue_mutation = connection
+            .execute(
+                "UPDATE due_diligence_report_issue_links
+                 SET linked_at_ms = linked_at_ms + 1
+                 WHERE due_diligence_report_issue_link_id = ?1",
+                [report_issue_link_id],
+            )
+            .expect_err("report issue links must be immutable");
+        assert!(report_issue_mutation
+            .to_string()
+            .contains("due diligence report issue links are immutable"));
     }
 
     #[test]
