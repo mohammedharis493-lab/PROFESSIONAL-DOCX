@@ -6,6 +6,7 @@ mod ledger;
 mod normal_data;
 pub mod normal_data_comparison;
 mod normal_data_datasets;
+pub mod normal_data_source_reader;
 mod persistence;
 mod preview;
 mod reconciliation;
