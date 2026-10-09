@@ -3,6 +3,7 @@ mod filesystem;
 mod indexer;
 mod launcher;
 mod ledger;
+mod normal_data;
 mod persistence;
 mod preview;
 mod reconciliation;
@@ -2433,6 +2434,36 @@ impl From<search::SearchResultRecord> for SearchResultDto {
             score: value.score,
         }
     }
+}
+
+#[tauri::command]
+fn create_normal_data_workspace(
+    name: String,
+    description: Option<String>,
+    client_id: Option<String>,
+    period_start: Option<String>,
+    period_end: Option<String>,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<normal_data::WorkspaceRecord, String> {
+    validate_optional_uuid(client_id.as_deref(), "normal-data-client")?;
+    normal_data::create_workspace(
+        database.path(),
+        normal_data::WorkspaceDefinition {
+            name: &name,
+            description: description.as_deref(),
+            client_id: client_id.as_deref(),
+            period_start: period_start.as_deref(),
+            period_end: period_end.as_deref(),
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_normal_data_workspaces(
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<normal_data::WorkspaceRecord>, String> {
+    normal_data::list_workspaces(database.path()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4983,6 +5014,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            create_normal_data_workspace,
+            list_normal_data_workspaces,
             create_client,
             list_clients,
             create_service_type,
