@@ -1,7 +1,7 @@
 //! Engagement-independent normal-data workspace metadata.
 //! No filesystem path, controlled-evidence capture, or deterministic run is accepted here.
 use crate::persistence::{self, PersistenceError};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, TransactionBehavior};
 use serde::Serialize;
 use serde_json::json;
 use std::path::Path;
