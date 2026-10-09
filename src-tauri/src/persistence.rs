@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 21;
+const LATEST_SCHEMA_VERSION: i64 = 22;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -133,6 +133,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 21,
         name: "internal_audit_findings",
         sql: include_str!("../migrations/0021_internal_audit_findings.sql"),
+    },
+    Migration {
+        version: 22,
+        name: "due_diligence",
+        sql: include_str!("../migrations/0022_due_diligence.sql"),
     },
 ];
 
@@ -652,6 +657,103 @@ pub struct InternalAuditFindingEvidenceRecord {
     pub internal_audit_finding_evidence_link_id: String,
     pub internal_audit_finding_id: String,
     pub internal_audit_finding_followup_id: Option<String>,
+    pub controlled_evidence_version_id: String,
+    pub document_id: String,
+    pub source_content_version_id: String,
+    pub source_sha256: Vec<u8>,
+    pub description: Option<String>,
+    pub linked_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceWorkspaceRecord {
+    pub due_diligence_workspace_id: String,
+    pub engagement_id: String,
+    pub engagement_name: String,
+    pub name: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceSectionRecord {
+    pub due_diligence_section_id: String,
+    pub due_diligence_workspace_id: String,
+    pub parent_section_id: Option<String>,
+    pub code: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub display_order: i64,
+    pub created_at_ms: i64,
+}
+
+pub struct DueDiligenceSectionDefinition<'a> {
+    pub due_diligence_workspace_id: &'a str,
+    pub parent_section_id: Option<&'a str>,
+    pub code: Option<&'a str>,
+    pub name: &'a str,
+    pub description: Option<&'a str>,
+    pub display_order: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestRecord {
+    pub due_diligence_request_id: String,
+    pub due_diligence_workspace_id: String,
+    pub due_diligence_section_id: Option<String>,
+    pub section_name: Option<String>,
+    pub reference: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub requested_from_party: Option<String>,
+    pub due_date: Option<String>,
+    pub internal_notes: Option<String>,
+    pub created_at_ms: i64,
+    pub latest_event_id: String,
+    pub latest_sequence_number: u64,
+    pub latest_status: String,
+    pub latest_response_text: Option<String>,
+    pub latest_internal_assessment: Option<String>,
+    pub latest_actor_id: Option<String>,
+    pub latest_occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceRequestDefinition<'a> {
+    pub due_diligence_workspace_id: &'a str,
+    pub due_diligence_section_id: Option<&'a str>,
+    pub reference: Option<&'a str>,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub requested_from_party: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+    pub internal_notes: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestEventRecord {
+    pub due_diligence_request_event_id: String,
+    pub due_diligence_request_id: String,
+    pub sequence_number: u64,
+    pub status: String,
+    pub response_text: Option<String>,
+    pub internal_assessment: Option<String>,
+    pub actor_id: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
+pub struct DueDiligenceRequestEventDefinition<'a> {
+    pub due_diligence_request_id: &'a str,
+    pub status: &'a str,
+    pub response_text: Option<&'a str>,
+    pub internal_assessment: Option<&'a str>,
+    pub actor_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DueDiligenceRequestEvidenceRecord {
+    pub due_diligence_request_evidence_link_id: String,
+    pub due_diligence_request_id: String,
+    pub due_diligence_request_event_id: Option<String>,
     pub controlled_evidence_version_id: String,
     pub document_id: String,
     pub source_content_version_id: String,
@@ -4637,6 +4739,20 @@ fn normalize_internal_audit_finding_status(value: &str) -> Result<String, Persis
     } else {
         Err(PersistenceError::Configuration(
             "internal audit finding status is not supported".to_string(),
+        ))
+    }
+}
+
+fn normalize_due_diligence_request_status(value: &str) -> Result<String, PersistenceError> {
+    let status = workflow_state_key(value);
+    if matches!(
+        status.as_str(),
+        "OPEN" | "PARTIALLY_RESPONDED" | "RESPONDED" | "CLOSED" | "WITHDRAWN"
+    ) {
+        Ok(status)
+    } else {
+        Err(PersistenceError::Configuration(
+            "due diligence request status is not supported".to_string(),
         ))
     }
 }
@@ -8690,6 +8806,798 @@ pub fn list_internal_audit_finding_evidence(
             linked_at_ms: row.get(8)?,
         })
     })?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_due_diligence_workspace(
+    database_path: &Path,
+    engagement_id: &str,
+    name: &str,
+) -> Result<DueDiligenceWorkspaceRecord, PersistenceError> {
+    let name = normalize_domain_label(name, "due diligence workspace name", 240)?;
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let engagement_name: Option<String> = transaction
+        .query_row(
+            "SELECT name
+             FROM engagements
+             WHERE engagement_id = ?1
+               AND archived_at_ms IS NULL",
+            [engagement_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(engagement_name) = engagement_name else {
+        return Err(PersistenceError::Configuration(format!(
+            "engagement {engagement_id} does not exist"
+        )));
+    };
+
+    let existing: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM due_diligence_workspaces
+            WHERE engagement_id = ?1
+        )",
+        [engagement_id],
+        |row| row.get(0),
+    )?;
+    if existing {
+        return Err(PersistenceError::Configuration(
+            "due diligence workspace already exists for this engagement".to_string(),
+        ));
+    }
+
+    let due_diligence_workspace_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_workspaces (
+            due_diligence_workspace_id,
+            engagement_id,
+            name,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![&due_diligence_workspace_id, engagement_id, &name, now],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_WORKSPACE_CREATED",
+            entity_type: "DUE_DILIGENCE_WORKSPACE",
+            entity_id: &due_diligence_workspace_id,
+            related_entity_type: Some("ENGAGEMENT"),
+            related_entity_id: Some(engagement_id),
+            occurred_at_ms: now,
+            details: json!({ "name": name }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceWorkspaceRecord {
+        due_diligence_workspace_id,
+        engagement_id: engagement_id.to_string(),
+        engagement_name,
+        name,
+        created_at_ms: now,
+    })
+}
+
+pub fn get_due_diligence_workspace_for_engagement(
+    database_path: &Path,
+    engagement_id: &str,
+) -> Result<Option<DueDiligenceWorkspaceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    connection
+        .query_row(
+            "SELECT
+                w.due_diligence_workspace_id,
+                w.engagement_id,
+                e.name,
+                w.name,
+                w.created_at_ms
+             FROM due_diligence_workspaces w
+             JOIN engagements e ON e.engagement_id = w.engagement_id
+             WHERE w.engagement_id = ?1
+               AND e.archived_at_ms IS NULL",
+            [engagement_id],
+            |row| {
+                Ok(DueDiligenceWorkspaceRecord {
+                    due_diligence_workspace_id: row.get(0)?,
+                    engagement_id: row.get(1)?,
+                    engagement_name: row.get(2)?,
+                    name: row.get(3)?,
+                    created_at_ms: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(PersistenceError::from)
+}
+
+pub fn create_due_diligence_section(
+    database_path: &Path,
+    definition: DueDiligenceSectionDefinition<'_>,
+) -> Result<DueDiligenceSectionRecord, PersistenceError> {
+    let name = normalize_domain_label(definition.name, "due diligence section name", 240)?;
+    let code = normalize_optional_domain_text(definition.code, 80);
+    let description = normalize_optional_domain_text(definition.description, 4000);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let workspace_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM due_diligence_workspaces
+            WHERE due_diligence_workspace_id = ?1
+        )",
+        [definition.due_diligence_workspace_id],
+        |row| row.get(0),
+    )?;
+    if !workspace_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence workspace {} does not exist",
+            definition.due_diligence_workspace_id
+        )));
+    }
+
+    if let Some(parent_section_id) = definition.parent_section_id {
+        let parent_workspace: Option<String> = transaction
+            .query_row(
+                "SELECT due_diligence_workspace_id
+                 FROM due_diligence_sections
+                 WHERE due_diligence_section_id = ?1",
+                [parent_section_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if parent_workspace.as_deref() != Some(definition.due_diligence_workspace_id) {
+            return Err(PersistenceError::Configuration(
+                "due diligence parent section must belong to the same workspace".to_string(),
+            ));
+        }
+    }
+
+    let due_diligence_section_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_sections (
+            due_diligence_section_id,
+            due_diligence_workspace_id,
+            parent_section_id,
+            code,
+            name,
+            description,
+            display_order,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &due_diligence_section_id,
+            definition.due_diligence_workspace_id,
+            definition.parent_section_id,
+            code.as_deref(),
+            &name,
+            description.as_deref(),
+            definition.display_order,
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_SECTION_CREATED",
+            entity_type: "DUE_DILIGENCE_SECTION",
+            entity_id: &due_diligence_section_id,
+            related_entity_type: Some("DUE_DILIGENCE_WORKSPACE"),
+            related_entity_id: Some(definition.due_diligence_workspace_id),
+            occurred_at_ms: now,
+            details: json!({
+                "parentSectionId": definition.parent_section_id,
+                "code": code,
+                "name": name,
+                "displayOrder": definition.display_order
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceSectionRecord {
+        due_diligence_section_id,
+        due_diligence_workspace_id: definition.due_diligence_workspace_id.to_string(),
+        parent_section_id: definition.parent_section_id.map(str::to_string),
+        code,
+        name,
+        description,
+        display_order: definition.display_order,
+        created_at_ms: now,
+    })
+}
+
+pub fn list_due_diligence_sections(
+    database_path: &Path,
+    due_diligence_workspace_id: &str,
+) -> Result<Vec<DueDiligenceSectionRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            due_diligence_section_id,
+            due_diligence_workspace_id,
+            parent_section_id,
+            code,
+            name,
+            description,
+            display_order,
+            created_at_ms
+         FROM due_diligence_sections
+         WHERE due_diligence_workspace_id = ?1
+         ORDER BY display_order, created_at_ms, due_diligence_section_id",
+    )?;
+    let rows = statement.query_map([due_diligence_workspace_id], |row| {
+        Ok(DueDiligenceSectionRecord {
+            due_diligence_section_id: row.get(0)?,
+            due_diligence_workspace_id: row.get(1)?,
+            parent_section_id: row.get(2)?,
+            code: row.get(3)?,
+            name: row.get(4)?,
+            description: row.get(5)?,
+            display_order: row.get(6)?,
+            created_at_ms: row.get(7)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_due_diligence_request(
+    database_path: &Path,
+    definition: DueDiligenceRequestDefinition<'_>,
+) -> Result<DueDiligenceRequestRecord, PersistenceError> {
+    let title = normalize_domain_label(definition.title, "due diligence request title", 500)?;
+    let reference = normalize_optional_domain_text(definition.reference, 100);
+    let description = normalize_optional_domain_text(definition.description, 8000);
+    let requested_from_party = normalize_optional_domain_text(definition.requested_from_party, 240);
+    let due_date = normalize_optional_domain_text(definition.due_date, 40);
+    let internal_notes = normalize_optional_domain_text(definition.internal_notes, 8000);
+    let actor_id = normalize_optional_domain_text(definition.actor_id, 160);
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let workspace_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM due_diligence_workspaces
+            WHERE due_diligence_workspace_id = ?1
+        )",
+        [definition.due_diligence_workspace_id],
+        |row| row.get(0),
+    )?;
+    if !workspace_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence workspace {} does not exist",
+            definition.due_diligence_workspace_id
+        )));
+    }
+
+    let section_name = if let Some(section_id) = definition.due_diligence_section_id {
+        let section: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT due_diligence_workspace_id, name
+                 FROM due_diligence_sections
+                 WHERE due_diligence_section_id = ?1",
+                [section_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((section_workspace_id, section_name)) = section else {
+            return Err(PersistenceError::Configuration(format!(
+                "due diligence section {section_id} does not exist"
+            )));
+        };
+        if section_workspace_id != definition.due_diligence_workspace_id {
+            return Err(PersistenceError::Configuration(
+                "due diligence request section must belong to the same workspace".to_string(),
+            ));
+        }
+        Some(section_name)
+    } else {
+        None
+    };
+
+    let due_diligence_request_id = Uuid::new_v4().to_string();
+    let due_diligence_request_event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_requests (
+            due_diligence_request_id,
+            due_diligence_workspace_id,
+            due_diligence_section_id,
+            reference,
+            title,
+            description,
+            requested_from_party,
+            due_date,
+            internal_notes,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &due_diligence_request_id,
+            definition.due_diligence_workspace_id,
+            definition.due_diligence_section_id,
+            reference.as_deref(),
+            &title,
+            description.as_deref(),
+            requested_from_party.as_deref(),
+            due_date.as_deref(),
+            internal_notes.as_deref(),
+            now
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO due_diligence_request_events (
+            due_diligence_request_event_id,
+            due_diligence_request_id,
+            sequence_number,
+            status,
+            response_text,
+            internal_assessment,
+            actor_id,
+            occurred_at_ms
+         ) VALUES (?1, ?2, 1, 'OPEN', NULL, NULL, ?3, ?4)",
+        params![
+            &due_diligence_request_event_id,
+            &due_diligence_request_id,
+            actor_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_REQUEST_CREATED",
+            entity_type: "DUE_DILIGENCE_REQUEST",
+            entity_id: &due_diligence_request_id,
+            related_entity_type: Some("DUE_DILIGENCE_WORKSPACE"),
+            related_entity_id: Some(definition.due_diligence_workspace_id),
+            occurred_at_ms: now,
+            details: json!({
+                "sectionId": definition.due_diligence_section_id,
+                "reference": reference,
+                "title": title,
+                "requestedFromParty": requested_from_party,
+                "dueDate": due_date,
+                "hasInternalNotes": internal_notes.is_some()
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceRequestRecord {
+        due_diligence_request_id,
+        due_diligence_workspace_id: definition.due_diligence_workspace_id.to_string(),
+        due_diligence_section_id: definition.due_diligence_section_id.map(str::to_string),
+        section_name,
+        reference,
+        title,
+        description,
+        requested_from_party,
+        due_date,
+        internal_notes,
+        created_at_ms: now,
+        latest_event_id: due_diligence_request_event_id,
+        latest_sequence_number: 1,
+        latest_status: "OPEN".to_string(),
+        latest_response_text: None,
+        latest_internal_assessment: None,
+        latest_actor_id: actor_id,
+        latest_occurred_at_ms: now,
+    })
+}
+
+pub fn list_due_diligence_requests(
+    database_path: &Path,
+    due_diligence_workspace_id: &str,
+) -> Result<Vec<DueDiligenceRequestRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            r.due_diligence_request_id,
+            r.due_diligence_workspace_id,
+            r.due_diligence_section_id,
+            s.name,
+            r.reference,
+            r.title,
+            r.description,
+            r.requested_from_party,
+            r.due_date,
+            r.internal_notes,
+            r.created_at_ms,
+            e.due_diligence_request_event_id,
+            e.sequence_number,
+            e.status,
+            e.response_text,
+            e.internal_assessment,
+            e.actor_id,
+            e.occurred_at_ms
+         FROM due_diligence_requests r
+         LEFT JOIN due_diligence_sections s
+           ON s.due_diligence_section_id = r.due_diligence_section_id
+         JOIN due_diligence_request_events e
+           ON e.due_diligence_request_id = r.due_diligence_request_id
+          AND e.sequence_number = (
+              SELECT MAX(e2.sequence_number)
+              FROM due_diligence_request_events e2
+              WHERE e2.due_diligence_request_id = r.due_diligence_request_id
+          )
+         WHERE r.due_diligence_workspace_id = ?1
+         ORDER BY
+            CASE e.status
+                WHEN 'OPEN' THEN 0
+                WHEN 'PARTIALLY_RESPONDED' THEN 1
+                WHEN 'RESPONDED' THEN 2
+                WHEN 'CLOSED' THEN 3
+                ELSE 4
+            END,
+            CASE WHEN r.due_date IS NULL THEN 1 ELSE 0 END,
+            r.due_date,
+            r.created_at_ms",
+    )?;
+    let rows = statement.query_map([due_diligence_workspace_id], |row| {
+        let sequence_number: i64 = row.get(12)?;
+        Ok(DueDiligenceRequestRecord {
+            due_diligence_request_id: row.get(0)?,
+            due_diligence_workspace_id: row.get(1)?,
+            due_diligence_section_id: row.get(2)?,
+            section_name: row.get(3)?,
+            reference: row.get(4)?,
+            title: row.get(5)?,
+            description: row.get(6)?,
+            requested_from_party: row.get(7)?,
+            due_date: row.get(8)?,
+            internal_notes: row.get(9)?,
+            created_at_ms: row.get(10)?,
+            latest_event_id: row.get(11)?,
+            latest_sequence_number: sequence_number.max(0) as u64,
+            latest_status: row.get(13)?,
+            latest_response_text: row.get(14)?,
+            latest_internal_assessment: row.get(15)?,
+            latest_actor_id: row.get(16)?,
+            latest_occurred_at_ms: row.get(17)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_due_diligence_request_event(
+    database_path: &Path,
+    definition: DueDiligenceRequestEventDefinition<'_>,
+) -> Result<DueDiligenceRequestEventRecord, PersistenceError> {
+    let status = normalize_due_diligence_request_status(definition.status)?;
+    let response_text = normalize_optional_domain_text(definition.response_text, 16000);
+    let internal_assessment = normalize_optional_domain_text(definition.internal_assessment, 16000);
+    let actor_id = normalize_optional_domain_text(definition.actor_id, 160);
+
+    if matches!(status.as_str(), "PARTIALLY_RESPONDED" | "RESPONDED") && response_text.is_none() {
+        return Err(PersistenceError::Configuration(
+            "due diligence response text is required for responded status".to_string(),
+        ));
+    }
+
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current_sequence: Option<i64> = transaction
+        .query_row(
+            "SELECT MAX(sequence_number)
+             FROM due_diligence_request_events
+             WHERE due_diligence_request_id = ?1",
+            [definition.due_diligence_request_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(current_sequence) = current_sequence else {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence request {} does not exist",
+            definition.due_diligence_request_id
+        )));
+    };
+    let next_sequence = current_sequence.checked_add(1).ok_or_else(|| {
+        PersistenceError::Configuration(
+            "due diligence request event sequence exceeds supported range".to_string(),
+        )
+    })?;
+
+    let due_diligence_request_event_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_request_events (
+            due_diligence_request_event_id,
+            due_diligence_request_id,
+            sequence_number,
+            status,
+            response_text,
+            internal_assessment,
+            actor_id,
+            occurred_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &due_diligence_request_event_id,
+            definition.due_diligence_request_id,
+            next_sequence,
+            &status,
+            response_text.as_deref(),
+            internal_assessment.as_deref(),
+            actor_id.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_REQUEST_EVENT_APPENDED",
+            entity_type: "DUE_DILIGENCE_REQUEST_EVENT",
+            entity_id: &due_diligence_request_event_id,
+            related_entity_type: Some("DUE_DILIGENCE_REQUEST"),
+            related_entity_id: Some(definition.due_diligence_request_id),
+            occurred_at_ms: now,
+            details: json!({
+                "sequenceNumber": next_sequence,
+                "status": status,
+                "hasResponse": response_text.is_some(),
+                "hasInternalAssessment": internal_assessment.is_some(),
+                "actorId": actor_id
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceRequestEventRecord {
+        due_diligence_request_event_id,
+        due_diligence_request_id: definition.due_diligence_request_id.to_string(),
+        sequence_number: next_sequence.max(0) as u64,
+        status,
+        response_text,
+        internal_assessment,
+        actor_id,
+        occurred_at_ms: now,
+    })
+}
+
+pub fn list_due_diligence_request_events(
+    database_path: &Path,
+    due_diligence_request_id: &str,
+) -> Result<Vec<DueDiligenceRequestEventRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            due_diligence_request_event_id,
+            due_diligence_request_id,
+            sequence_number,
+            status,
+            response_text,
+            internal_assessment,
+            actor_id,
+            occurred_at_ms
+         FROM due_diligence_request_events
+         WHERE due_diligence_request_id = ?1
+         ORDER BY sequence_number",
+    )?;
+    let rows = statement.query_map([due_diligence_request_id], |row| {
+        let sequence_number: i64 = row.get(2)?;
+        Ok(DueDiligenceRequestEventRecord {
+            due_diligence_request_event_id: row.get(0)?,
+            due_diligence_request_id: row.get(1)?,
+            sequence_number: sequence_number.max(0) as u64,
+            status: row.get(3)?,
+            response_text: row.get(4)?,
+            internal_assessment: row.get(5)?,
+            actor_id: row.get(6)?,
+            occurred_at_ms: row.get(7)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+pub fn create_due_diligence_request_evidence_link(
+    database_path: &Path,
+    due_diligence_request_id: &str,
+    due_diligence_request_event_id: Option<&str>,
+    controlled_evidence_version_id: &str,
+    description: Option<&str>,
+) -> Result<DueDiligenceRequestEvidenceRecord, PersistenceError> {
+    let description = normalize_optional_domain_text(description, 1000);
+    let mut connection = open_configured_connection(database_path)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let request_exists: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM due_diligence_requests
+            WHERE due_diligence_request_id = ?1
+        )",
+        [due_diligence_request_id],
+        |row| row.get(0),
+    )?;
+    if !request_exists {
+        return Err(PersistenceError::Configuration(format!(
+            "due diligence request {due_diligence_request_id} does not exist"
+        )));
+    }
+
+    if let Some(event_id) = due_diligence_request_event_id {
+        let event_request_id: Option<String> = transaction
+            .query_row(
+                "SELECT due_diligence_request_id
+                 FROM due_diligence_request_events
+                 WHERE due_diligence_request_event_id = ?1",
+                [event_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if event_request_id.as_deref() != Some(due_diligence_request_id) {
+            return Err(PersistenceError::Configuration(
+                "due diligence evidence event must belong to the same request".to_string(),
+            ));
+        }
+    }
+
+    let evidence: Option<(String, String, Vec<u8>, String, String)> = transaction
+        .query_row(
+            "SELECT
+                document_id,
+                source_content_version_id,
+                sha256,
+                verification_state,
+                retention_state
+             FROM controlled_evidence_versions
+             WHERE controlled_evidence_version_id = ?1",
+            [controlled_evidence_version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        verification_state,
+        retention_state,
+    )) = evidence
+    else {
+        return Err(PersistenceError::Configuration(format!(
+            "controlled evidence version {controlled_evidence_version_id} does not exist"
+        )));
+    };
+    if verification_state != "HASH_VERIFIED" || retention_state != "RETAINED" {
+        return Err(PersistenceError::Configuration(
+            "due diligence evidence requires retained hash-verified controlled evidence"
+                .to_string(),
+        ));
+    }
+    if source_sha256.len() != 32 {
+        return Err(PersistenceError::Configuration(
+            "controlled due diligence evidence hash is invalid".to_string(),
+        ));
+    }
+
+    let due_diligence_request_evidence_link_id = Uuid::new_v4().to_string();
+    let now = now_unix_ms()?;
+    transaction.execute(
+        "INSERT INTO due_diligence_request_evidence_links (
+            due_diligence_request_evidence_link_id,
+            due_diligence_request_id,
+            due_diligence_request_event_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &due_diligence_request_evidence_link_id,
+            due_diligence_request_id,
+            due_diligence_request_event_id,
+            controlled_evidence_version_id,
+            &document_id,
+            &source_content_version_id,
+            &source_sha256,
+            description.as_deref(),
+            now
+        ],
+    )?;
+
+    insert_domain_audit_event(
+        &transaction,
+        DomainAuditEvent {
+            event_type: "DUE_DILIGENCE_REQUEST_EVIDENCE_LINKED",
+            entity_type: "DUE_DILIGENCE_REQUEST_EVIDENCE",
+            entity_id: &due_diligence_request_evidence_link_id,
+            related_entity_type: Some("DUE_DILIGENCE_REQUEST"),
+            related_entity_id: Some(due_diligence_request_id),
+            occurred_at_ms: now,
+            details: json!({
+                "requestEventId": due_diligence_request_event_id,
+                "controlledEvidenceVersionId": controlled_evidence_version_id,
+                "documentId": document_id,
+                "sourceContentVersionId": source_content_version_id,
+                "sourceSha256": bytes_to_lower_hex(&source_sha256)
+            }),
+        },
+    )?;
+    transaction.commit()?;
+
+    Ok(DueDiligenceRequestEvidenceRecord {
+        due_diligence_request_evidence_link_id,
+        due_diligence_request_id: due_diligence_request_id.to_string(),
+        due_diligence_request_event_id: due_diligence_request_event_id.map(str::to_string),
+        controlled_evidence_version_id: controlled_evidence_version_id.to_string(),
+        document_id,
+        source_content_version_id,
+        source_sha256,
+        description,
+        linked_at_ms: now,
+    })
+}
+
+pub fn list_due_diligence_request_evidence(
+    database_path: &Path,
+    due_diligence_request_id: &str,
+) -> Result<Vec<DueDiligenceRequestEvidenceRecord>, PersistenceError> {
+    let connection = open_configured_connection(database_path)?;
+    let mut statement = connection.prepare(
+        "SELECT
+            due_diligence_request_evidence_link_id,
+            due_diligence_request_id,
+            due_diligence_request_event_id,
+            controlled_evidence_version_id,
+            document_id,
+            source_content_version_id,
+            source_sha256,
+            description,
+            linked_at_ms
+         FROM due_diligence_request_evidence_links
+         WHERE due_diligence_request_id = ?1
+         ORDER BY linked_at_ms, due_diligence_request_evidence_link_id",
+    )?;
+    let rows = statement.query_map([due_diligence_request_id], |row| {
+        Ok(DueDiligenceRequestEvidenceRecord {
+            due_diligence_request_evidence_link_id: row.get(0)?,
+            due_diligence_request_id: row.get(1)?,
+            due_diligence_request_event_id: row.get(2)?,
+            controlled_evidence_version_id: row.get(3)?,
+            document_id: row.get(4)?,
+            source_content_version_id: row.get(5)?,
+            source_sha256: row.get(6)?,
+            description: row.get(7)?,
+            linked_at_ms: row.get(8)?,
+        })
+    })?;
+
     let mut result = Vec::new();
     for row in rows {
         result.push(row?);
@@ -15107,7 +16015,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 21);
+        assert_eq!(migration_count, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15176,14 +16084,19 @@ mod tests {
                        'internal_audit_test_evidence_links',
                        'internal_audit_findings',
                        'internal_audit_finding_followups',
-                       'internal_audit_finding_evidence_links'
+                       'internal_audit_finding_evidence_links',
+                       'due_diligence_workspaces',
+                       'due_diligence_sections',
+                       'due_diligence_requests',
+                       'due_diligence_request_events',
+                       'due_diligence_request_evidence_links'
                    )",
                 [],
                 |row| row.get(0),
             )
             .expect("schema tables should be queryable");
 
-        assert_eq!(table_count, 63);
+        assert_eq!(table_count, 68);
     }
 
     #[test]
@@ -15219,7 +16132,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15267,7 +16180,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_exists: i64 = connection
             .query_row(
@@ -15316,7 +16229,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15361,14 +16274,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_exists: bool = connection
             .query_row(
@@ -15410,14 +16323,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15467,14 +16380,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15519,14 +16432,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15571,14 +16484,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15623,14 +16536,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15674,14 +16587,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15725,14 +16638,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15789,14 +16702,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -15848,14 +16761,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15899,14 +16812,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_exists: bool = connection
             .query_row(
@@ -15948,14 +16861,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -15999,14 +16912,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_exists: bool = connection
             .query_row(
@@ -16049,14 +16962,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -16102,14 +17015,14 @@ mod tests {
             assert_eq!(user_version, 18);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -16154,14 +17067,14 @@ mod tests {
             assert_eq!(user_version, 19);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -16209,14 +17122,14 @@ mod tests {
             assert_eq!(user_version, 20);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 21");
+        initialize_database(&database.path).expect("database should upgrade to version 22");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 21);
+        assert_eq!(user_version, 22);
 
         let table_count: i64 = connection
             .query_row(
@@ -16232,6 +17145,440 @@ mod tests {
             )
             .expect("internal audit finding tables should exist");
         assert_eq!(table_count, 3);
+    }
+
+    #[test]
+    fn twenty_second_migration_adds_due_diligence_request_foundation() {
+        let database = TestDatabase::new();
+        let parent = database
+            .path
+            .parent()
+            .expect("test database should have a parent");
+        fs::create_dir_all(parent).expect("test database directory should be created");
+
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("database should open");
+            ensure_migration_history_table(&connection)
+                .expect("migration history table should initialize");
+
+            for migration in &MIGRATIONS[..21] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("prior migration should apply");
+            }
+
+            let user_version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("version should be readable");
+            assert_eq!(user_version, 21);
+        }
+
+        initialize_database(&database.path).expect("database should upgrade to version 22");
+
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database should open");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("version should be readable");
+        assert_eq!(user_version, 22);
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                       'due_diligence_workspaces',
+                       'due_diligence_sections',
+                       'due_diligence_requests',
+                       'due_diligence_request_events',
+                       'due_diligence_request_evidence_links'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("due diligence tables should exist");
+        assert_eq!(table_count, 5);
+    }
+
+    #[test]
+    fn due_diligence_request_history_is_internal_append_only_and_source_traceable() {
+        let database = TestDatabase::new();
+        initialize_database(&database.path).expect("database initialization should succeed");
+
+        let client = create_client(&database.path, "DD Client").expect("client");
+        let service = create_service_type(&database.path, "Due Diligence").expect("service");
+        let engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Acquisition DD 2026",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("engagement");
+        let other_engagement = create_engagement(
+            &database.path,
+            &client.client_id,
+            &service.service_type_id,
+            "Other DD 2026",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("other engagement");
+
+        let workspace = create_due_diligence_workspace(
+            &database.path,
+            &engagement.engagement_id,
+            "Acquisition data room",
+        )
+        .expect("workspace");
+        assert_eq!(workspace.engagement_name, "Acquisition DD 2026");
+        assert!(create_due_diligence_workspace(
+            &database.path,
+            &engagement.engagement_id,
+            "Duplicate workspace",
+        )
+        .expect_err("duplicate workspace should fail")
+        .to_string()
+        .contains("already exists"));
+
+        let other_workspace = create_due_diligence_workspace(
+            &database.path,
+            &other_engagement.engagement_id,
+            "Other data room",
+        )
+        .expect("other workspace");
+
+        let financial = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                parent_section_id: None,
+                code: Some("FDD"),
+                name: "Financial DD",
+                description: Some("Financial diligence requests."),
+                display_order: 10,
+            },
+        )
+        .expect("financial section");
+        let revenue = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                parent_section_id: Some(&financial.due_diligence_section_id),
+                code: Some("REV"),
+                name: "Revenue",
+                description: None,
+                display_order: 20,
+            },
+        )
+        .expect("child section");
+        assert_eq!(
+            revenue.parent_section_id.as_deref(),
+            Some(financial.due_diligence_section_id.as_str())
+        );
+
+        let other_section = create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &other_workspace.due_diligence_workspace_id,
+                parent_section_id: None,
+                code: None,
+                name: "Other",
+                description: None,
+                display_order: 10,
+            },
+        )
+        .expect("other section");
+
+        assert!(create_due_diligence_section(
+            &database.path,
+            DueDiligenceSectionDefinition {
+                due_diligence_workspace_id: &other_workspace.due_diligence_workspace_id,
+                parent_section_id: Some(&financial.due_diligence_section_id),
+                code: None,
+                name: "Invalid child",
+                description: None,
+                display_order: 20,
+            },
+        )
+        .expect_err("cross-workspace parent should fail")
+        .to_string()
+        .contains("same workspace"));
+
+        let request = create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&revenue.due_diligence_section_id),
+                reference: Some("FDD-01"),
+                title: "Monthly revenue bridge",
+                description: Some("Provide monthly revenue bridge for the review period."),
+                requested_from_party: Some("Seller finance team"),
+                due_date: Some("2026-10-31"),
+                internal_notes: Some("Internal: validate unusual quarter-end cut-off."),
+                actor_id: None,
+            },
+        )
+        .expect("request");
+        assert_eq!(request.latest_status, "OPEN");
+        assert_eq!(request.latest_sequence_number, 1);
+        assert_eq!(request.section_name.as_deref(), Some("Revenue"));
+        assert_eq!(
+            request.internal_notes.as_deref(),
+            Some("Internal: validate unusual quarter-end cut-off.")
+        );
+
+        assert!(create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&other_section.due_diligence_section_id),
+                reference: None,
+                title: "Invalid section request",
+                description: None,
+                requested_from_party: None,
+                due_date: None,
+                internal_notes: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("cross-workspace section should fail")
+        .to_string()
+        .contains("same workspace"));
+
+        assert!(create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "PARTIALLY_RESPONDED",
+                response_text: None,
+                internal_assessment: None,
+                actor_id: None,
+            },
+        )
+        .expect_err("responded status without response should fail")
+        .to_string()
+        .contains("response text is required"));
+
+        let response = create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "PARTIALLY_RESPONDED",
+                response_text: Some("Revenue bridge uploaded; two subsidiaries pending."),
+                internal_assessment: Some("Internal: reconcile uploaded bridge to TB."),
+                actor_id: None,
+            },
+        )
+        .expect("partial response");
+        assert_eq!(response.sequence_number, 2);
+
+        let closed = create_due_diligence_request_event(
+            &database.path,
+            DueDiligenceRequestEventDefinition {
+                due_diligence_request_id: &request.due_diligence_request_id,
+                status: "CLOSED",
+                response_text: None,
+                internal_assessment: Some("Internal: request satisfactorily completed."),
+                actor_id: None,
+            },
+        )
+        .expect("closed event");
+        assert_eq!(closed.sequence_number, 3);
+
+        let requests =
+            list_due_diligence_requests(&database.path, &workspace.due_diligence_workspace_id)
+                .expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].latest_status, "CLOSED");
+        assert_eq!(requests[0].latest_sequence_number, 3);
+
+        let events =
+            list_due_diligence_request_events(&database.path, &request.due_diligence_request_id)
+                .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OPEN", "PARTIALLY_RESPONDED", "CLOSED"]
+        );
+
+        let another_request = create_due_diligence_request(
+            &database.path,
+            DueDiligenceRequestDefinition {
+                due_diligence_workspace_id: &workspace.due_diligence_workspace_id,
+                due_diligence_section_id: Some(&financial.due_diligence_section_id),
+                reference: Some("FDD-02"),
+                title: "Customer concentration",
+                description: None,
+                requested_from_party: None,
+                due_date: None,
+                internal_notes: None,
+                actor_id: None,
+            },
+        )
+        .expect("another request");
+
+        let storage_root_id = Uuid::new_v4().to_string();
+        let document_id = Uuid::new_v4().to_string();
+        let file_instance_id = Uuid::new_v4().to_string();
+        let content_version_id = Uuid::new_v4().to_string();
+        let capture_job_id = Uuid::new_v4().to_string();
+        let controlled_evidence_version_id = Uuid::new_v4().to_string();
+        let source_sha256 = vec![0xDD; 32];
+        {
+            let connection =
+                open_configured_connection(&database.path).expect("database should open");
+            connection
+                .execute(
+                    "INSERT INTO storage_roots (
+                        storage_root_id, kind, native_locator, native_locator_encoding,
+                        display_locator, canonical_native_locator, canonical_display_locator,
+                        availability_state, approved_at_ms, approved_by, created_at_ms, updated_at_ms
+                     ) VALUES (?1, 'LOCAL', ?2, 'TEST', '/dd-test', NULL, NULL, 'AVAILABLE', 1, NULL, 1, 1)",
+                    params![&storage_root_id, vec![0_u8]],
+                )
+                .expect("storage root");
+            connection
+                .execute(
+                    "INSERT INTO documents (
+                        document_id, storage_state, display_name, created_at_ms, created_by, archived_at_ms
+                     ) VALUES (?1, 'CONTROLLED_EVIDENCE', 'Revenue bridge.xlsx', 1, NULL, NULL)",
+                    [&document_id],
+                )
+                .expect("document");
+            connection
+                .execute(
+                    "INSERT INTO file_instances (
+                        file_instance_id, document_id, storage_root_id, relative_path_native,
+                        path_native_encoding, relative_path_display, relative_path_search,
+                        filesystem_identity, volume_identity, creation_time_ms, last_write_time_ms,
+                        size_bytes, file_attributes, reparse_tag, first_seen_at_ms, last_seen_at_ms,
+                        first_seen_generation_id, last_seen_generation_id, availability_state
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, 'TEST', 'Revenue bridge.xlsx', 'revenue bridge xlsx',
+                        NULL, NULL, NULL, NULL, 128, NULL, NULL, 1, 1, NULL, NULL, 'AVAILABLE'
+                     )",
+                    params![
+                        &file_instance_id,
+                        &document_id,
+                        &storage_root_id,
+                        b"Revenue bridge.xlsx".to_vec()
+                    ],
+                )
+                .expect("file instance");
+            connection
+                .execute(
+                    "INSERT INTO content_versions (
+                        content_version_id, document_id, file_instance_id, observed_at_ms,
+                        size_bytes, last_write_time_ms, quick_fingerprint, sha256,
+                        verification_state, source_stable_during_read
+                     ) VALUES (?1, ?2, ?3, 1, 128, NULL, NULL, ?4, 'HASH_VERIFIED', 1)",
+                    params![
+                        &content_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &source_sha256
+                    ],
+                )
+                .expect("content version");
+            connection
+                .execute(
+                    "INSERT INTO evidence_capture_jobs (
+                        evidence_capture_job_id, file_instance_id, document_id, status,
+                        requested_at_ms, started_at_ms, completed_at_ms, capture_reason,
+                        capture_policy, failure_code, failure_message
+                     ) VALUES (?1, ?2, ?3, 'COMPLETE', 1, 1, 1, 'TEST', 'TEST', NULL, NULL)",
+                    params![&capture_job_id, &file_instance_id, &document_id],
+                )
+                .expect("capture job");
+            connection
+                .execute(
+                    "INSERT INTO controlled_evidence_versions (
+                        controlled_evidence_version_id, document_id, source_file_instance_id,
+                        source_content_version_id, evidence_capture_job_id, version_number,
+                        controlled_storage_locator, sha256, size_bytes, captured_at_ms,
+                        captured_by, capture_reason, capture_policy, retention_state,
+                        verification_state, source_stable_during_read
+                     ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 128, 1, NULL, 'TEST', 'TEST',
+                        'RETAINED', 'HASH_VERIFIED', 1
+                     )",
+                    params![
+                        &controlled_evidence_version_id,
+                        &document_id,
+                        &file_instance_id,
+                        &content_version_id,
+                        &capture_job_id,
+                        format!("{document_id}/{controlled_evidence_version_id}"),
+                        &source_sha256
+                    ],
+                )
+                .expect("controlled evidence");
+        }
+
+        let evidence = create_due_diligence_request_evidence_link(
+            &database.path,
+            &request.due_diligence_request_id,
+            Some(&response.due_diligence_request_event_id),
+            &controlled_evidence_version_id,
+            Some("Revenue bridge supporting the partial response."),
+        )
+        .expect("evidence link");
+        assert_eq!(evidence.document_id, document_id);
+        assert_eq!(evidence.source_content_version_id, content_version_id);
+        assert_eq!(evidence.source_sha256, source_sha256);
+
+        assert!(create_due_diligence_request_evidence_link(
+            &database.path,
+            &request.due_diligence_request_id,
+            Some(&another_request.latest_event_id),
+            &controlled_evidence_version_id,
+            None,
+        )
+        .expect_err("event from another request should fail")
+        .to_string()
+        .contains("same request"));
+
+        let evidence_links =
+            list_due_diligence_request_evidence(&database.path, &request.due_diligence_request_id)
+                .expect("evidence links");
+        assert_eq!(evidence_links.len(), 1);
+        assert_eq!(
+            evidence_links[0].due_diligence_request_event_id.as_deref(),
+            Some(response.due_diligence_request_event_id.as_str())
+        );
+
+        let connection =
+            open_configured_connection(&database.path).expect("database should reopen");
+        let request_mutation = connection
+            .execute(
+                "UPDATE due_diligence_requests
+                 SET title = 'Mutated'
+                 WHERE due_diligence_request_id = ?1",
+                [&request.due_diligence_request_id],
+            )
+            .expect_err("requests must be immutable");
+        assert!(request_mutation
+            .to_string()
+            .contains("due diligence requests are immutable"));
+
+        let event_mutation = connection
+            .execute(
+                "UPDATE due_diligence_request_events
+                 SET status = 'OPEN'
+                 WHERE due_diligence_request_event_id = ?1",
+                [&closed.due_diligence_request_event_id],
+            )
+            .expect_err("request events must be immutable");
+        assert!(event_mutation
+            .to_string()
+            .contains("due diligence request events are immutable"));
     }
 
     #[test]
