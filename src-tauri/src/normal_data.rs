@@ -70,7 +70,7 @@ fn calendar_date(value: Option<&str>, label: &str) -> Result<Option<String>, Per
     if year == 0 || !(1..=12).contains(&month) {
         return Err(invalid(format!("{label} is not a valid calendar date")));
     }
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
     let maximum = match month {
         2 if leap => 29,
         2 => 28,
