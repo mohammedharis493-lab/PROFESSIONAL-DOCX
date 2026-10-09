@@ -29,6 +29,17 @@ pub struct DatasetRecord {
     pub created_at_ms: i64,
 }
 
+struct IndexedSource {
+    document_id: String,
+    content_version_id: String,
+    observed_at: i64,
+    size_bytes: i64,
+    verification: String,
+    stable: Option<i64>,
+    fingerprint: Option<Vec<u8>>,
+    sha: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnSemanticRecord {
@@ -108,16 +119,7 @@ pub fn create_dataset(
     // The backend, not the frontend, selects the newest indexed content version.
     // The record freezes the observation and its verification status without
     // pretending that a linked file is retained or re-readable historically.
-    let source: Option<(
-        String,
-        String,
-        i64,
-        i64,
-        String,
-        Option<i64>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-    )> = transaction
+    let source: Option<IndexedSource> = transaction
         .query_row(
             "SELECT fi.document_id, cv.content_version_id, cv.observed_at_ms,
                     cv.size_bytes, cv.verification_state, cv.source_stable_during_read,
@@ -134,20 +136,20 @@ pub fn create_dataset(
              LIMIT 1",
             [file_instance_id],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                ))
+                Ok(IndexedSource {
+                    document_id: row.get(0)?,
+                    content_version_id: row.get(1)?,
+                    observed_at: row.get(2)?,
+                    size_bytes: row.get(3)?,
+                    verification: row.get(4)?,
+                    stable: row.get(5)?,
+                    fingerprint: row.get(6)?,
+                    sha: row.get(7)?,
+                })
             },
         )
         .optional()?;
-    let Some((
+    let Some(IndexedSource {
         document_id,
         content_version_id,
         observed_at,
@@ -156,7 +158,7 @@ pub fn create_dataset(
         stable,
         fingerprint,
         sha,
-    )) = source
+    }) = source
     else {
         return Err(invalid(
             "file instance has no available indexed content version",
