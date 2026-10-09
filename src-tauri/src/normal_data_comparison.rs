@@ -322,7 +322,7 @@ mod tests {
         let result = compare_rows(
             &config(PeriodBasis::FilingPeriod, 0),
             std::slice::from_ref(&source),
-            &[source],
+            std::slice::from_ref(&source),
         )
         .expect("same filing period should match");
         assert_eq!(result.summary.present_both, 1);
