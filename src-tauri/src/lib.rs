@@ -1188,6 +1188,131 @@ impl From<persistence::DueDiligenceIssueEvidenceRecord> for DueDiligenceIssueEvi
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct DueDiligenceReportVersionInputDto {
+    title: String,
+    executive_summary: Option<String>,
+    scope_summary: Option<String>,
+    overall_conclusion: Option<String>,
+    issue_ids: Vec<String>,
+    created_by: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceReportDto {
+    due_diligence_report_id: String,
+    due_diligence_workspace_id: String,
+    latest_version_id: String,
+    latest_version_number: u64,
+    latest_title: String,
+    latest_executive_summary: Option<String>,
+    latest_scope_summary: Option<String>,
+    latest_overall_conclusion: Option<String>,
+    latest_issue_count: u64,
+    latest_issue_snapshot_hash_hex: String,
+    latest_created_by: Option<String>,
+    latest_created_at_ms: i64,
+    created_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceReportRecord> for DueDiligenceReportDto {
+    fn from(value: persistence::DueDiligenceReportRecord) -> Self {
+        Self {
+            due_diligence_report_id: value.due_diligence_report_id,
+            due_diligence_workspace_id: value.due_diligence_workspace_id,
+            latest_version_id: value.latest_version_id,
+            latest_version_number: value.latest_version_number,
+            latest_title: value.latest_title,
+            latest_executive_summary: value.latest_executive_summary,
+            latest_scope_summary: value.latest_scope_summary,
+            latest_overall_conclusion: value.latest_overall_conclusion,
+            latest_issue_count: value.latest_issue_count,
+            latest_issue_snapshot_hash_hex: hex_bytes(&value.latest_issue_snapshot_hash),
+            latest_created_by: value.latest_created_by,
+            latest_created_at_ms: value.latest_created_at_ms,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceReportVersionDto {
+    due_diligence_report_version_id: String,
+    due_diligence_report_id: String,
+    version_number: u64,
+    title: String,
+    executive_summary: Option<String>,
+    scope_summary: Option<String>,
+    overall_conclusion: Option<String>,
+    issue_count: u64,
+    issue_snapshot_hash_hex: String,
+    created_by: Option<String>,
+    created_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceReportVersionRecord> for DueDiligenceReportVersionDto {
+    fn from(value: persistence::DueDiligenceReportVersionRecord) -> Self {
+        Self {
+            due_diligence_report_version_id: value.due_diligence_report_version_id,
+            due_diligence_report_id: value.due_diligence_report_id,
+            version_number: value.version_number,
+            title: value.title,
+            executive_summary: value.executive_summary,
+            scope_summary: value.scope_summary,
+            overall_conclusion: value.overall_conclusion,
+            issue_count: value.issue_count,
+            issue_snapshot_hash_hex: hex_bytes(&value.issue_snapshot_hash),
+            created_by: value.created_by,
+            created_at_ms: value.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueDiligenceReportIssueDto {
+    due_diligence_report_issue_link_id: String,
+    due_diligence_report_version_id: String,
+    due_diligence_issue_id: String,
+    due_diligence_issue_event_id: String,
+    issue_type: String,
+    reference: Option<String>,
+    title: String,
+    category: Option<String>,
+    severity: Option<String>,
+    sequence_number: u64,
+    status: String,
+    internal_conclusion: Option<String>,
+    deal_impact: Option<String>,
+    recommendation: Option<String>,
+    linked_at_ms: i64,
+}
+
+impl From<persistence::DueDiligenceReportIssueRecord> for DueDiligenceReportIssueDto {
+    fn from(value: persistence::DueDiligenceReportIssueRecord) -> Self {
+        Self {
+            due_diligence_report_issue_link_id: value.due_diligence_report_issue_link_id,
+            due_diligence_report_version_id: value.due_diligence_report_version_id,
+            due_diligence_issue_id: value.due_diligence_issue_id,
+            due_diligence_issue_event_id: value.due_diligence_issue_event_id,
+            issue_type: value.issue_type,
+            reference: value.reference,
+            title: value.title,
+            category: value.category,
+            severity: value.severity,
+            sequence_number: value.sequence_number,
+            status: value.status,
+            internal_conclusion: value.internal_conclusion,
+            deal_impact: value.deal_impact,
+            recommendation: value.recommendation,
+            linked_at_ms: value.linked_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InternalAuditFindingInputDto {
     origin_engagement_id: String,
     internal_audit_process_id: String,
@@ -3225,6 +3350,102 @@ fn list_due_diligence_issue_evidence(
         .map_err(|error| error.to_string())
 }
 
+fn validate_due_diligence_report_input(
+    input: &DueDiligenceReportVersionInputDto,
+) -> Result<(), String> {
+    for issue_id in &input.issue_ids {
+        validate_uuid(issue_id, "due-diligence-issue")?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn create_due_diligence_report(
+    due_diligence_workspace_id: String,
+    input: DueDiligenceReportVersionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<DueDiligenceReportDto, String> {
+    validate_uuid(&due_diligence_workspace_id, "due-diligence-workspace")?;
+    validate_due_diligence_report_input(&input)?;
+    persistence::create_due_diligence_report(
+        database.path(),
+        &due_diligence_workspace_id,
+        persistence::DueDiligenceReportVersionDefinition {
+            title: &input.title,
+            executive_summary: input.executive_summary.as_deref(),
+            scope_summary: input.scope_summary.as_deref(),
+            overall_conclusion: input.overall_conclusion.as_deref(),
+            issue_ids: &input.issue_ids,
+            created_by: input.created_by.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn publish_due_diligence_report_version(
+    due_diligence_report_id: String,
+    input: DueDiligenceReportVersionInputDto,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<DueDiligenceReportDto, String> {
+    validate_uuid(&due_diligence_report_id, "due-diligence-report")?;
+    validate_due_diligence_report_input(&input)?;
+    persistence::publish_due_diligence_report_version(
+        database.path(),
+        &due_diligence_report_id,
+        persistence::DueDiligenceReportVersionDefinition {
+            title: &input.title,
+            executive_summary: input.executive_summary.as_deref(),
+            scope_summary: input.scope_summary.as_deref(),
+            overall_conclusion: input.overall_conclusion.as_deref(),
+            issue_ids: &input.issue_ids,
+            created_by: input.created_by.as_deref(),
+        },
+    )
+    .map(Into::into)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_reports(
+    due_diligence_workspace_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceReportDto>, String> {
+    validate_uuid(&due_diligence_workspace_id, "due-diligence-workspace")?;
+    persistence::list_due_diligence_reports(database.path(), &due_diligence_workspace_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_report_versions(
+    due_diligence_report_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceReportVersionDto>, String> {
+    validate_uuid(&due_diligence_report_id, "due-diligence-report")?;
+    persistence::list_due_diligence_report_versions(database.path(), &due_diligence_report_id)
+        .map(|records| records.into_iter().map(Into::into).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_due_diligence_report_version_issues(
+    due_diligence_report_version_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<Vec<DueDiligenceReportIssueDto>, String> {
+    validate_uuid(
+        &due_diligence_report_version_id,
+        "due-diligence-report-version",
+    )?;
+    persistence::list_due_diligence_report_version_issues(
+        database.path(),
+        &due_diligence_report_version_id,
+    )
+    .map(|records| records.into_iter().map(Into::into).collect())
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn import_ledger_from_controlled_evidence(
     input: LedgerImportInputDto,
@@ -4815,6 +5036,11 @@ pub fn run() {
             list_due_diligence_issue_events,
             create_due_diligence_issue_evidence_link,
             list_due_diligence_issue_evidence,
+            create_due_diligence_report,
+            publish_due_diligence_report_version,
+            list_due_diligence_reports,
+            list_due_diligence_report_versions,
+            list_due_diligence_report_version_issues,
             import_ledger_from_controlled_evidence,
             list_ledger_imports,
             list_ledger_account_summaries,
