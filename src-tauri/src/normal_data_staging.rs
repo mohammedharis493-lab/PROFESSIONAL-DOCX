@@ -533,7 +533,10 @@ pub(crate) fn scan_stages(root: &Path) -> Result<Vec<StageInventoryEntry>, Persi
         });
     }
     output.sort_by(|a, b| a.stage_id.cmp(&b.stage_id));
-    if output.windows(2).any(|pair| pair[0].stage_id == pair[1].stage_id) {
+    if output
+        .windows(2)
+        .any(|pair| pair[0].stage_id == pair[1].stage_id)
+    {
         // Two names such as the same UUID with .partial and .ready must not
         // produce conflicting recovery facts or abort halfway through the
         // journal's SQL insert. Deny the entire inventory before any write.
@@ -637,5 +640,4 @@ mod tests {
         assert!(partial.exists());
         assert!(ready.exists());
     }
-
 }
