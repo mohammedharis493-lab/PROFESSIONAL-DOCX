@@ -84,6 +84,60 @@ pub(crate) struct RetentionCandidateRecord {
     pub retained_at_ms: i64,
 }
 
+/// Metadata only; a source identity is not a controlled-evidence version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateOriginalArtifact {
+    pub dataset_version_id: String,
+    pub document_id: String,
+    pub content_version_id: String,
+    pub sha256_hex: String,
+    pub size_bytes: u64,
+}
+
+/// The serialized result hash is deliberately separate from its semantic hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateResultArtifact {
+    pub artifact_sha256_hex: String,
+    pub semantic_sha256_hex: String,
+    pub size_bytes: u64,
+}
+
+/// A non-authorizing, three-role metadata projection of a verified candidate.
+/// Construct only after `inspect_registered_candidate_on_connection` has
+/// rebound the ledger, bytes and manifest to the exact historical run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateArtifactSet {
+    pub original_a: CandidateOriginalArtifact,
+    pub original_b: CandidateOriginalArtifact,
+    pub frozen_result: CandidateResultArtifact,
+}
+
+impl RetentionCandidateRecord {
+    pub(crate) fn describe_three_artifacts(&self) -> CandidateArtifactSet {
+        CandidateArtifactSet {
+            original_a: CandidateOriginalArtifact {
+                dataset_version_id: self.source_a_dataset_version_id.clone(),
+                document_id: self.source_a_document_id.clone(),
+                content_version_id: self.source_a_content_version_id.clone(),
+                sha256_hex: self.source_a_sha256_hex.clone(),
+                size_bytes: self.source_a_size_bytes,
+            },
+            original_b: CandidateOriginalArtifact {
+                dataset_version_id: self.source_b_dataset_version_id.clone(),
+                document_id: self.source_b_document_id.clone(),
+                content_version_id: self.source_b_content_version_id.clone(),
+                sha256_hex: self.source_b_sha256_hex.clone(),
+                size_bytes: self.source_b_size_bytes,
+            },
+            frozen_result: CandidateResultArtifact {
+                artifact_sha256_hex: self.result_artifact_sha256_hex.clone(),
+                semantic_sha256_hex: self.result_semantic_sha256_hex.clone(),
+                size_bytes: self.result_size_bytes,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RetentionCandidateStatus {
     RecordedValid,
