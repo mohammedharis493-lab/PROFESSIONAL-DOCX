@@ -63,9 +63,8 @@ pub(crate) fn record_retention_recovery_snapshot(
     database_path: &Path,
     retention_root: &Path,
 ) -> Result<RetentionRecoverySnapshot, PersistenceError> {
-    let entries = normal_data_retention_store::scan_retention_candidates(
-        database_path, retention_root,
-    )?;
+    let entries =
+        normal_data_retention_store::scan_retention_candidates(database_path, retention_root)?;
     if entries.len() > MAX_ENTRIES {
         return Err(denied("too many observed candidates"));
     }
@@ -113,14 +112,15 @@ pub(crate) fn read_retention_recovery_snapshot(
 ) -> Result<RetentionRecoverySnapshot, PersistenceError> {
     Uuid::parse_str(scan_id).map_err(|_| denied("invalid snapshot identifier"))?;
     let connection = persistence::open_configured_connection(database_path)?;
-    let header: Option<(i64, i64)> = connection.query_row(
-        "SELECT observed_at_ms, entry_count
+    let header: Option<(i64, i64)> = connection
+        .query_row(
+            "SELECT observed_at_ms, entry_count
          FROM normal_data_retention_recovery_scans WHERE recovery_scan_id = ?1",
-        [scan_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional()?;
-    let (observed_at_ms, expected_count) =
-        header.ok_or_else(|| denied("snapshot not found"))?;
+            [scan_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (observed_at_ms, expected_count) = header.ok_or_else(|| denied("snapshot not found"))?;
     if !(0..=MAX_ENTRIES as i64).contains(&expected_count) {
         return Err(denied("stored entry count exceeds limit"));
     }
@@ -164,9 +164,8 @@ pub(crate) fn compare_retention_recovery_snapshot_to_live(
     scan_id: &str,
 ) -> Result<Vec<RetentionRecoveryDrift>, PersistenceError> {
     let historical = read_retention_recovery_snapshot(database_path, scan_id)?;
-    let current = normal_data_retention_store::scan_retention_candidates(
-        database_path, retention_root,
-    )?;
+    let current =
+        normal_data_retention_store::scan_retention_candidates(database_path, retention_root)?;
     if current.len() > MAX_ENTRIES {
         return Err(denied("current candidate list exceeds limit"));
     }
@@ -187,13 +186,17 @@ pub(crate) fn compare_retention_recovery_snapshot_to_live(
         let new_state = now.remove(&stage_id);
         if new_state != Some(state) {
             drift.push(RetentionRecoveryDrift {
-                stage_id, recorded: Some(state), observed_now: new_state,
+                stage_id,
+                recorded: Some(state),
+                observed_now: new_state,
             });
         }
     }
     for (stage_id, state) in now {
         drift.push(RetentionRecoveryDrift {
-            stage_id, recorded: None, observed_now: Some(state),
+            stage_id,
+            recorded: None,
+            observed_now: Some(state),
         });
     }
     drift.sort_by(|a, b| a.stage_id.cmp(&b.stage_id));
@@ -212,9 +215,8 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "pdox-retention-recovery-{}", Uuid::new_v4()
-            ));
+            let root =
+                std::env::temp_dir().join(format!("pdox-retention-recovery-{}", Uuid::new_v4()));
             fs::create_dir_all(&root).expect("fixture root");
             let database = root.join("state.sqlite");
             persistence::initialize_database(&database).expect("v32 schema");
@@ -258,18 +260,23 @@ mod tests {
                 .expect("saved snapshot"),
             first,
         );
-        assert!(
-            compare_retention_recovery_snapshot_to_live(
-                &fixture.database, &root, &first.recovery_scan_id
-            ).expect("no drift").is_empty()
-        );
+        assert!(compare_retention_recovery_snapshot_to_live(
+            &fixture.database,
+            &root,
+            &first.recovery_scan_id
+        )
+        .expect("no drift")
+        .is_empty());
         fs::remove_dir(root.join(format!("{partial}.partial"))).expect("partial removed");
         fs::remove_dir(root.join(format!("{corrupt}.candidate"))).expect("corrupt removed");
         fs::create_dir(root.join(format!("{corrupt}.partial"))).expect("new interrupted state");
         fs::create_dir(root.join(format!("{added}.candidate"))).expect("new corrupt candidate");
         let drift = compare_retention_recovery_snapshot_to_live(
-            &fixture.database, &root, &first.recovery_scan_id,
-        ).expect("compare current inventory");
+            &fixture.database,
+            &root,
+            &first.recovery_scan_id,
+        )
+        .expect("compare current inventory");
         assert_eq!(drift.len(), 3);
         assert!(drift.contains(&RetentionRecoveryDrift {
             stage_id: partial,
@@ -294,25 +301,35 @@ mod tests {
                 .expect("previous snapshot unchanged"),
             first,
         );
-        let connection = persistence::open_configured_connection(&fixture.database)
-            .expect("connection");
-        assert!(connection.execute(
-            "UPDATE normal_data_retention_recovery_entries
+        let connection =
+            persistence::open_configured_connection(&fixture.database).expect("connection");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE normal_data_retention_recovery_entries
              SET observed_state = 'RECORDED_VALID'",
-            [],
-        ).is_err(), "previous observations cannot change");
-        assert!(connection.execute(
-            "DELETE FROM normal_data_retention_recovery_scans", [],
-        ).is_err(), "historical scan cannot be deleted");
+                    [],
+                )
+                .is_err(),
+            "previous observations cannot change"
+        );
+        assert!(
+            connection
+                .execute("DELETE FROM normal_data_retention_recovery_scans", [],)
+                .is_err(),
+            "historical scan cannot be deleted"
+        );
         for table in [
             "normal_data_retention_candidates",
             "controlled_evidence_versions",
             "workpaper_evidence_links",
             "normal_data_permission_grants",
         ] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)
-            ).expect("read no-capture count");
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("read no-capture count");
             assert_eq!(count, 0, "{table} is not mutated by observation");
         }
         assert!(read_retention_recovery_snapshot(&fixture.database, "invalid").is_err());
@@ -326,24 +343,29 @@ mod tests {
             let id = Uuid::new_v4().to_string();
             fs::create_dir(root.join(format!("{id}.partial"))).expect("interrupted candidate");
         }
-        let connection = persistence::open_configured_connection(&fixture.database)
-            .expect("connection");
-        connection.execute_batch(
-            "CREATE TRIGGER test_retention_recovery_insert_failure
+        let connection =
+            persistence::open_configured_connection(&fixture.database).expect("connection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER test_retention_recovery_insert_failure
              BEFORE INSERT ON normal_data_retention_recovery_entries
-             BEGIN SELECT RAISE(ABORT, 'injected recovery journal failure'); END;"
-        ).expect("fault injection");
+             BEGIN SELECT RAISE(ABORT, 'injected recovery journal failure'); END;",
+            )
+            .expect("fault injection");
         assert!(record_retention_recovery_snapshot(&fixture.database, &root).is_err());
         for table in [
             "normal_data_retention_recovery_scans",
             "normal_data_retention_recovery_entries",
         ] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)
-            ).expect("rollback count");
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("rollback count");
             assert_eq!(count, 0, "{table} rolled back");
         }
-        connection.execute_batch("DROP TRIGGER test_retention_recovery_insert_failure")
+        connection
+            .execute_batch("DROP TRIGGER test_retention_recovery_insert_failure")
             .expect("remove fault");
         let retry = record_retention_recovery_snapshot(&fixture.database, &root)
             .expect("retry after rollback");
@@ -361,8 +383,11 @@ mod tests {
         fs::create_dir(root.join(format!("{same}.candidate"))).expect("conflicting candidate");
         assert!(record_retention_recovery_snapshot(&fixture.database, &root).is_err());
         assert!(compare_retention_recovery_snapshot_to_live(
-            &fixture.database, &root, &first.recovery_scan_id
-        ).is_err());
+            &fixture.database,
+            &root,
+            &first.recovery_scan_id
+        )
+        .is_err());
         assert_eq!(
             read_retention_recovery_snapshot(&fixture.database, &first.recovery_scan_id)
                 .expect("prior observation unchanged"),
