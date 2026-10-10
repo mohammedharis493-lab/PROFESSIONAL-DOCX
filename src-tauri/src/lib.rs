@@ -16,6 +16,8 @@ mod normal_data_preservation_material;
 mod normal_data_promotion_policy;
 mod normal_data_provenance;
 mod normal_data_recipes;
+#[allow(dead_code)]
+mod normal_data_retention_store;
 mod normal_data_run;
 pub mod normal_data_source_reader;
 #[allow(dead_code)]

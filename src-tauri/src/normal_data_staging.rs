@@ -3,7 +3,7 @@
 //! No command exposes this module to the frontend or accepts a caller path.
 use crate::{
     normal_data_comparison::{self, ComparisonResult},
-    normal_data_preservation_material::{PreservationMaterial, SourceMaterial},
+    normal_data_preservation_material::{PreservationMaterial, ResultMaterial, SourceMaterial},
     normal_data_provenance::RunProvenanceReceipt,
     persistence::PersistenceError,
 };
@@ -58,6 +58,15 @@ pub(crate) struct StageReceipt {
     pub source_b_sha256_hex: String,
     pub result_artifact_sha256_hex: String,
     pub result_semantic_sha256_hex: String,
+}
+
+/// Exact bytes and identities re-read from one staged package after all
+/// manifest, digest and optional frozen-run checks have succeeded. This is
+/// still working-data material: it grants no authority and is not retained
+/// controlled evidence.
+pub(crate) struct VerifiedStagePackage {
+    pub receipt: StageReceipt,
+    pub material: PreservationMaterial,
 }
 
 /// Expected metadata from an independently verified, caller-held SQLite
@@ -325,11 +334,11 @@ fn verify_artifact(
     Ok(bytes)
 }
 
-fn verify_package(
+fn verify_package_full(
     root: &Path,
     stage_id: &str,
     expected: Option<&ExpectedStageRun<'_>>,
-) -> Result<StageReceipt, PersistenceError> {
+) -> Result<VerifiedStagePackage, PersistenceError> {
     safe_directory(root)?;
     let folder = package_path(root, stage_id, "ready")?;
     safe_directory(&folder)?;
@@ -349,14 +358,14 @@ fn verify_package(
     if expected.is_some_and(|frozen| !matches_frozen_run(&manifest, frozen)) {
         return Err(invalid("stage metadata differs from the exact frozen run"));
     }
-    let _source_a = verify_artifact(
+    let source_a_bytes = verify_artifact(
         &folder,
         &manifest.source_a,
         "source-a.bin",
         MAX_SOURCE_BYTES,
         true,
     )?;
-    let _source_b = verify_artifact(
+    let source_b_bytes = verify_artifact(
         &folder,
         &manifest.source_b,
         "source-b.bin",
@@ -380,15 +389,78 @@ fn verify_package(
     if result.result_sha256_hex != manifest.result_semantic_sha256_hex {
         return Err(invalid("staged result semantic digest mismatch"));
     }
-    Ok(StageReceipt {
+    let source_a_dataset_version_id = manifest
+        .source_a
+        .dataset_version_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let source_a_document_id = manifest
+        .source_a
+        .document_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let source_a_content_version_id = manifest
+        .source_a
+        .content_version_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let source_b_dataset_version_id = manifest
+        .source_b
+        .dataset_version_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let source_b_document_id = manifest
+        .source_b
+        .document_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let source_b_content_version_id = manifest
+        .source_b
+        .content_version_id
+        .clone()
+        .ok_or_else(|| invalid("source binding is missing"))?;
+    let receipt = StageReceipt {
         stage_id: stage_id.to_owned(),
+        run_id: manifest.run_id.clone(),
+        workspace_id: manifest.workspace_id.clone(),
+        source_a_sha256_hex: manifest.source_a.sha256_hex.clone(),
+        source_b_sha256_hex: manifest.source_b.sha256_hex.clone(),
+        result_artifact_sha256_hex: manifest.result.sha256_hex.clone(),
+        result_semantic_sha256_hex: manifest.result_semantic_sha256_hex.clone(),
+    };
+    let material = PreservationMaterial {
         run_id: manifest.run_id,
         workspace_id: manifest.workspace_id,
-        source_a_sha256_hex: manifest.source_a.sha256_hex,
-        source_b_sha256_hex: manifest.source_b.sha256_hex,
-        result_artifact_sha256_hex: manifest.result.sha256_hex,
-        result_semantic_sha256_hex: manifest.result_semantic_sha256_hex,
-    })
+        recipe_version_id: manifest.recipe_version_id,
+        source_a: SourceMaterial {
+            dataset_version_id: source_a_dataset_version_id,
+            document_id: source_a_document_id,
+            content_version_id: source_a_content_version_id,
+            sha256_hex: manifest.source_a.sha256_hex,
+            bytes: source_a_bytes,
+        },
+        source_b: SourceMaterial {
+            dataset_version_id: source_b_dataset_version_id,
+            document_id: source_b_document_id,
+            content_version_id: source_b_content_version_id,
+            sha256_hex: manifest.source_b.sha256_hex,
+            bytes: source_b_bytes,
+        },
+        result: ResultMaterial {
+            semantic_result_sha256_hex: manifest.result_semantic_sha256_hex,
+            artifact_sha256_hex: manifest.result.sha256_hex,
+            bytes: result_bytes,
+        },
+    };
+    Ok(VerifiedStagePackage { receipt, material })
+}
+
+fn verify_package(
+    root: &Path,
+    stage_id: &str,
+    expected: Option<&ExpectedStageRun<'_>>,
+) -> Result<StageReceipt, PersistenceError> {
+    Ok(verify_package_full(root, stage_id, expected)?.receipt)
 }
 
 /// Write exact native-memory bytes to a new private staging directory. An
@@ -497,6 +569,17 @@ pub(crate) fn inspect_stage_against_run(
     expected: &ExpectedStageRun<'_>,
 ) -> Result<StageReceipt, PersistenceError> {
     verify_package(root, stage_id, Some(expected))
+}
+
+/// Return the exact three checked staged byte buffers for native retention
+/// infrastructure. The caller must derive expected identities from trusted
+/// SQLite provenance. This remains working data and grants no authority.
+pub(crate) fn read_stage_against_run(
+    root: &Path,
+    stage_id: &str,
+    expected: &ExpectedStageRun<'_>,
+) -> Result<VerifiedStagePackage, PersistenceError> {
+    verify_package_full(root, stage_id, Some(expected))
 }
 
 /// Recovery inventory. No mutation, automatic deletion, or authorization.

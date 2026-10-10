@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 30;
+const LATEST_SCHEMA_VERSION: i64 = 31;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -178,6 +178,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 30,
         name: "normal_data_stage_recovery_scans",
         sql: include_str!("../migrations/0030_normal_data_stage_recovery_scans.sql"),
+    },
+    Migration {
+        version: 31,
+        name: "normal_data_retention_candidates",
+        sql: include_str!("../migrations/0031_normal_data_retention_candidates.sql"),
     },
 ];
 
@@ -17305,7 +17310,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 30);
+        assert_eq!(migration_count, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17431,7 +17436,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17479,7 +17484,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_exists: i64 = connection
             .query_row(
@@ -17528,7 +17533,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17580,7 +17585,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_exists: bool = connection
             .query_row(
@@ -17629,7 +17634,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17686,7 +17691,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17738,7 +17743,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17790,7 +17795,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17842,7 +17847,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17893,7 +17898,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -17944,7 +17949,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18008,7 +18013,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -18067,7 +18072,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18118,7 +18123,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_exists: bool = connection
             .query_row(
@@ -18167,7 +18172,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18218,7 +18223,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_exists: bool = connection
             .query_row(
@@ -18268,7 +18273,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18321,7 +18326,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18373,7 +18378,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18428,7 +18433,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18480,7 +18485,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18534,7 +18539,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -18576,7 +18581,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18632,7 +18637,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18688,7 +18693,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18743,7 +18748,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 30);
+        assert_eq!(user_version, 31);
 
         let table_count: i64 = connection
             .query_row(
@@ -22388,12 +22393,12 @@ mod tests {
                 .expect("prior schema version");
             assert_eq!(version, 27);
         }
-        initialize_database(&database.path).expect("upgrade v27 through v30");
+        initialize_database(&database.path).expect("upgrade v27 through v31");
         let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("upgraded schema version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         for table in [
             "normal_data_permission_subjects",
             "normal_data_permission_grants",
@@ -22410,7 +22415,7 @@ mod tests {
                 row.get(0)
             })
             .expect("migrations preserved");
-        assert_eq!(migration_count, 30);
+        assert_eq!(migration_count, 31);
     }
 
     #[test]
@@ -22431,12 +22436,12 @@ mod tests {
                 .expect("schema v29");
             assert_eq!(version, 29);
         }
-        initialize_database(&database.path).expect("upgrade v29 to v30");
+        initialize_database(&database.path).expect("upgrade v29 to v31");
         let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("new version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         for table in [
             "normal_data_stage_recovery_scans",
             "normal_data_stage_recovery_entries",
@@ -22454,7 +22459,63 @@ mod tests {
                 row.get(0)
             })
             .expect("all migrations");
-        assert_eq!(count, 30);
+        assert_eq!(count, 31);
+    }
+
+    #[test]
+    fn thirty_first_migration_adds_empty_immutable_retention_candidate_ledger() {
+        let database = TestDatabase::new();
+        fs::create_dir_all(database.path.parent().expect("database parent"))
+            .expect("create database parent");
+        {
+            let mut connection = open_configured_connection(&database.path).expect("open database");
+            ensure_migration_history_table(&connection).expect("migration history");
+            for migration in &MIGRATIONS[..30] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("apply schema through v30");
+            }
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("schema v30");
+            assert_eq!(version, 30);
+        }
+
+        initialize_database(&database.path).expect("upgrade v30 to v31");
+        let connection = open_configured_connection(&database.path).expect("upgraded database");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("schema v31");
+        assert_eq!(version, 31);
+        let candidates: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_candidates",
+                [],
+                |row| row.get(0),
+            )
+            .expect("candidate ledger");
+        assert_eq!(candidates, 0, "migration must grant or retain nothing");
+
+        let invalid = connection.execute(
+            "INSERT INTO normal_data_retention_candidates (
+                stage_id, normal_data_comparison_run_id, normal_data_workspace_id,
+                normal_data_comparison_recipe_version_id,
+                source_a_dataset_version_id, source_a_document_id,
+                source_a_content_version_id, source_a_sha256_hex, source_a_size_bytes,
+                source_b_dataset_version_id, source_b_document_id,
+                source_b_content_version_id, source_b_sha256_hex, source_b_size_bytes,
+                result_artifact_sha256_hex, result_semantic_sha256_hex,
+                result_size_bytes, retained_at_ms
+             ) VALUES (
+                'not-a-uuid', 'none', 'none', 'none', 'none', 'none', 'none',
+                'bad', 1, 'none', 'none', 'none', 'bad', 1, 'bad', 'bad', 1, 0
+             )",
+            [],
+        );
+        assert!(
+            invalid.is_err(),
+            "invalid candidate metadata must be rejected"
+        );
     }
 
     #[test]
@@ -22474,12 +22535,12 @@ mod tests {
                 .expect("schema v28");
             assert_eq!(version, 28);
         }
-        initialize_database(&database.path).expect("upgrade v28 through v30");
+        initialize_database(&database.path).expect("upgrade v28 through v31");
         let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("new version");
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let events: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM normal_data_permission_admin_events",
