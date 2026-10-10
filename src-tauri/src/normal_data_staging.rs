@@ -533,6 +533,12 @@ pub(crate) fn scan_stages(root: &Path) -> Result<Vec<StageInventoryEntry>, Persi
         });
     }
     output.sort_by(|a, b| a.stage_id.cmp(&b.stage_id));
+    if output.windows(2).any(|pair| pair[0].stage_id == pair[1].stage_id) {
+        // Two names such as the same UUID with .partial and .ready must not
+        // produce conflicting recovery facts or abort halfway through the
+        // journal's SQL insert. Deny the entire inventory before any write.
+        return Err(invalid("ambiguous stage identity in private inventory"));
+    }
     Ok(output)
 }
 
@@ -618,4 +624,18 @@ mod tests {
             .expect("make untrusted root writable");
         assert!(scan_stages(&root.0).is_err());
     }
+
+    #[test]
+    fn refuses_duplicate_partial_and_ready_identity_without_deleting_either() {
+        let root = TestRoot::new();
+        let id = Uuid::new_v4().to_string();
+        let partial = root.0.join(format!("{id}.partial"));
+        let ready = root.0.join(format!("{id}.ready"));
+        fs::create_dir(&partial).expect("partial");
+        fs::create_dir(&ready).expect("ready");
+        assert!(scan_stages(&root.0).is_err());
+        assert!(partial.exists());
+        assert!(ready.exists());
+    }
+
 }
