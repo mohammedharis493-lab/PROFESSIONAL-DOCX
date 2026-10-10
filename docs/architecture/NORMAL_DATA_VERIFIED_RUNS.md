@@ -125,6 +125,26 @@ the internal gate. The eventual evidence-capture workflow must have its own
 retained-artifact verification and staging/recovery logic and must use this
 or an equivalent in-transaction check at final commit.
 
+## Exact transient three-artifact material (D2B2B2B1)
+
+The internal-only `prepare_preservation_material` function accepts an immutable
+comparison-run UUID and returns two original source byte buffers and the exact
+stored comparison result JSON bytes. Source A/B are independently read from
+approved roots with the stable, 32 MiB bounded SHA-256 verifier and rechecked
+against the historical run's dataset/content-version hashes. The result is
+limited to 8 MiB, verified against the original run's canonical semantic
+comparison digest, and labeled with an **independent SHA-256 for the serialized
+JSON artifact bytes**. A result calculation digest is *not* the artifact-byte
+digest, and neither substitutes for a source-file hash.
+
+This structure exists **only in native memory**, with no Tauri API, persistence
+write, controlled capture, promotion link, grant or sign-off. Source files are
+read one after another and may change again after reading. The adapter does
+not provide durable retention, crash recovery, authenticated capture approval
+or atomicity across the filesystem and SQLite. Future work must preserve and
+verify the exact returned bytes under a crash-recoverable capture policy and
+authorize the final specialist link in a fresh transaction.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
