@@ -145,6 +145,29 @@ or atomicity across the filesystem and SQLite. Future work must preserve and
 verify the exact returned bytes under a crash-recoverable capture policy and
 authorize the final specialist link in a fresh transaction.
 
+## Private verified staging (D2B2B2B2A)
+
+The internal-only `normal_data_staging` module can write the **exact three
+previously verified native-memory buffers** into a unique private package:
+`<UUID>.partial` becomes `<UUID>.ready` only after three fsynced files,
+an identity/digest-only manifest and read-back SHA-256 verification. Result
+artifact bytes and the semantic calculation retain **separate SHA-256 values**.
+A recovery scan classifies ready-and-verified, corrupt and interrupted packages
+without reading raw bytes into the frontend. Reinspection rereads and hashes
+all three artifacts; interrupted packages can be discarded by exact ID, but
+ready packages are never silently deleted. Staging and inspection do not
+create database audit rows, evidence versions, specialist links or signoffs.
+
+This is **not controlled-evidence retention**. The native caller must supply
+an access-controlled local staging root; symlinks and group/other-writable Unix
+roots are rejected, but a hostile user with permission to rewrite the root
+remains outside this primitive's protection. Windows cannot reliably fsync
+parent directories using the portable Rust file API. A crash may leave an
+incomplete package; a ready package must be inspected anew and is never an
+authorization token. Trusted authentication, immutable retained evidence,
+cross-filesystem/DB crash recovery and transaction-bound specialist linkage
+remain blocked.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
