@@ -700,15 +700,23 @@ mod tests {
         let fixture = Fixture::new();
         let run =
             execute_comparison(&fixture.path, &fixture.recipe_version_id).expect("verified run");
-        let observation =
-            normal_data_provenance::recheck_run_sources(&fixture.path, &run.normal_data_comparison_run_id)
-                .expect("both exact source versions are available");
+        let observation = normal_data_provenance::recheck_run_sources(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("both exact source versions are available");
         assert_eq!(
             observation.normal_data_comparison_run_id,
             run.normal_data_comparison_run_id
         );
-        assert_eq!(observation.source_a.sha256_hex, run.dataset_a_source_sha256_hex);
-        assert_eq!(observation.source_b.sha256_hex, run.dataset_b_source_sha256_hex);
+        assert_eq!(
+            observation.source_a.sha256_hex,
+            run.dataset_a_source_sha256_hex
+        );
+        assert_eq!(
+            observation.source_b.sha256_hex,
+            run.dataset_b_source_sha256_hex
+        );
         assert!(observation.source_a.observed_at_ms >= run.started_at_ms);
         assert!(observation.source_b.observed_at_ms >= run.started_at_ms);
         assert!(observation.exact_sources_verified_at_read);
@@ -718,7 +726,11 @@ mod tests {
         let conn = persistence::open_configured_connection(&fixture.path)
             .expect("inspect receipt side effects");
         let controlled: i64 = conn
-            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
             .expect("count evidence versions");
         assert_eq!(controlled, 0);
         let history = list_comparison_runs(&fixture.path, &fixture.recipe_version_id)
@@ -746,19 +758,20 @@ mod tests {
             b"Key,Period,Amount\nINV-100,2026-09,10200\n",
         )
         .expect("tamper with same-sized source");
-        assert!(
-            normal_data_provenance::recheck_run_sources(
-                &fixture.path,
-                &run.normal_data_comparison_run_id
-            )
-            .is_err()
-        );
+        assert!(normal_data_provenance::recheck_run_sources(
+            &fixture.path,
+            &run.normal_data_comparison_run_id
+        )
+        .is_err());
         // Read-only historical metadata continues to reflect the exact run;
         // it deliberately does not claim current bytes are still verified.
         let historic =
             normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
                 .expect("frozen provenance remains readable");
-        assert_eq!(historic.source_b.sha256_hex, run.dataset_b_source_sha256_hex);
+        assert_eq!(
+            historic.source_b.sha256_hex,
+            run.dataset_b_source_sha256_hex
+        );
         assert!(!historic.current_source_bytes_checked);
     }
 
@@ -767,28 +780,23 @@ mod tests {
         let fixture = Fixture::new();
         let run =
             execute_comparison(&fixture.path, &fixture.recipe_version_id).expect("verified run");
-        assert!(
-            normal_data_provenance::recheck_run_sources(&fixture.path, "not-a-uuid").is_err()
-        );
-        assert!(
-            normal_data_provenance::recheck_run_sources(
-                &fixture.path,
-                &Uuid::new_v4().to_string()
-            )
-            .is_err()
-        );
+        assert!(normal_data_provenance::recheck_run_sources(&fixture.path, "not-a-uuid").is_err());
+        assert!(normal_data_provenance::recheck_run_sources(
+            &fixture.path,
+            &Uuid::new_v4().to_string()
+        )
+        .is_err());
         fs::remove_file(&fixture.source_b).expect("delete linked file");
-        assert!(
-            normal_data_provenance::recheck_run_sources(
-                &fixture.path,
-                &run.normal_data_comparison_run_id
-            )
-            .is_err()
-        );
-        assert!(
-            normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
-                .is_ok()
-        );
+        assert!(normal_data_provenance::recheck_run_sources(
+            &fixture.path,
+            &run.normal_data_comparison_run_id
+        )
+        .is_err());
+        assert!(normal_data_provenance::inspect_run(
+            &fixture.path,
+            &run.normal_data_comparison_run_id
+        )
+        .is_ok());
     }
 
     #[test]
