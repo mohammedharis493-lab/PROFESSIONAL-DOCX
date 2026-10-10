@@ -7,6 +7,8 @@ mod normal_data;
 pub mod normal_data_comparison;
 mod normal_data_csv;
 mod normal_data_datasets;
+#[allow(dead_code)]
+mod normal_data_capture_preflight;
 // D2B contract is internal-only until a genuine authenticated principal exists.
 #[allow(dead_code)]
 mod normal_data_permission_admin;
@@ -14,8 +16,6 @@ mod normal_data_permission_admin;
 mod normal_data_preservation_material;
 #[allow(dead_code)]
 mod normal_data_promotion_policy;
-#[allow(dead_code)]
-mod normal_data_capture_preflight;
 mod normal_data_provenance;
 mod normal_data_recipes;
 #[allow(dead_code)]

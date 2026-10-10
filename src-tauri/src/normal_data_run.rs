@@ -2138,15 +2138,16 @@ mod tests {
             inspect(&intent, Some(&principal)).expect("exact candidate and target"),
             retained,
         );
-        let capture_preflight = |request: &PromotionIntent<'_>, actor: Option<&VerifiedPrincipal>| {
-            crate::normal_data_capture_preflight::inspect_exact_capture_preflight(
-                &fixture.path,
-                &retention_root,
-                &stage.stage_id,
-                request,
-                actor,
-            )
-        };
+        let capture_preflight =
+            |request: &PromotionIntent<'_>, actor: Option<&VerifiedPrincipal>| {
+                crate::normal_data_capture_preflight::inspect_exact_capture_preflight(
+                    &fixture.path,
+                    &retention_root,
+                    &stage.stage_id,
+                    request,
+                    actor,
+                )
+            };
         assert!(
             capture_preflight(&intent, None).is_err(),
             "unverified identity never receives capture preflight metadata"
