@@ -11,9 +11,9 @@ mod normal_data_datasets;
 #[allow(dead_code)]
 mod normal_data_permission_admin;
 #[allow(dead_code)]
-mod normal_data_promotion_policy;
-#[allow(dead_code)]
 mod normal_data_preservation_material;
+#[allow(dead_code)]
+mod normal_data_promotion_policy;
 mod normal_data_provenance;
 mod normal_data_recipes;
 mod normal_data_run;
