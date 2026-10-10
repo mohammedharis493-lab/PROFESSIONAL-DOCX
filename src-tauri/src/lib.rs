@@ -4,11 +4,11 @@ mod indexer;
 mod launcher;
 mod ledger;
 mod normal_data;
+#[allow(dead_code)]
+mod normal_data_capture_preflight;
 pub mod normal_data_comparison;
 mod normal_data_csv;
 mod normal_data_datasets;
-#[allow(dead_code)]
-mod normal_data_capture_preflight;
 // D2B contract is internal-only until a genuine authenticated principal exists.
 #[allow(dead_code)]
 mod normal_data_permission_admin;
