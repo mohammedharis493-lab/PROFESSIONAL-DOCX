@@ -5,9 +5,7 @@
 //! in production, no Tauri command exposes these routines, and no evidence or
 //! signoff is created. A ready staging package is never an approval token.
 use crate::{
-    normal_data_promotion_policy::{
-        self, PromotionIntent, VerifiedPrincipal,
-    },
+    normal_data_promotion_policy::{self, PromotionIntent, VerifiedPrincipal},
     normal_data_provenance,
     normal_data_staging::{self, ExpectedStageRun, StageReceipt},
     persistence::PersistenceError,
@@ -96,8 +94,7 @@ pub(crate) fn inspect_authorized_staged_run(
         intent,
         principal,
         |tx| {
-            let receipt =
-                normal_data_provenance::inspect_run_on_connection(tx, intent.run_id)?;
+            let receipt = normal_data_provenance::inspect_run_on_connection(tx, intent.run_id)?;
             let document_a = frozen_document_id(
                 tx,
                 &receipt.source_a.dataset_version_id,
@@ -119,11 +116,8 @@ pub(crate) fn inspect_authorized_staged_run(
                 source_b_document_id: &document_b,
                 result_artifact_sha256_hex: &result_artifact_hash,
             };
-            let inspected = normal_data_staging::inspect_stage_against_run(
-                staging_root,
-                stage_id,
-                &expected,
-            )?;
+            let inspected =
+                normal_data_staging::inspect_stage_against_run(staging_root, stage_id, &expected)?;
             if inspected.run_id != intent.run_id
                 || inspected.workspace_id != intent.expected_workspace_id
             {
