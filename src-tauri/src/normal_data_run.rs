@@ -2025,11 +2025,12 @@ mod tests {
         let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
             .expect("corruption inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::Corrupt);
-        let journal = crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
-            &fixture.path,
-            &retention_root,
-        )
-        .expect("append corruption observation");
+        let journal =
+            crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
+                &fixture.path,
+                &retention_root,
+            )
+            .expect("append corruption observation");
         assert_eq!(journal.entries, inventory);
         assert_eq!(
             crate::normal_data_retention_recovery_journal::read_retention_recovery_snapshot(
@@ -2334,8 +2335,14 @@ mod tests {
             )
             .expect("registration changes live recovery state");
         assert_eq!(drift.len(), 1);
-        assert_eq!(drift[0].recorded, Some(RetentionCandidateStatus::OrphanValid));
-        assert_eq!(drift[0].observed_now, Some(RetentionCandidateStatus::RecordedValid));
+        assert_eq!(
+            drift[0].recorded,
+            Some(RetentionCandidateStatus::OrphanValid)
+        );
+        assert_eq!(
+            drift[0].observed_now,
+            Some(RetentionCandidateStatus::RecordedValid)
+        );
 
         fs::remove_dir_all(retention_root.join(format!("{}.candidate", staged.stage_id)))
             .expect("simulate filesystem loss after database commit");
