@@ -369,7 +369,10 @@ pub fn list_comparison_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{normal_data, normal_data_datasets, normal_data_provenance, normal_data_recipes};
+    use crate::{
+        normal_data, normal_data_datasets, normal_data_promotion_policy as promotion_policy,
+        normal_data_provenance, normal_data_recipes,
+    };
     use rusqlite::params;
     use sha2::{Digest, Sha256};
     use std::{fs, path::PathBuf};
@@ -550,6 +553,246 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.folder);
         }
+    }
+
+
+    struct PolicyTarget {
+        engagement_id: String,
+        workpaper_id: String,
+        revision_id: String,
+    }
+
+    fn create_policy_target(database_path: &Path, state: &str) -> PolicyTarget {
+        let client_id = Uuid::new_v4().to_string();
+        let service_id = Uuid::new_v4().to_string();
+        let engagement_id = Uuid::new_v4().to_string();
+        let workpaper_id = Uuid::new_v4().to_string();
+        let revision_id = Uuid::new_v4().to_string();
+        let connection =
+            persistence::open_configured_connection(database_path).expect("open target database");
+        connection.execute(
+            "INSERT INTO clients (client_id, name, created_at_ms) VALUES (?1, 'Client', 1)",
+            [&client_id],
+        ).expect("target client");
+        connection.execute(
+            "INSERT INTO service_types (service_type_id, name, normalized_name, created_at_ms)
+             VALUES (?1, 'Audit', ?2, 1)",
+            params![&service_id, &service_id],
+        ).expect("target service type");
+        connection.execute(
+            "INSERT INTO engagements (
+                engagement_id, client_id, service_type_id, name, status, created_at_ms
+             ) VALUES (?1, ?2, ?3, 'Engagement', 'ACTIVE', 1)",
+            params![&engagement_id, &client_id, &service_id],
+        ).expect("target engagement");
+        connection.execute(
+            "INSERT INTO workpapers (
+                workpaper_id, engagement_id, reference, title, workflow_state, created_at_ms
+             ) VALUES (?1, ?2, ?3, 'Working paper', ?4, 1)",
+            params![&workpaper_id, &engagement_id, &workpaper_id, state],
+        ).expect("target workpaper");
+        connection.execute(
+            "INSERT INTO workpaper_revisions (
+                workpaper_revision_id, workpaper_id, revision_number, created_at_ms
+             ) VALUES (?1, ?2, 1, 1)",
+            params![&revision_id, &workpaper_id],
+        ).expect("target workpaper revision");
+        PolicyTarget {
+            engagement_id,
+            workpaper_id,
+            revision_id,
+        }
+    }
+
+    #[derive(Default)]
+    struct TestGrants {
+        allowed: Vec<(promotion_policy::PromotionPermission, String)>,
+    }
+
+    impl TestGrants {
+        fn allow(&mut self, permission: promotion_policy::PromotionPermission, id: &str) {
+            self.allowed.push((permission, id.to_string()));
+        }
+    }
+
+    impl promotion_policy::PromotionPermissionPolicy for TestGrants {
+        fn is_allowed(
+            &self,
+            _principal_id: &str,
+            permission: promotion_policy::PromotionPermission,
+            resource_id: &str,
+        ) -> bool {
+            self.allowed.iter().any(|grant| grant.0 == permission && grant.1 == resource_id)
+        }
+    }
+
+    fn full_test_grants(workspace_id: &str, target: &PolicyTarget) -> TestGrants {
+        use promotion_policy::PromotionPermission as Permission;
+        let mut grants = TestGrants::default();
+        grants.allow(Permission::ReadNormalDataWorkspace, workspace_id);
+        grants.allow(Permission::AttachEvidenceToEngagement, &target.engagement_id);
+        grants.allow(Permission::ModifyWorkpaperRevision, &target.revision_id);
+        grants
+    }
+
+    #[test]
+    fn promotion_policy_never_trusts_an_actor_string_or_partial_permissions() {
+        use promotion_policy::{PromotionIntent, PromotionPermission as Permission};
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("comparison run");
+        let source = normal_data_provenance::inspect_run(
+            &fixture.path, &run.normal_data_comparison_run_id
+        ).expect("history");
+        let target = create_policy_target(&fixture.path, "DRAFT");
+        let intent = PromotionIntent {
+            run_id: &run.normal_data_comparison_run_id,
+            expected_workspace_id: &source.normal_data_workspace_id,
+            target_engagement_id: &target.engagement_id,
+            target_workpaper_id: &target.workpaper_id,
+            target_workpaper_revision_id: &target.revision_id,
+        };
+        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let grants = full_test_grants(&source.normal_data_workspace_id, &target);
+        assert!(promotion_policy::check_policy(&fixture.path, &intent, None, &grants).is_err());
+        assert!(promotion_policy::check_policy(
+            &fixture.path, &intent, Some(&principal),
+            &promotion_policy::DenyAllPromotionPermissions,
+        ).is_err());
+        let mut partial = TestGrants::default();
+        partial.allow(Permission::ReadNormalDataWorkspace, &source.normal_data_workspace_id);
+        partial.allow(Permission::AttachEvidenceToEngagement, &target.engagement_id);
+        assert!(promotion_policy::check_policy(
+            &fixture.path, &intent, Some(&principal), &partial,
+        ).is_err());
+        // Only test-only, explicitly granted identity passes this internal
+        // structural policy; production exposes neither a principal constructor
+        // nor a target attachment command.
+        promotion_policy::check_policy(&fixture.path, &intent, Some(&principal), &grants)
+            .expect("fully scoped fixture-only policy");
+
+        let conn = persistence::open_configured_connection(&fixture.path).expect("DB");
+        for table in ["workpaper_evidence_links", "controlled_evidence_versions"] {
+            let count: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)
+            ).expect("no side effects");
+            assert_eq!(count, 0, "{table} must not change during an authorization preflight");
+        }
+    }
+
+    #[test]
+    fn promotion_policy_rejects_wrong_workspace_engagement_workpaper_and_stale_revision() {
+        use promotion_policy::{PromotionIntent, PromotionPermission as Permission};
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("comparison run");
+        let source = normal_data_provenance::inspect_run(
+            &fixture.path, &run.normal_data_comparison_run_id
+        ).expect("history");
+        let target = create_policy_target(&fixture.path, "DRAFT");
+        let other = create_policy_target(&fixture.path, "DRAFT");
+        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let mut grants = full_test_grants(&source.normal_data_workspace_id, &target);
+        grants.allow(Permission::AttachEvidenceToEngagement, &other.engagement_id);
+        grants.allow(Permission::ModifyWorkpaperRevision, &other.revision_id);
+        let normal = PromotionIntent {
+            run_id: &run.normal_data_comparison_run_id,
+            expected_workspace_id: &source.normal_data_workspace_id,
+            target_engagement_id: &target.engagement_id,
+            target_workpaper_id: &target.workpaper_id,
+            target_workpaper_revision_id: &target.revision_id,
+        };
+        promotion_policy::check_policy(&fixture.path, &normal, Some(&principal), &grants)
+            .expect("correct scope");
+
+        let wrong_workspace = Uuid::new_v4().to_string();
+        grants.allow(Permission::ReadNormalDataWorkspace, &wrong_workspace);
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {expected_workspace_id: &wrong_workspace, ..normal},
+            Some(&principal), &grants
+        ).is_err());
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {target_engagement_id: &other.engagement_id, ..normal},
+            Some(&principal), &grants
+        ).is_err());
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {target_workpaper_id: &other.workpaper_id, ..normal},
+            Some(&principal), &grants
+        ).is_err());
+        let connection = persistence::open_configured_connection(&fixture.path).expect("DB");
+        let second_revision = Uuid::new_v4().to_string();
+        connection.execute(
+            "INSERT INTO workpaper_revisions
+             (workpaper_revision_id, workpaper_id, revision_number, created_at_ms)
+             VALUES (?1, ?2, 2, 2)",
+            params![&second_revision, &target.workpaper_id],
+        ).expect("create subsequent revision");
+        assert!(promotion_policy::check_policy(
+            &fixture.path, &normal, Some(&principal), &grants
+        ).is_err());
+    }
+
+    #[test]
+    fn promotion_policy_rejects_signed_reviewed_archived_or_invalid_target() {
+        use promotion_policy::PromotionIntent;
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("comparison run");
+        let source = normal_data_provenance::inspect_run(
+            &fixture.path, &run.normal_data_comparison_run_id
+        ).expect("history");
+        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let target = create_policy_target(&fixture.path, "DRAFT");
+        let grants = full_test_grants(&source.normal_data_workspace_id, &target);
+        let intent = PromotionIntent {
+            run_id: &run.normal_data_comparison_run_id,
+            expected_workspace_id: &source.normal_data_workspace_id,
+            target_engagement_id: &target.engagement_id,
+            target_workpaper_id: &target.workpaper_id,
+            target_workpaper_revision_id: &target.revision_id,
+        };
+        let conn = persistence::open_configured_connection(&fixture.path).expect("DB");
+        conn.execute(
+            "UPDATE workpapers SET workflow_state = 'SUBMITTED_FOR_REVIEW' WHERE workpaper_id = ?1",
+            [&target.workpaper_id],
+        ).expect("set review state");
+        assert!(promotion_policy::check_policy(&fixture.path, &intent, Some(&principal), &grants).is_err());
+        conn.execute(
+            "UPDATE workpapers SET workflow_state = 'DRAFT' WHERE workpaper_id = ?1",
+            [&target.workpaper_id],
+        ).expect("restore draft");
+        conn.execute(
+            "INSERT INTO workpaper_signoffs
+             (signoff_id, workpaper_id, workpaper_revision_id, signoff_type, actor_id, actor_role, signed_at_ms)
+             VALUES (?1, ?2, ?3, 'PREPARED', 'fixture-actor', 'PREPARER', 3)",
+            params![Uuid::new_v4().to_string(), &target.workpaper_id, &target.revision_id],
+        ).expect("record immutable signoff");
+        assert!(promotion_policy::check_policy(&fixture.path, &intent, Some(&principal), &grants).is_err());
+        // A different draft workpaper is not a workaround for an archived engagement.
+        let archived = create_policy_target(&fixture.path, "DRAFT");
+        let archive_grants = full_test_grants(&source.normal_data_workspace_id, &archived);
+        conn.execute(
+            "UPDATE engagements SET archived_at_ms = 4 WHERE engagement_id = ?1",
+            [&archived.engagement_id],
+        ).expect("archive target");
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {
+                target_engagement_id: &archived.engagement_id,
+                target_workpaper_id: &archived.workpaper_id,
+                target_workpaper_revision_id: &archived.revision_id,
+                ..intent
+            },
+            Some(&principal), &archive_grants
+        ).is_err());
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {run_id: "not-a-uuid", ..intent},
+            Some(&principal), &grants
+        ).is_err());
     }
 
     #[test]
