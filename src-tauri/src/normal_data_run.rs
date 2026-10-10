@@ -2154,16 +2154,16 @@ mod tests {
         );
         let preflight = capture_preflight(&intent, Some(&principal))
             .expect("exact source A, source B and result preflight");
-        let capture_material =
-            |request: &PromotionIntent<'_>, actor: Option<&VerifiedPrincipal>| {
-                crate::normal_data_capture_preflight::read_exact_capture_material(
-                    &fixture.path,
-                    &retention_root,
-                    &stage.stage_id,
-                    request,
-                    actor,
-                )
-            };
+        let capture_material = |request: &PromotionIntent<'_>,
+                                actor: Option<&VerifiedPrincipal>| {
+            crate::normal_data_capture_preflight::read_exact_capture_material(
+                &fixture.path,
+                &retention_root,
+                &stage.stage_id,
+                request,
+                actor,
+            )
+        };
         assert!(
             capture_material(&intent, None).is_err(),
             "working bytes are unavailable without trusted principal"
