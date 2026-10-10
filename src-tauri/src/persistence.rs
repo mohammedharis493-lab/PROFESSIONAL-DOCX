@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 29;
+const LATEST_SCHEMA_VERSION: i64 = 30;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -173,6 +173,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 29,
         name: "normal_data_permission_admin_events",
         sql: include_str!("../migrations/0029_normal_data_permission_admin_events.sql"),
+    },
+    Migration {
+        version: 30,
+        name: "normal_data_stage_recovery_scans",
+        sql: include_str!("../migrations/0030_normal_data_stage_recovery_scans.sql"),
     },
 ];
 
@@ -17300,7 +17305,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 29);
+        assert_eq!(migration_count, 30);
 
         let table_count: i64 = connection
             .query_row(
@@ -22383,12 +22388,12 @@ mod tests {
                 .expect("prior schema version");
             assert_eq!(version, 27);
         }
-        initialize_database(&database.path).expect("upgrade v27 through v29");
+        initialize_database(&database.path).expect("upgrade v27 through v30");
         let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("upgraded schema version");
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
         for table in [
             "normal_data_permission_subjects",
             "normal_data_permission_grants",
@@ -22405,7 +22410,49 @@ mod tests {
                 row.get(0)
             })
             .expect("migrations preserved");
-        assert_eq!(migration_count, 29);
+        assert_eq!(migration_count, 30);
+    }
+
+    #[test]
+    fn thirtieth_migration_preserves_prior_schema_and_starts_with_empty_recovery_observations() {
+        let database = TestDatabase::new();
+        fs::create_dir_all(database.path.parent().expect("database parent"))
+            .expect("create database parent");
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("open database");
+            ensure_migration_history_table(&connection).expect("migration history");
+            for migration in &MIGRATIONS[..29] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("apply schema through v29");
+            }
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("schema v29");
+            assert_eq!(version, 29);
+        }
+        initialize_database(&database.path).expect("upgrade v29 to v30");
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("new version");
+        assert_eq!(version, 30);
+        for table in [
+            "normal_data_stage_recovery_scans",
+            "normal_data_stage_recovery_entries",
+            "normal_data_permission_admin_events",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .expect("table starts empty");
+            assert_eq!(count, 0, "{table} must start empty");
+        }
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .expect("all migrations");
+        assert_eq!(count, 30);
     }
 
     #[test]
@@ -22425,12 +22472,12 @@ mod tests {
                 .expect("schema v28");
             assert_eq!(version, 28);
         }
-        initialize_database(&database.path).expect("upgrade v28 to v29");
+        initialize_database(&database.path).expect("upgrade v28 through v30");
         let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("new version");
-        assert_eq!(version, 29);
+        assert_eq!(version, 30);
         let events: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM normal_data_permission_admin_events",
