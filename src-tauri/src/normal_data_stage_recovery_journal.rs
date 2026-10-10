@@ -140,7 +140,6 @@ pub(crate) fn read_recovery_snapshot(
     })
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryDrift {
     pub stage_id: String,
@@ -357,14 +356,18 @@ mod tests {
             fs::create_dir(root.join(format!("{id}.partial"))).expect("partial stage");
         }
         let snapshot = record_recovery_snapshot(&fixture.db, &root).expect("historical snapshot");
-        assert!(compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
-            .expect("no drift").is_empty());
+        assert!(
+            compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
+                .expect("no drift")
+                .is_empty()
+        );
         fs::remove_dir(root.join(format!("{missing}.partial"))).expect("remove partial");
         fs::remove_dir(root.join(format!("{changed}.partial"))).expect("remove old state");
         fs::create_dir(root.join(format!("{changed}.ready"))).expect("replace with corrupt ready");
         fs::create_dir(root.join(format!("{added}.partial"))).expect("new partial");
-        let drift = compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
-            .expect("fresh local inspection");
+        let drift =
+            compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
+                .expect("fresh local inspection");
         assert_eq!(drift.len(), 3);
         assert!(drift.contains(&RecoveryDrift {
             stage_id: missing,
@@ -381,17 +384,26 @@ mod tests {
             recorded: None,
             observed_now: Some(StageStatus::Interrupted),
         }));
-        assert_eq!(read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
-            .expect("historical scan is untouched"), snapshot);
+        assert_eq!(
+            read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
+                .expect("historical scan is untouched"),
+            snapshot
+        );
         let connection = persistence::open_configured_connection(&fixture.db).expect("database");
-        let scans: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_stage_recovery_scans", [], |row| row.get(0)
-        ).expect("read count");
+        let scans: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_stage_recovery_scans",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read count");
         assert_eq!(scans, 1, "differential inspection never appends a scan");
         for table in ["controlled_evidence_versions", "workpaper_evidence_links"] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)
-            ).expect("no formal evidence");
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("no formal evidence");
             assert_eq!(count, 0);
         }
         assert!(compare_recovery_snapshot_to_live(&fixture.db, &root, "not-a-uuid").is_err());
@@ -405,12 +417,16 @@ mod tests {
         fs::create_dir(root.join(format!("{same}.partial"))).expect("partial");
         let snapshot = record_recovery_snapshot(&fixture.db, &root).expect("initial");
         fs::create_dir(root.join(format!("{same}.ready"))).expect("conflicting ready");
-        assert!(compare_recovery_snapshot_to_live(
-            &fixture.db, &root, &snapshot.recovery_scan_id
-        ).is_err(), "duplicate stage identifiers must not be resolved arbitrarily");
+        assert!(
+            compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
+                .is_err(),
+            "duplicate stage identifiers must not be resolved arbitrarily"
+        );
         assert!(record_recovery_snapshot(&fixture.db, &root).is_err());
-        assert_eq!(read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
-            .expect("initial is immutable"), snapshot);
+        assert_eq!(
+            read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
+                .expect("initial is immutable"),
+            snapshot
+        );
     }
-
 }
