@@ -2505,6 +2505,17 @@ fn inspect_normal_data_run_provenance(
         .map_err(|error| error.to_string())
 }
 
+/// Explicit current-byte recheck; not a specialist promotion or evidence capture.
+#[tauri::command]
+fn recheck_normal_data_run_sources(
+    normal_data_comparison_run_id: String,
+    database: State<'_, persistence::DatabaseState>,
+) -> Result<normal_data_provenance::RunSourcePreflight, String> {
+    validate_uuid(&normal_data_comparison_run_id, "normal-data-comparison-run")?;
+    normal_data_provenance::recheck_run_sources(database.path(), &normal_data_comparison_run_id)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn list_normal_data_comparison_runs(
     normal_data_comparison_recipe_version_id: String,
@@ -5181,6 +5192,7 @@ pub fn run() {
             run_normal_data_comparison,
             list_normal_data_comparison_runs,
             inspect_normal_data_run_provenance,
+            recheck_normal_data_run_sources,
             declare_normal_data_column_semantic,
             list_normal_data_column_semantics,
             create_client,
