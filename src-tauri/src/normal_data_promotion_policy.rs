@@ -9,7 +9,7 @@ use crate::{
     normal_data_provenance,
     persistence::{self, PersistenceError},
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -161,16 +161,7 @@ pub(crate) fn check_policy(
 ) -> Result<(), PersistenceError> {
     // Deny before database lookups to avoid leaking another workspace/target
     // to an unauthenticated frontend. A UUID or actor string is NOT identity.
-    let principal = principal.ok_or_else(deny)?;
-    for id in [
-        intent.run_id,
-        intent.expected_workspace_id,
-        intent.target_engagement_id,
-        intent.target_workpaper_id,
-        intent.target_workpaper_revision_id,
-    ] {
-        Uuid::parse_str(id).map_err(|_| deny())?;
-    }
+    let principal = require_principal_and_ids(intent, principal)?;
     for (permission, resource_id) in [
         (
             PromotionPermission::ReadNormalDataWorkspace,
@@ -196,6 +187,31 @@ pub(crate) fn check_policy(
     }
 
     let connection = persistence::open_configured_connection(database_path)?;
+    check_target(&connection, intent)
+}
+
+fn require_principal_and_ids<'a>(
+    intent: &PromotionIntent<'_>,
+    principal: Option<&'a VerifiedPrincipal>,
+) -> Result<&'a VerifiedPrincipal, PersistenceError> {
+    let principal = principal.ok_or_else(deny)?;
+    Uuid::parse_str(&principal.subject_id).map_err(|_| deny())?;
+    for id in [
+        intent.run_id,
+        intent.expected_workspace_id,
+        intent.target_engagement_id,
+        intent.target_workpaper_id,
+        intent.target_workpaper_revision_id,
+    ] {
+        Uuid::parse_str(id).map_err(|_| deny())?;
+    }
+    Ok(principal)
+}
+
+fn check_target(
+    connection: &Connection,
+    intent: &PromotionIntent<'_>,
+) -> Result<(), PersistenceError> {
     let target: Option<(String, String, String, bool, bool)> = connection
         .query_row(
             "SELECT w.engagement_id, w.workflow_state,
@@ -245,4 +261,88 @@ pub(crate) fn check_policy(
         return Err(deny());
     }
     Ok(())
+}
+
+fn granted_in_transaction(
+    tx: &Transaction<'_>,
+    subject_id: &str,
+    permission: PromotionPermission,
+    resource_id: &str,
+    now: i64,
+) -> Result<bool, PersistenceError> {
+    let present: i64 = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM normal_data_permission_grants g
+            JOIN normal_data_permission_subjects s ON s.subject_id = g.subject_id
+            WHERE g.subject_id = ?1
+              AND s.identity_issuer = 'TRUSTED_NATIVE_IDP'
+              AND s.disabled_at_ms IS NULL
+              AND s.registered_at_ms <= ?4
+              AND g.permission = ?2
+              AND g.resource_id = ?3
+              AND g.granted_at_ms <= ?4
+              AND (g.expires_at_ms IS NULL OR g.expires_at_ms > ?4)
+              AND g.revoked_at_ms IS NULL
+        )",
+        params![subject_id, permission.database_key(), resource_id, now],
+        |row| row.get(0),
+    )?;
+    Ok(present == 1)
+}
+
+/// Internal-only reference implementation for the future D3 write boundary.
+///
+/// The IMMEDIATE transaction holds a SQLite writer reservation across the
+/// three grant checks, complete frozen-run integrity inspection, latest
+/// revision/engagement/review/signoff policy, and an optional caller-supplied
+/// native operation. This closes the inter-query permission/revision race
+/// **only for changes in this SQLite database**. Caller code must still
+/// preserve source files/result artifacts and verify their exact hashes; this
+/// function does not confer a standalone promotion grant or signoff.
+///
+/// Production cannot construct `VerifiedPrincipal` yet. Never expose this
+/// directly via Tauri, accept an actor string as principal, or call a remote
+/// service while holding this transaction.
+pub(crate) fn with_authorized_transaction<T, F>(
+    database_path: &Path,
+    intent: &PromotionIntent<'_>,
+    principal: Option<&VerifiedPrincipal>,
+    operation: F,
+) -> Result<T, PersistenceError>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<T, PersistenceError>,
+{
+    let principal = require_principal_and_ids(intent, principal)?;
+    let mut connection = persistence::open_configured_connection(database_path)?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let now = persistence::now_unix_ms()?;
+    for (permission, resource_id) in [
+        (
+            PromotionPermission::ReadNormalDataWorkspace,
+            intent.expected_workspace_id,
+        ),
+        (
+            PromotionPermission::AttachEvidenceToEngagement,
+            intent.target_engagement_id,
+        ),
+        (
+            PromotionPermission::ModifyWorkpaperRevision,
+            intent.target_workpaper_revision_id,
+        ),
+    ] {
+        if !granted_in_transaction(&tx, &principal.subject_id, permission, resource_id, now)? {
+            return Err(deny());
+        }
+    }
+    // Use this SAME SQLite snapshot for historical receipt verification.
+    // Do not reuse earlier read-time observations or a cached receipt.
+    let source = normal_data_provenance::inspect_run_on_connection(&tx, intent.run_id)?;
+    if source.normal_data_workspace_id != intent.expected_workspace_id {
+        return Err(deny());
+    }
+    check_target(&tx, intent)?;
+    let value = operation(&tx)?;
+    tx.commit()?;
+    Ok(value)
 }

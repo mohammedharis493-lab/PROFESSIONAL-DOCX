@@ -6,7 +6,7 @@ use crate::{
     normal_data_source_reader,
     persistence::{self, PersistenceError},
 };
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::{fmt::Write, path::Path};
 use uuid::Uuid;
@@ -107,8 +107,18 @@ pub fn inspect_run(
     database_path: &Path,
     run_id: &str,
 ) -> Result<RunProvenanceReceipt, PersistenceError> {
-    Uuid::parse_str(run_id).map_err(|_| invalid("comparison run ID must be a UUID"))?;
     let connection = persistence::open_configured_connection(database_path)?;
+    inspect_run_on_connection(&connection, run_id)
+}
+
+/// Inspect the identical frozen run receipt using an existing SQLite
+/// connection/transaction. A future atomic authorization check must not open
+/// a second connection after acquiring its write lock.
+pub(crate) fn inspect_run_on_connection(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<RunProvenanceReceipt, PersistenceError> {
+    Uuid::parse_str(run_id).map_err(|_| invalid("comparison run ID must be a UUID"))?;
     let frozen: FrozenRun = connection
         .query_row(
             "SELECT r.normal_data_comparison_recipe_version_id,

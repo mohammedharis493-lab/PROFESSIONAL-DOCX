@@ -106,6 +106,25 @@ administrator against a malicious database owner. Next work must supply secure
 native identity and privilege attestation, enforce it at use time inside the
 specialist write transaction and design the controlled-capture recovery plan.
 
+## Atomic native permission/target gate (D2B2B2A)
+
+An internal `with_authorized_transaction` helper provides a transaction-bound
+check for future specialist linkage, instead of treating read-only preflight as
+a reusable approval. It obtains a SQLite IMMEDIATE reservation; with a
+verified principal (unavailable in production), it rechecks all three
+exact-resource grants, current enrolment/revocation/expiry, historical run
+identity and result digest, and target review/signoff/revision state on **one
+SQLite connection**. Only then may a native callback execute, and policy or
+callback failures roll back the transaction. A competing SQLite writer cannot
+revoke a grant or change review state between the check and callback commit.
+
+This does **not** authenticate a production caller, lock source files, preserve
+their bytes, capture a result artifact, create an evidence link, or protect
+against an attacker who controls the local database. No Tauri command exposes
+the internal gate. The eventual evidence-capture workflow must have its own
+retained-artifact verification and staging/recovery logic and must use this
+or an equivalent in-transaction check at final commit.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.

@@ -666,7 +666,7 @@ mod tests {
             target_workpaper_id: &target.workpaper_id,
             target_workpaper_revision_id: &target.revision_id,
         };
-        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let principal = promotion_policy::VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
         let grants = full_test_grants(&source.normal_data_workspace_id, &target);
         assert!(promotion_policy::check_policy(&fixture.path, &intent, None, &grants).is_err());
         assert!(promotion_policy::check_policy(
@@ -720,7 +720,7 @@ mod tests {
                 .expect("history");
         let target = create_policy_target(&fixture.path, "DRAFT");
         let other = create_policy_target(&fixture.path, "DRAFT");
-        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let principal = promotion_policy::VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
         let mut grants = full_test_grants(&source.normal_data_workspace_id, &target);
         grants.allow(Permission::AttachEvidenceToEngagement, &other.engagement_id);
         grants.allow(Permission::ModifyWorkpaperRevision, &other.revision_id);
@@ -791,7 +791,7 @@ mod tests {
         let source =
             normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
                 .expect("history");
-        let principal = promotion_policy::VerifiedPrincipal::fixture("test-subject");
+        let principal = promotion_policy::VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
         let target = create_policy_target(&fixture.path, "DRAFT");
         let grants = full_test_grants(&source.normal_data_workspace_id, &target);
         let intent = PromotionIntent {
@@ -1105,6 +1105,233 @@ mod tests {
             )
             .expect("no evidence captures");
         assert_eq!((evidence_links, preserved), (0, 0));
+    }
+
+    #[test]
+    fn atomic_promotion_gate_enforces_scopes_target_and_rollback_on_same_connection() {
+        use promotion_policy::{PromotionIntent, VerifiedPrincipal};
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison run");
+        let source =
+            normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
+                .expect("frozen historical receipt");
+        let target = create_policy_target(&fixture.path, "DRAFT");
+        let principal_id = Uuid::new_v4().to_string();
+        let principal = VerifiedPrincipal::fixture(&principal_id);
+        let intent = PromotionIntent {
+            run_id: &run.normal_data_comparison_run_id,
+            expected_workspace_id: &source.normal_data_workspace_id,
+            target_engagement_id: &target.engagement_id,
+            target_workpaper_id: &target.workpaper_id,
+            target_workpaper_revision_id: &target.revision_id,
+        };
+        let conn = persistence::open_configured_connection(&fixture.path).expect("database");
+        conn.execute_batch("CREATE TABLE transaction_authorization_probe (value TEXT NOT NULL);")
+            .expect("test-only probe");
+        conn.execute(
+            "INSERT INTO normal_data_permission_subjects (
+                subject_id, identity_issuer, registered_at_ms
+             ) VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)",
+            [&principal_id],
+        )
+        .expect("test-only enrolled subject");
+
+        let ran = std::cell::Cell::new(false);
+        assert!(
+            promotion_policy::with_authorized_transaction(&fixture.path, &intent, None, |_| {
+                ran.set(true);
+                Ok(())
+            })
+            .is_err(),
+            "missing verified principal must deny"
+        );
+        assert!(!ran.get(), "denied callback must never execute");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                }
+            )
+            .is_err(),
+            "an enrolled subject has no grants by default"
+        );
+        assert!(!ran.get());
+
+        for (index, (permission, resource)) in [
+            (
+                "READ_NORMAL_DATA_WORKSPACE",
+                source.normal_data_workspace_id.as_str(),
+            ),
+            (
+                "ATTACH_EVIDENCE_TO_ENGAGEMENT",
+                target.engagement_id.as_str(),
+            ),
+            ("MODIFY_WORKPAPER_REVISION", target.revision_id.as_str()),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO normal_data_permission_grants (
+                    grant_id, subject_id, permission, resource_id, granted_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, 1)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    &principal_id,
+                    permission,
+                    resource
+                ],
+            )
+            .expect("test scoped grant");
+            if index < 2 {
+                assert!(
+                    promotion_policy::with_authorized_transaction(
+                        &fixture.path,
+                        &intent,
+                        Some(&principal),
+                        |_| {
+                            ran.set(true);
+                            Ok(())
+                        }
+                    )
+                    .is_err(),
+                    "all three exact grants required"
+                );
+                assert!(!ran.get());
+            }
+        }
+        let value = promotion_policy::with_authorized_transaction(
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |tx| {
+                tx.execute(
+                    "INSERT INTO transaction_authorization_probe (value)
+                     VALUES ('committed')",
+                    [],
+                )?;
+                Ok(42)
+            },
+        )
+        .expect("fully eligible test-only callback commits in same transaction");
+        assert_eq!(value, 42);
+        let error = promotion_policy::with_authorized_transaction(
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |tx| -> Result<(), persistence::PersistenceError> {
+                tx.execute(
+                    "INSERT INTO transaction_authorization_probe (value)
+                     VALUES ('rolled_back')",
+                    [],
+                )?;
+                Err(persistence::PersistenceError::Configuration(
+                    "simulate rejected capture".to_string(),
+                ))
+            },
+        );
+        assert!(error.is_err(), "operation error aborts same transaction");
+        let probe_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transaction_authorization_probe",
+                [],
+                |row| row.get(0),
+            )
+            .expect("probe count");
+        assert_eq!(probe_count, 1, "failed callback must roll back");
+
+        // The IMMEDIATE SQLite reservation prevents another writer from
+        // revoking permissions between this gate and its callback commit.
+        promotion_policy::with_authorized_transaction(
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |_| {
+                let outside = persistence::open_configured_connection(&fixture.path)
+                    .expect("second connection");
+                outside
+                    .busy_timeout(std::time::Duration::from_millis(1))
+                    .expect("short competing-write timeout");
+                assert!(
+                    outside
+                        .execute(
+                            "UPDATE normal_data_permission_grants
+                     SET revoked_at_ms = 2
+                     WHERE subject_id = ?1
+                       AND permission = 'MODIFY_WORKPAPER_REVISION'",
+                            [&principal_id],
+                        )
+                        .is_err(),
+                    "competing revocation cannot interleave with transaction"
+                );
+                Ok(())
+            },
+        )
+        .expect("writer reservation kept through callback");
+        conn.execute(
+            "UPDATE normal_data_permission_grants
+             SET revoked_at_ms = 2
+             WHERE subject_id = ?1 AND permission = 'MODIFY_WORKPAPER_REVISION'",
+            [&principal_id],
+        )
+        .expect("revocation after commit");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                },
+            )
+            .is_err(),
+            "revocation blocks next transaction"
+        );
+        assert!(!ran.get());
+
+        conn.execute(
+            "INSERT INTO normal_data_permission_grants (
+                grant_id, subject_id, permission, resource_id, granted_at_ms
+             ) VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 3)",
+            params![
+                Uuid::new_v4().to_string(),
+                &principal_id,
+                &target.revision_id
+            ],
+        )
+        .expect("reissue new target grant");
+        conn.execute(
+            "UPDATE workpapers SET workflow_state = 'SUBMITTED_FOR_REVIEW'
+             WHERE workpaper_id = ?1",
+            [&target.workpaper_id],
+        )
+        .expect("transition to review");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                }
+            )
+            .is_err(),
+            "review-stage target not writable"
+        );
+        assert!(!ran.get());
+        let evidence_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("no evidence links");
+        assert_eq!(evidence_count, 0);
     }
 
     #[test]
