@@ -22405,7 +22405,7 @@ mod tests {
                 row.get(0)
             })
             .expect("migrations preserved");
-        assert_eq!(migration_count, 28);
+        assert_eq!(migration_count, 29);
     }
 
     #[test]
