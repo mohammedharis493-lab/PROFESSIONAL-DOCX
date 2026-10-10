@@ -4,6 +4,7 @@
 use crate::{
     normal_data_comparison::{self, ComparisonResult},
     normal_data_preservation_material::{PreservationMaterial, SourceMaterial},
+    normal_data_provenance::RunProvenanceReceipt,
     persistence::PersistenceError,
 };
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,53 @@ pub(crate) struct StageReceipt {
     pub source_b_sha256_hex: String,
     pub result_artifact_sha256_hex: String,
     pub result_semantic_sha256_hex: String,
+}
+
+/// Expected metadata from an independently verified, caller-held SQLite
+/// transaction. These values MUST NOT be sourced from the staging manifest.
+/// The result-byte hash is a SHA-256 of exact persisted JSON, not its separate
+/// semantic calculation digest.
+pub(crate) struct ExpectedStageRun<'a> {
+    pub provenance: &'a RunProvenanceReceipt,
+    pub source_a_document_id: &'a str,
+    pub source_b_document_id: &'a str,
+    pub result_artifact_sha256_hex: &'a str,
+}
+
+fn matches_frozen_source(
+    staged: &Artifact,
+    dataset_id: &str,
+    document_id: &str,
+    content_id: &str,
+    sha256_hex: &str,
+) -> bool {
+    staged.dataset_version_id.as_deref() == Some(dataset_id)
+        && staged.document_id.as_deref() == Some(document_id)
+        && staged.content_version_id.as_deref() == Some(content_id)
+        && staged.sha256_hex == sha256_hex
+}
+
+fn matches_frozen_run(stage: &Manifest, expected: &ExpectedStageRun<'_>) -> bool {
+    let frozen = expected.provenance;
+    stage.run_id == frozen.normal_data_comparison_run_id
+        && stage.workspace_id == frozen.normal_data_workspace_id
+        && stage.recipe_version_id == frozen.normal_data_comparison_recipe_version_id
+        && matches_frozen_source(
+            &stage.source_a,
+            &frozen.source_a.dataset_version_id,
+            expected.source_a_document_id,
+            &frozen.source_a.content_version_id,
+            &frozen.source_a.sha256_hex,
+        )
+        && matches_frozen_source(
+            &stage.source_b,
+            &frozen.source_b.dataset_version_id,
+            expected.source_b_document_id,
+            &frozen.source_b.content_version_id,
+            &frozen.source_b.sha256_hex,
+        )
+        && stage.result_semantic_sha256_hex == frozen.result_sha256_hex
+        && stage.result.sha256_hex == expected.result_artifact_sha256_hex
 }
 
 /// The scan is a recovery inventory, not a promotion or deletion operation.
@@ -277,7 +325,11 @@ fn verify_artifact(
     Ok(bytes)
 }
 
-fn verify_package(root: &Path, stage_id: &str) -> Result<StageReceipt, PersistenceError> {
+fn verify_package(
+    root: &Path,
+    stage_id: &str,
+    expected: Option<&ExpectedStageRun<'_>>,
+) -> Result<StageReceipt, PersistenceError> {
     safe_directory(root)?;
     let folder = package_path(root, stage_id, "ready")?;
     safe_directory(&folder)?;
@@ -293,6 +345,9 @@ fn verify_package(root: &Path, stage_id: &str) -> Result<StageReceipt, Persisten
         &manifest.recipe_version_id,
     ] {
         uuid(id)?;
+    }
+    if expected.is_some_and(|frozen| !matches_frozen_run(&manifest, frozen)) {
+        return Err(invalid("stage metadata differs from the exact frozen run"));
     }
     let _source_a = verify_artifact(
         &folder,
@@ -418,13 +473,30 @@ pub(crate) fn stage_material(
         let _ = fs::remove_dir_all(&partial);
         return Err(error);
     }
-    verify_package(root, &stage_id)
+    verify_package(root, &stage_id, None)
 }
 
 /// Inspect a known staged package by re-reading all three disk artifacts.
 /// Returns no raw bytes and never creates an evidence/approval record.
 pub(crate) fn inspect_stage(root: &Path, stage_id: &str) -> Result<StageReceipt, PersistenceError> {
-    verify_package(root, stage_id)
+    verify_package(root, stage_id, None)
+}
+
+/// Rehash the staged originals and serialized result against a trusted
+/// immutable-run snapshot, including source dataset/document/content IDs.
+/// Unlike plain inspect_stage, this denies an otherwise internally valid
+/// package whose manifest claims a different run or whose result JSON bytes
+/// do not match the exact frozen database JSON bytes.
+///
+/// This is read-only *working-data* inspection. Callers must independently
+/// obtain the expected values from a trusted SQLite transaction and enforce
+/// all permissions/target status there. No retained evidence results.
+pub(crate) fn inspect_stage_against_run(
+    root: &Path,
+    stage_id: &str,
+    expected: &ExpectedStageRun<'_>,
+) -> Result<StageReceipt, PersistenceError> {
+    verify_package(root, stage_id, Some(expected))
 }
 
 /// Recovery inventory. No mutation, automatic deletion, or authorization.
@@ -450,7 +522,7 @@ pub(crate) fn scan_stages(root: &Path) -> Result<Vec<StageInventoryEntry>, Persi
         }
         let status = if suffix == "partial" {
             StageStatus::Interrupted
-        } else if verify_package(root, id).is_ok() {
+        } else if verify_package(root, id, None).is_ok() {
             StageStatus::ReadyVerified
         } else {
             StageStatus::Corrupt

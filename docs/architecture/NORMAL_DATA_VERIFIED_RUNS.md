@@ -168,6 +168,28 @@ authorization token. Trusted authentication, immutable retained evidence,
 cross-filesystem/DB crash recovery and transaction-bound specialist linkage
 remain blocked.
 
+## Transaction-bound staged-run binding (D2B2B2B2B1)
+
+The internal-only `inspect_authorized_staged_run` function checks a private
+ready staging package against the exact completed Normal Data run **inside the
+same SQLite IMMEDIATE transaction as subject grants and current target review
+state**. The verifier rejects wrong run/workspace/recipe, changed source
+dataset/document/content-version identities, mismatched original source
+digests, and serialized result JSON differing from the exact database bytes.
+It distinguishes the original calculation's semantic SHA-256 from the
+serialized artifact's SHA-256—even a whitespace-only rewritten result with a
+correspondingly rewritten stage manifest does not match the immutable run.
+Negative tests cover swapped run IDs, forged manifest source identities,
+equivalent-but-different JSON bytes, no principal/grants, revocation and a
+reviewed workpaper. Staging remains unchanged and no controlled evidence,
+workpaper link or new audit event is created.
+
+This is **read-only inspection, not an approval token or capture**. Production
+has no trusted principal constructor, the staging filesystem can change
+outside a SQLite transaction and no retained controlled copies or crash-safe
+database/filesystem commit exist. A future authorized evidence linkage must
+recheck all invariants while preserving and linking the exact retained bytes.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.

@@ -19,6 +19,8 @@ mod normal_data_recipes;
 mod normal_data_run;
 pub mod normal_data_source_reader;
 #[allow(dead_code)]
+mod normal_data_staged_policy;
+#[allow(dead_code)]
 mod normal_data_staging;
 mod persistence;
 mod preview;
