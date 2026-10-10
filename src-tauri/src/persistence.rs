@@ -22419,8 +22419,7 @@ mod tests {
         fs::create_dir_all(database.path.parent().expect("database parent"))
             .expect("create database parent");
         {
-            let mut connection =
-                open_configured_connection(&database.path).expect("open database");
+            let mut connection = open_configured_connection(&database.path).expect("open database");
             ensure_migration_history_table(&connection).expect("migration history");
             for migration in &MIGRATIONS[..29] {
                 let checksum = migration_checksum(migration.sql);
@@ -22433,8 +22432,7 @@ mod tests {
             assert_eq!(version, 29);
         }
         initialize_database(&database.path).expect("upgrade v29 to v30");
-        let connection =
-            open_configured_connection(&database.path).expect("upgraded database");
+        let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("new version");
@@ -22445,12 +22443,16 @@ mod tests {
             "normal_data_permission_admin_events",
         ] {
             let count: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("table starts empty");
             assert_eq!(count, 0, "{table} must start empty");
         }
         let count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .expect("all migrations");
         assert_eq!(count, 30);
     }
