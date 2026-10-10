@@ -1335,6 +1335,181 @@ mod tests {
     }
 
     #[test]
+    fn preservation_material_contains_three_exact_bounded_artifacts_without_writes() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("execute immutable comparison");
+        let run_id = &run.normal_data_comparison_run_id;
+        let original_a =
+            fs::read(fixture.folder.join("data").join("a.csv")).expect("fixture source A");
+        let original_b = fs::read(&fixture.source_b).expect("fixture source B");
+        let conn = persistence::open_configured_connection(&fixture.path).expect("open database");
+        let stored_json: String = conn
+            .query_row(
+                "SELECT result_json FROM normal_data_comparison_runs
+             WHERE normal_data_comparison_run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .expect("immutable result JSON");
+        let before_audit: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit baseline");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            run_id,
+        )
+        .expect("three verified transient artifacts");
+        let receipt = normal_data_provenance::inspect_run(&fixture.path, run_id)
+            .expect("historical provenance");
+        assert_eq!(material.run_id, *run_id);
+        assert_eq!(material.workspace_id, receipt.normal_data_workspace_id);
+        assert_eq!(
+            material.recipe_version_id,
+            receipt.normal_data_comparison_recipe_version_id
+        );
+        assert_eq!(
+            material.source_a.dataset_version_id,
+            receipt.source_a.dataset_version_id
+        );
+        assert_eq!(
+            material.source_a.content_version_id,
+            receipt.source_a.content_version_id
+        );
+        assert_eq!(
+            material.source_b.dataset_version_id,
+            receipt.source_b.dataset_version_id
+        );
+        assert_eq!(
+            material.source_b.content_version_id,
+            receipt.source_b.content_version_id
+        );
+        assert_ne!(material.source_a.document_id, material.source_b.document_id);
+        assert_eq!(material.source_a.bytes, original_a);
+        assert_eq!(material.source_b.bytes, original_b);
+        assert_eq!(material.source_a.sha256_hex, receipt.source_a.sha256_hex);
+        assert_eq!(material.source_b.sha256_hex, receipt.source_b.sha256_hex);
+        assert_eq!(material.result.bytes, stored_json.as_bytes());
+        assert_eq!(
+            material.result.semantic_result_sha256_hex,
+            receipt.result_sha256_hex
+        );
+        let output_sha256 = Sha256::digest(&material.result.bytes);
+        let output_hex = output_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(material.result.artifact_sha256_hex, output_hex);
+        assert_ne!(
+            material.result.artifact_sha256_hex, material.result.semantic_result_sha256_hex,
+            "serialized bytes hash is distinct from canonical calculation digest"
+        );
+        let after_audit: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit count unchanged");
+        let retained: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("retained count");
+        let links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("linked count");
+        assert_eq!(
+            before_audit, after_audit,
+            "materialization cannot write audit events"
+        );
+        assert_eq!(
+            (retained, links),
+            (0, 0),
+            "neither capture nor promotion occurs"
+        );
+    }
+
+    #[test]
+    fn preservation_material_denies_same_size_changed_and_missing_sources() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("execute immutable comparison");
+        let original_b = fs::read(&fixture.source_b).expect("original source B");
+        let altered = String::from_utf8(original_b.clone())
+            .expect("fixture ASCII source")
+            .replace("INV-100", "INV-200");
+        assert_eq!(altered.len(), original_b.len(), "same-size change");
+        fs::write(&fixture.source_b, altered.as_bytes()).expect("change linked bytes");
+        assert!(
+            crate::normal_data_preservation_material::prepare_preservation_material(
+                &fixture.path,
+                &run.normal_data_comparison_run_id
+            )
+            .is_err(),
+            "same-size tampering must never produce source material"
+        );
+        fs::write(&fixture.source_b, original_b).expect("restore source");
+        fs::remove_file(&fixture.source_b).expect("remove linked source");
+        assert!(
+            crate::normal_data_preservation_material::prepare_preservation_material(
+                &fixture.path,
+                &run.normal_data_comparison_run_id
+            )
+            .is_err(),
+            "missing original cannot be substituted with a historical hash"
+        );
+        assert!(
+            normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
+                .is_ok(),
+            "historical receipt remains inspectable without current originals"
+        );
+    }
+
+    #[test]
+    fn preservation_material_rejects_tampered_stored_result_and_unknown_run() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("execute immutable comparison");
+        assert!(
+            crate::normal_data_preservation_material::prepare_preservation_material(
+                &fixture.path,
+                "forged-run"
+            )
+            .is_err()
+        );
+        let conn =
+            persistence::open_configured_connection(&fixture.path).expect("fixture database");
+        // Fault-inject corruption: normal application writes cannot bypass
+        // the immutable run trigger, but a damaged local database can.
+        conn.execute_batch("DROP TRIGGER trg_normal_data_comparison_runs_no_update;")
+            .expect("fault injection removes immutability guard");
+        conn.execute(
+            "UPDATE normal_data_comparison_runs
+             SET result_json = json_set(result_json, '$.summary.totalBusinessKeys', 999)
+             WHERE normal_data_comparison_run_id = ?1",
+            [&run.normal_data_comparison_run_id],
+        )
+        .expect("corrupt frozen result");
+        assert!(
+            crate::normal_data_preservation_material::prepare_preservation_material(
+                &fixture.path,
+                &run.normal_data_comparison_run_id
+            )
+            .is_err(),
+            "result digest mismatch must prevent materializing artifacts"
+        );
+        let retained: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("retained count");
+        assert_eq!(retained, 0);
+    }
+
+    #[test]
     fn verified_csv_movement_persists_exact_hashes_and_immutable_audit_event() {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
