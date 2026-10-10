@@ -1113,11 +1113,9 @@ mod tests {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("verified comparison run");
-        let source = normal_data_provenance::inspect_run(
-            &fixture.path,
-            &run.normal_data_comparison_run_id,
-        )
-        .expect("frozen historical receipt");
+        let source =
+            normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
+                .expect("frozen historical receipt");
         let target = create_policy_target(&fixture.path, "DRAFT");
         let principal_id = Uuid::new_v4().to_string();
         let principal = VerifiedPrincipal::fixture(&principal_id);
@@ -1129,55 +1127,89 @@ mod tests {
             target_workpaper_revision_id: &target.revision_id,
         };
         let conn = persistence::open_configured_connection(&fixture.path).expect("database");
-        conn.execute_batch(
-            "CREATE TABLE transaction_authorization_probe (value TEXT NOT NULL);"
-        ).expect("test-only probe");
+        conn.execute_batch("CREATE TABLE transaction_authorization_probe (value TEXT NOT NULL);")
+            .expect("test-only probe");
         conn.execute(
             "INSERT INTO normal_data_permission_subjects (
                 subject_id, identity_issuer, registered_at_ms
              ) VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)",
             [&principal_id],
-        ).expect("test-only enrolled subject");
+        )
+        .expect("test-only enrolled subject");
 
         let ran = std::cell::Cell::new(false);
-        assert!(promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, None, |_| {
+        assert!(
+            promotion_policy::with_authorized_transaction(&fixture.path, &intent, None, |_| {
                 ran.set(true);
                 Ok(())
-            }
-        ).is_err(), "missing verified principal must deny");
+            })
+            .is_err(),
+            "missing verified principal must deny"
+        );
         assert!(!ran.get(), "denied callback must never execute");
-        assert!(promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |_| {
-                ran.set(true);
-                Ok(())
-            }
-        ).is_err(), "an enrolled subject has no grants by default");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                }
+            )
+            .is_err(),
+            "an enrolled subject has no grants by default"
+        );
         assert!(!ran.get());
 
         for (index, (permission, resource)) in [
-            ("READ_NORMAL_DATA_WORKSPACE", source.normal_data_workspace_id.as_str()),
-            ("ATTACH_EVIDENCE_TO_ENGAGEMENT", target.engagement_id.as_str()),
+            (
+                "READ_NORMAL_DATA_WORKSPACE",
+                source.normal_data_workspace_id.as_str(),
+            ),
+            (
+                "ATTACH_EVIDENCE_TO_ENGAGEMENT",
+                target.engagement_id.as_str(),
+            ),
             ("MODIFY_WORKPAPER_REVISION", target.revision_id.as_str()),
-        ].iter().enumerate() {
+        ]
+        .iter()
+        .enumerate()
+        {
             conn.execute(
                 "INSERT INTO normal_data_permission_grants (
                     grant_id, subject_id, permission, resource_id, granted_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, 1)",
-                params![Uuid::new_v4().to_string(), &principal_id, permission, resource],
-            ).expect("test scoped grant");
+                params![
+                    Uuid::new_v4().to_string(),
+                    &principal_id,
+                    permission,
+                    resource
+                ],
+            )
+            .expect("test scoped grant");
             if index < 2 {
-                assert!(promotion_policy::with_authorized_transaction(
-                    &fixture.path, &intent, Some(&principal), |_| {
-                        ran.set(true);
-                        Ok(())
-                    }
-                ).is_err(), "all three exact grants required");
+                assert!(
+                    promotion_policy::with_authorized_transaction(
+                        &fixture.path,
+                        &intent,
+                        Some(&principal),
+                        |_| {
+                            ran.set(true);
+                            Ok(())
+                        }
+                    )
+                    .is_err(),
+                    "all three exact grants required"
+                );
                 assert!(!ran.get());
             }
         }
         let value = promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |tx| {
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |tx| {
                 tx.execute(
                     "INSERT INTO transaction_authorization_probe (value)
                      VALUES ('committed')",
@@ -1185,10 +1217,14 @@ mod tests {
                 )?;
                 Ok(42)
             },
-        ).expect("fully eligible test-only callback commits in same transaction");
+        )
+        .expect("fully eligible test-only callback commits in same transaction");
         assert_eq!(value, 42);
         let error = promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |tx| -> Result<(), persistence::PersistenceError> {
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |tx| -> Result<(), persistence::PersistenceError> {
                 tx.execute(
                     "INSERT INTO transaction_authorization_probe (value)
                      VALUES ('rolled_back')",
@@ -1200,66 +1236,101 @@ mod tests {
             },
         );
         assert!(error.is_err(), "operation error aborts same transaction");
-        let probe_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM transaction_authorization_probe",
-            [], |row| row.get(0),
-        ).expect("probe count");
+        let probe_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transaction_authorization_probe",
+                [],
+                |row| row.get(0),
+            )
+            .expect("probe count");
         assert_eq!(probe_count, 1, "failed callback must roll back");
 
         // The IMMEDIATE SQLite reservation prevents another writer from
         // revoking permissions between this gate and its callback commit.
         promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |_| {
+            &fixture.path,
+            &intent,
+            Some(&principal),
+            |_| {
                 let outside = persistence::open_configured_connection(&fixture.path)
                     .expect("second connection");
-                outside.busy_timeout(std::time::Duration::from_millis(1))
+                outside
+                    .busy_timeout(std::time::Duration::from_millis(1))
                     .expect("short competing-write timeout");
-                assert!(outside.execute(
-                    "UPDATE normal_data_permission_grants
+                assert!(
+                    outside
+                        .execute(
+                            "UPDATE normal_data_permission_grants
                      SET revoked_at_ms = 2
                      WHERE subject_id = ?1
                        AND permission = 'MODIFY_WORKPAPER_REVISION'",
-                    [&principal_id],
-                ).is_err(), "competing revocation cannot interleave with transaction");
+                            [&principal_id],
+                        )
+                        .is_err(),
+                    "competing revocation cannot interleave with transaction"
+                );
                 Ok(())
             },
-        ).expect("writer reservation kept through callback");
+        )
+        .expect("writer reservation kept through callback");
         conn.execute(
             "UPDATE normal_data_permission_grants
              SET revoked_at_ms = 2
              WHERE subject_id = ?1 AND permission = 'MODIFY_WORKPAPER_REVISION'",
             [&principal_id],
-        ).expect("revocation after commit");
-        assert!(promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |_| {
-                ran.set(true);
-                Ok(())
-            },
-        ).is_err(), "revocation blocks next transaction");
+        )
+        .expect("revocation after commit");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                },
+            )
+            .is_err(),
+            "revocation blocks next transaction"
+        );
         assert!(!ran.get());
 
         conn.execute(
             "INSERT INTO normal_data_permission_grants (
                 grant_id, subject_id, permission, resource_id, granted_at_ms
              ) VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 3)",
-            params![Uuid::new_v4().to_string(), &principal_id, &target.revision_id],
-        ).expect("reissue new target grant");
+            params![
+                Uuid::new_v4().to_string(),
+                &principal_id,
+                &target.revision_id
+            ],
+        )
+        .expect("reissue new target grant");
         conn.execute(
             "UPDATE workpapers SET workflow_state = 'SUBMITTED_FOR_REVIEW'
              WHERE workpaper_id = ?1",
             [&target.workpaper_id],
-        ).expect("transition to review");
-        assert!(promotion_policy::with_authorized_transaction(
-            &fixture.path, &intent, Some(&principal), |_| {
-                ran.set(true);
-                Ok(())
-            }
-        ).is_err(), "review-stage target not writable");
+        )
+        .expect("transition to review");
+        assert!(
+            promotion_policy::with_authorized_transaction(
+                &fixture.path,
+                &intent,
+                Some(&principal),
+                |_| {
+                    ran.set(true);
+                    Ok(())
+                }
+            )
+            .is_err(),
+            "review-stage target not writable"
+        );
         assert!(!ran.get());
-        let evidence_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workpaper_evidence_links",
-            [], |row| row.get(0),
-        ).expect("no evidence links");
+        let evidence_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("no evidence links");
         assert_eq!(evidence_count, 0);
     }
 
