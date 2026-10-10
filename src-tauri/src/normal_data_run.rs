@@ -793,6 +793,48 @@ mod tests {
             &PromotionIntent {run_id: "not-a-uuid", ..intent},
             Some(&principal), &grants
         ).is_err());
+        // An unresolved note or archived workpaper is not eligible, even
+        // when a test provider grants all three required resource permissions.
+        let review_target = create_policy_target(&fixture.path, "DRAFT");
+        let review_grants = full_test_grants(&source.normal_data_workspace_id, &review_target);
+        conn.execute(
+            "INSERT INTO review_notes (
+                review_note_id, workpaper_id, workpaper_revision_id,
+                title, body, current_state, created_at_ms, latest_event_at_ms
+             ) VALUES (?1, ?2, ?3, 'Review note', 'Unresolved', 'OPEN', 2, 2)",
+            params![
+                Uuid::new_v4().to_string(),
+                &review_target.workpaper_id,
+                &review_target.revision_id
+            ],
+        ).expect("create open review note");
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {
+                target_engagement_id: &review_target.engagement_id,
+                target_workpaper_id: &review_target.workpaper_id,
+                target_workpaper_revision_id: &review_target.revision_id,
+                ..intent
+            },
+            Some(&principal), &review_grants,
+        ).is_err());
+
+        let archived_workpaper = create_policy_target(&fixture.path, "DRAFT");
+        let archived_grants = full_test_grants(&source.normal_data_workspace_id, &archived_workpaper);
+        conn.execute(
+            "UPDATE workpapers SET archived_at_ms = 5 WHERE workpaper_id = ?1",
+            [&archived_workpaper.workpaper_id],
+        ).expect("archive workpaper");
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {
+                target_engagement_id: &archived_workpaper.engagement_id,
+                target_workpaper_id: &archived_workpaper.workpaper_id,
+                target_workpaper_revision_id: &archived_workpaper.revision_id,
+                ..intent
+            },
+            Some(&principal), &archived_grants,
+        ).is_err());
     }
 
     #[test]
