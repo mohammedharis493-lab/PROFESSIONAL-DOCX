@@ -1902,6 +1902,238 @@ mod tests {
     }
 
     #[test]
+    fn retention_candidate_preserves_exact_three_artifacts_without_promotion() {
+        use crate::normal_data_retention_store::{
+            self as retention_store, RetentionCandidateStatus,
+        };
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison run");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("exact three artifacts");
+        let staging_root = fixture.folder.join("candidate-staging");
+        let retention_root = fixture.folder.join("candidate-retention");
+        fs::create_dir(&staging_root).expect("staging root");
+        fs::create_dir(&retention_root).expect("retention root");
+        let staged = crate::normal_data_staging::stage_material(&staging_root, &material)
+            .expect("verified stage");
+
+        let retained = retention_store::retain_staged_candidate(
+            &fixture.path,
+            &staging_root,
+            &retention_root,
+            &staged.stage_id,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("retention candidate");
+        assert_eq!(retained.stage_id, staged.stage_id);
+        assert_eq!(retained.run_id, run.normal_data_comparison_run_id);
+        assert_eq!(
+            retained.result_artifact_sha256_hex,
+            material.result.artifact_sha256_hex
+        );
+        assert_eq!(
+            retained.result_semantic_sha256_hex,
+            material.result.semantic_result_sha256_hex
+        );
+
+        let folder = retention_root.join(format!("{}.candidate", staged.stage_id));
+        assert_eq!(
+            fs::read(folder.join("source-a.bin")).expect("retained source A"),
+            material.source_a.bytes
+        );
+        assert_eq!(
+            fs::read(folder.join("source-b.bin")).expect("retained source B"),
+            material.source_b.bytes
+        );
+        assert_eq!(
+            fs::read(folder.join("result.json")).expect("retained result"),
+            material.result.bytes
+        );
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("candidate inventory");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].stage_id, staged.stage_id);
+        assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
+
+        let second = retention_store::retain_staged_candidate(
+            &fixture.path,
+            &staging_root,
+            &retention_root,
+            &staged.stage_id,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("idempotent retry");
+        assert_eq!(second, retained);
+
+        let connection =
+            persistence::open_configured_connection(&fixture.path).expect("database");
+        let candidate_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_candidates",
+                [],
+                |row| row.get(0),
+            )
+            .expect("candidate count");
+        assert_eq!(candidate_count, 1);
+        for table in [
+            "controlled_evidence_versions",
+            "workpaper_evidence_links",
+            "normal_data_permission_subjects",
+            "normal_data_permission_grants",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .expect("non-promotion count");
+            assert_eq!(count, 0, "{table} remains empty");
+        }
+        assert!(
+            connection
+                .execute(
+                    "UPDATE normal_data_retention_candidates SET retained_at_ms = retained_at_ms + 1
+                     WHERE stage_id = ?1",
+                    [&staged.stage_id],
+                )
+                .is_err(),
+            "candidate registration is immutable"
+        );
+        assert!(
+            connection
+                .execute(
+                    "DELETE FROM normal_data_retention_candidates WHERE stage_id = ?1",
+                    [&staged.stage_id],
+                )
+                .is_err(),
+            "candidate registration cannot be deleted"
+        );
+
+        let source_path = folder.join("source-a.bin");
+        let mut tampered = fs::read(&source_path).expect("candidate source");
+        tampered[0] ^= 1;
+        fs::write(&source_path, tampered).expect("fault-inject retained corruption");
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("corruption inventory");
+        assert_eq!(inventory[0].status, RetentionCandidateStatus::Corrupt);
+        assert!(
+            retention_store::recover_retained_candidate(
+                &fixture.path,
+                &retention_root,
+                &staged.stage_id,
+            )
+            .is_err(),
+            "corrupt retained bytes cannot be re-registered"
+        );
+    }
+
+    #[test]
+    fn retention_candidate_recovers_orphan_and_reports_missing_or_interrupted_state() {
+        use crate::normal_data_retention_store::{
+            self as retention_store, RetentionCandidateStatus,
+        };
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison run");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("exact artifacts");
+        let staging_root = fixture.folder.join("orphan-staging");
+        let retention_root = fixture.folder.join("orphan-retention");
+        fs::create_dir(&staging_root).expect("staging root");
+        fs::create_dir(&retention_root).expect("retention root");
+        let staged = crate::normal_data_staging::stage_material(&staging_root, &material)
+            .expect("verified stage");
+
+        let connection =
+            persistence::open_configured_connection(&fixture.path).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER test_block_retention_candidate
+                 BEFORE INSERT ON normal_data_retention_candidates
+                 BEGIN SELECT RAISE(ABORT, 'simulated ledger failure'); END;",
+            )
+            .expect("inject registration failure");
+        assert!(
+            retention_store::retain_staged_candidate(
+                &fixture.path,
+                &staging_root,
+                &retention_root,
+                &staged.stage_id,
+                &run.normal_data_comparison_run_id,
+            )
+            .is_err(),
+            "ledger failure must surface after candidate publication"
+        );
+        assert!(
+            retention_root
+                .join(format!("{}.candidate", staged.stage_id))
+                .exists(),
+            "published candidate survives database failure for recovery"
+        );
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_candidates",
+                [],
+                |row| row.get(0),
+            )
+            .expect("no record");
+        assert_eq!(count, 0);
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("orphan inventory");
+        assert_eq!(inventory[0].status, RetentionCandidateStatus::OrphanValid);
+
+        connection
+            .execute_batch("DROP TRIGGER test_block_retention_candidate;")
+            .expect("restore ledger writes");
+        let recovered = retention_store::recover_retained_candidate(
+            &fixture.path,
+            &retention_root,
+            &staged.stage_id,
+        )
+        .expect("register exact orphan");
+        assert_eq!(recovered.stage_id, staged.stage_id);
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("recorded inventory");
+        assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
+
+        fs::remove_dir_all(retention_root.join(format!("{}.candidate", staged.stage_id)))
+            .expect("simulate filesystem loss after database commit");
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("missing inventory");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedMissing);
+
+        let interrupted = Uuid::new_v4().to_string();
+        fs::create_dir(retention_root.join(format!("{interrupted}.partial")))
+            .expect("simulate interrupted publication");
+        let inventory =
+            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+                .expect("interrupted inventory");
+        assert!(inventory.iter().any(|entry| {
+            entry.stage_id == interrupted && entry.status == RetentionCandidateStatus::Interrupted
+        }));
+        retention_store::discard_interrupted_candidate(&retention_root, &interrupted)
+            .expect("discard only exact interrupted candidate");
+        assert!(
+            retention_store::discard_interrupted_candidate(
+                &retention_root,
+                &staged.stage_id,
+            )
+            .is_err(),
+            "published or missing recorded candidate is not deletable as partial"
+        );
+    }
+
+    #[test]
     fn staging_denies_modified_material_before_writing_any_package() {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
