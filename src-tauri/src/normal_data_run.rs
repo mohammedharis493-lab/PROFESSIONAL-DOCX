@@ -1953,9 +1953,8 @@ mod tests {
             fs::read(folder.join("result.json")).expect("retained result"),
             material.result.bytes
         );
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("candidate inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("candidate inventory");
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].stage_id, staged.stage_id);
         assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
@@ -1970,8 +1969,7 @@ mod tests {
         .expect("idempotent retry");
         assert_eq!(second, retained);
 
-        let connection =
-            persistence::open_configured_connection(&fixture.path).expect("database");
+        let connection = persistence::open_configured_connection(&fixture.path).expect("database");
         let candidate_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM normal_data_retention_candidates",
@@ -1987,7 +1985,9 @@ mod tests {
             "normal_data_permission_grants",
         ] {
             let count: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("non-promotion count");
             assert_eq!(count, 0, "{table} remains empty");
         }
@@ -2015,9 +2015,8 @@ mod tests {
         let mut tampered = fs::read(&source_path).expect("candidate source");
         tampered[0] ^= 1;
         fs::write(&source_path, tampered).expect("fault-inject retained corruption");
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("corruption inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("corruption inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::Corrupt);
         assert!(
             retention_store::recover_retained_candidate(
@@ -2050,8 +2049,7 @@ mod tests {
         let staged = crate::normal_data_staging::stage_material(&staging_root, &material)
             .expect("verified stage");
 
-        let connection =
-            persistence::open_configured_connection(&fixture.path).expect("database");
+        let connection = persistence::open_configured_connection(&fixture.path).expect("database");
         connection
             .execute_batch(
                 "CREATE TRIGGER test_block_retention_candidate
@@ -2084,9 +2082,8 @@ mod tests {
             )
             .expect("no record");
         assert_eq!(count, 0);
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("orphan inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("orphan inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::OrphanValid);
 
         connection
@@ -2099,36 +2096,33 @@ mod tests {
         )
         .expect("register exact orphan");
         assert_eq!(recovered.stage_id, staged.stage_id);
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("recorded inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("recorded inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
 
         fs::remove_dir_all(retention_root.join(format!("{}.candidate", staged.stage_id)))
             .expect("simulate filesystem loss after database commit");
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("missing inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("missing inventory");
         assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedMissing);
+        assert_eq!(
+            inventory[0].status,
+            RetentionCandidateStatus::RecordedMissing
+        );
 
         let interrupted = Uuid::new_v4().to_string();
         fs::create_dir(retention_root.join(format!("{interrupted}.partial")))
             .expect("simulate interrupted publication");
-        let inventory =
-            retention_store::scan_retention_candidates(&fixture.path, &retention_root)
-                .expect("interrupted inventory");
+        let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
+            .expect("interrupted inventory");
         assert!(inventory.iter().any(|entry| {
             entry.stage_id == interrupted && entry.status == RetentionCandidateStatus::Interrupted
         }));
         retention_store::discard_interrupted_candidate(&retention_root, &interrupted)
             .expect("discard only exact interrupted candidate");
         assert!(
-            retention_store::discard_interrupted_candidate(
-                &retention_root,
-                &staged.stage_id,
-            )
-            .is_err(),
+            retention_store::discard_interrupted_candidate(&retention_root, &staged.stage_id,)
+                .is_err(),
             "published or missing recorded candidate is not deletable as partial"
         );
     }
