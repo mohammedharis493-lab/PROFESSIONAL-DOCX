@@ -72,8 +72,7 @@ pub(crate) fn record_recovery_snapshot(
         params![recovery_scan_id, observed_at_ms, entries.len() as i64],
     )?;
     for entry in &entries {
-        Uuid::parse_str(&entry.stage_id)
-            .map_err(|_| denied("stage ID is not a UUID"))?;
+        Uuid::parse_str(&entry.stage_id).map_err(|_| denied("stage ID is not a UUID"))?;
         transaction.execute(
             "INSERT INTO normal_data_stage_recovery_entries
                  (recovery_scan_id, stage_id, observed_state)
@@ -106,8 +105,7 @@ pub(crate) fn read_recovery_snapshot(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let (observed_at_ms, expected_count) =
-        header.ok_or_else(|| denied("scan does not exist"))?;
+    let (observed_at_ms, expected_count) = header.ok_or_else(|| denied("scan does not exist"))?;
     if !(0..=MAX_RECOVERY_ENTRIES as i64).contains(&expected_count) {
         return Err(denied("recorded entry count out of bounds"));
     }
@@ -153,8 +151,7 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir()
-                .join(format!("pdox-stage-recovery-{}", Uuid::new_v4()));
+            let root = std::env::temp_dir().join(format!("pdox-stage-recovery-{}", Uuid::new_v4()));
             fs::create_dir_all(&root).expect("new fixture directory");
             let db = root.join("state.sqlite");
             persistence::initialize_database(&db).expect("schema v30");
@@ -180,10 +177,8 @@ mod tests {
         let corrupt_id = Uuid::new_v4().to_string();
         fs::create_dir(root.join(format!("{interrupted_id}.partial")))
             .expect("interrupted capture");
-        fs::create_dir(root.join(format!("{corrupt_id}.ready")))
-            .expect("malformed ready package");
-        let first = record_recovery_snapshot(&fixture.db, &root)
-            .expect("initial recovery scan");
+        fs::create_dir(root.join(format!("{corrupt_id}.ready"))).expect("malformed ready package");
+        let first = record_recovery_snapshot(&fixture.db, &root).expect("initial recovery scan");
         assert_eq!(first.entries.len(), 2);
         assert!(first.entries.contains(&StageInventoryEntry {
             stage_id: interrupted_id.clone(),
@@ -201,8 +196,7 @@ mod tests {
         assert!(read_recovery_snapshot(&fixture.db, "bad-scan-id").is_err());
         fs::remove_dir(root.join(format!("{interrupted_id}.partial")))
             .expect("simulate cleanup of interrupted stage");
-        let second = record_recovery_snapshot(&fixture.db, &root)
-            .expect("new recovery scan");
+        let second = record_recovery_snapshot(&fixture.db, &root).expect("new recovery scan");
         assert_eq!(second.entries.len(), 1);
         assert_ne!(first.recovery_scan_id, second.recovery_scan_id);
         assert_eq!(
@@ -210,32 +204,40 @@ mod tests {
                 .expect("old observation still present"),
             first,
         );
-        let connection = persistence::open_configured_connection(&fixture.db)
-            .expect("database");
+        let connection = persistence::open_configured_connection(&fixture.db).expect("database");
         let counts: (i64, i64) = (
-            connection.query_row(
-                "SELECT COUNT(*) FROM normal_data_stage_recovery_scans",
-                [],
-                |row| row.get(0),
-            ).expect("scans"),
-            connection.query_row(
-                "SELECT COUNT(*) FROM normal_data_stage_recovery_entries",
-                [],
-                |row| row.get(0),
-            ).expect("entries"),
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM normal_data_stage_recovery_scans",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("scans"),
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM normal_data_stage_recovery_entries",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("entries"),
         );
         assert_eq!(counts, (2, 3));
         assert!(connection.execute(
             "UPDATE normal_data_stage_recovery_entries SET observed_state = 'READY_LOCAL_HASH_VALID'",
             [],
         ).is_err(), "old observations cannot be rewritten");
-        assert!(connection.execute(
-            "DELETE FROM normal_data_stage_recovery_scans", [],
-        ).is_err(), "old scans cannot be deleted");
+        assert!(
+            connection
+                .execute("DELETE FROM normal_data_stage_recovery_scans", [],)
+                .is_err(),
+            "old scans cannot be deleted"
+        );
         for table in ["workpaper_evidence_links", "controlled_evidence_versions"] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0),
-            ).expect("still no formal capture or linkage");
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("still no formal capture or linkage");
             assert_eq!(count, 0);
         }
     }
@@ -246,33 +248,40 @@ mod tests {
         let root = fixture.stage_root();
         for _ in 0..2 {
             let stage = Uuid::new_v4().to_string();
-            fs::create_dir(root.join(format!("{stage}.partial")))
-                .expect("recovery candidate");
+            fs::create_dir(root.join(format!("{stage}.partial"))).expect("recovery candidate");
         }
-        let connection = persistence::open_configured_connection(&fixture.db)
-            .expect("database");
-        connection.execute_batch(
-            "CREATE TRIGGER test_recovery_observation_failure
+        let connection = persistence::open_configured_connection(&fixture.db).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER test_recovery_observation_failure
              BEFORE INSERT ON normal_data_stage_recovery_entries
              BEGIN SELECT RAISE(ABORT, 'simulated disk inventory journal fault'); END;",
-        ).expect("fault injection");
+            )
+            .expect("fault injection");
         assert!(record_recovery_snapshot(&fixture.db, &root).is_err());
-        let scans: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_stage_recovery_scans",
-            [],
-            |row| row.get(0),
-        ).expect("no snapshot header committed");
-        let entries: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_stage_recovery_entries",
-            [],
-            |row| row.get(0),
-        ).expect("no observation row committed");
+        let scans: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_stage_recovery_scans",
+                [],
+                |row| row.get(0),
+            )
+            .expect("no snapshot header committed");
+        let entries: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_stage_recovery_entries",
+                [],
+                |row| row.get(0),
+            )
+            .expect("no observation row committed");
         assert_eq!((scans, entries), (0, 0));
-        connection.execute_batch("DROP TRIGGER test_recovery_observation_failure")
+        connection
+            .execute_batch("DROP TRIGGER test_recovery_observation_failure")
             .expect("repair fault");
         assert_eq!(
             record_recovery_snapshot(&fixture.db, &root)
-                .expect("record after rollback").entries.len(),
+                .expect("record after rollback")
+                .entries
+                .len(),
             2,
         );
     }
