@@ -19,6 +19,8 @@ mod normal_data_recipes;
 #[allow(dead_code)]
 mod normal_data_retention_policy;
 #[allow(dead_code)]
+mod normal_data_retention_recovery_journal;
+#[allow(dead_code)]
 mod normal_data_retention_store;
 mod normal_data_run;
 pub mod normal_data_source_reader;

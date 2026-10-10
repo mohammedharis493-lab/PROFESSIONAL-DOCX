@@ -1958,6 +1958,13 @@ mod tests {
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].stage_id, staged.stage_id);
         assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
+        let initial_snapshot =
+            crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
+                &fixture.path,
+                &retention_root,
+            )
+            .expect("append registered-valid recovery observation");
+        assert_eq!(initial_snapshot.entries, inventory);
 
         let second = retention_store::retain_staged_candidate(
             &fixture.path,
@@ -2018,6 +2025,21 @@ mod tests {
         let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
             .expect("corruption inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::Corrupt);
+        let journal =
+            crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
+                &fixture.path,
+                &retention_root,
+            )
+            .expect("append corruption observation");
+        assert_eq!(journal.entries, inventory);
+        assert_eq!(
+            crate::normal_data_retention_recovery_journal::read_retention_recovery_snapshot(
+                &fixture.path,
+                &initial_snapshot.recovery_scan_id,
+            )
+            .expect("old status never rewritten"),
+            initial_snapshot,
+        );
         assert!(
             retention_store::recover_retained_candidate(
                 &fixture.path,
@@ -2264,6 +2286,13 @@ mod tests {
         let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
             .expect("orphan inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::OrphanValid);
+        let orphan_snapshot =
+            crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
+                &fixture.path,
+                &retention_root,
+            )
+            .expect("append orphan observation");
+        assert_eq!(orphan_snapshot.entries, inventory);
 
         connection
             .execute_batch("DROP TRIGGER test_block_retention_candidate;")
@@ -2298,6 +2327,22 @@ mod tests {
         let inventory = retention_store::scan_retention_candidates(&fixture.path, &retention_root)
             .expect("recorded inventory");
         assert_eq!(inventory[0].status, RetentionCandidateStatus::RecordedValid);
+        let drift =
+            crate::normal_data_retention_recovery_journal::compare_retention_recovery_snapshot_to_live(
+                &fixture.path,
+                &retention_root,
+                &orphan_snapshot.recovery_scan_id,
+            )
+            .expect("registration changes live recovery state");
+        assert_eq!(drift.len(), 1);
+        assert_eq!(
+            drift[0].recorded,
+            Some(RetentionCandidateStatus::OrphanValid)
+        );
+        assert_eq!(
+            drift[0].observed_now,
+            Some(RetentionCandidateStatus::RecordedValid)
+        );
 
         fs::remove_dir_all(retention_root.join(format!("{}.candidate", staged.stage_id)))
             .expect("simulate filesystem loss after database commit");
@@ -2307,6 +2352,21 @@ mod tests {
         assert_eq!(
             inventory[0].status,
             RetentionCandidateStatus::RecordedMissing
+        );
+        let missing_snapshot =
+            crate::normal_data_retention_recovery_journal::record_retention_recovery_snapshot(
+                &fixture.path,
+                &retention_root,
+            )
+            .expect("append recorded-missing observation");
+        assert_eq!(missing_snapshot.entries, inventory);
+        assert_eq!(
+            crate::normal_data_retention_recovery_journal::read_retention_recovery_snapshot(
+                &fixture.path,
+                &orphan_snapshot.recovery_scan_id,
+            )
+            .expect("previous orphan state still immutable"),
+            orphan_snapshot,
         );
 
         let interrupted = Uuid::new_v4().to_string();
