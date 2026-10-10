@@ -10,7 +10,7 @@ use crate::{
     },
     normal_data_provenance,
     normal_data_staging::{self, ExpectedStageRun, StageReceipt},
-    persistence::{self, PersistenceError},
+    persistence::PersistenceError,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
