@@ -1518,15 +1518,16 @@ mod tests {
         let material = crate::normal_data_preservation_material::prepare_preservation_material(
             &fixture.path,
             &run.normal_data_comparison_run_id,
-        ).expect("exact three artifact bytes");
+        )
+        .expect("exact three artifact bytes");
         let root = fixture.folder.join("private-staging");
         fs::create_dir(&root).expect("private root");
         let conn = persistence::open_configured_connection(&fixture.path).expect("database");
-        let audit_before: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("audit before");
-        let receipt = normal_data_staging::stage_material(&root, &material)
-            .expect("private staging");
+        let audit_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit before");
+        let receipt =
+            normal_data_staging::stage_material(&root, &material).expect("private staging");
         assert_eq!(receipt.run_id, run.normal_data_comparison_run_id);
         assert_eq!(receipt.workspace_id, material.workspace_id);
         assert_eq!(receipt.source_a_sha256_hex, material.source_a.sha256_hex);
@@ -1554,12 +1555,11 @@ mod tests {
             fs::read(package.join("result.json")).expect("staged result"),
             material.result.bytes,
         );
-        let manifest = fs::read_to_string(package.join("manifest.json"))
-            .expect("identity-only manifest");
+        let manifest =
+            fs::read_to_string(package.join("manifest.json")).expect("identity-only manifest");
         assert!(!manifest.contains("INV-100"));
         assert_eq!(
-            normal_data_staging::inspect_stage(&root, &receipt.stage_id)
-                .expect("reopened receipt"),
+            normal_data_staging::inspect_stage(&root, &receipt.stage_id).expect("reopened receipt"),
             receipt,
         );
         let inventory = normal_data_staging::scan_stages(&root).expect("restart scan");
@@ -1568,15 +1568,21 @@ mod tests {
         assert_eq!(inventory[0].status, StageStatus::ReadyVerified);
         assert!(normal_data_staging::discard_interrupted(&root, &receipt.stage_id).is_err());
 
-        let audit_after: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("audit after");
-        let evidence_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0),
-        ).expect("controlled evidence");
-        let links_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0),
-        ).expect("links");
+        let audit_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit after");
+        let evidence_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("controlled evidence");
+        let links_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("links");
         assert_eq!(audit_before, audit_after);
         assert_eq!((evidence_count, links_count), (0, 0));
 
@@ -1596,10 +1602,11 @@ mod tests {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("verified comparison run");
-        let mut material =
-            crate::normal_data_preservation_material::prepare_preservation_material(
-                &fixture.path, &run.normal_data_comparison_run_id,
-            ).expect("exact material");
+        let mut material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("exact material");
         let root = fixture.folder.join("private-staging-reject");
         fs::create_dir(&root).expect("dedicated staging root");
         material.source_a.bytes[0] ^= 1;
@@ -1607,8 +1614,10 @@ mod tests {
         assert_eq!(fs::read_dir(&root).expect("staging root").count(), 0);
         material.source_a.bytes[0] ^= 1;
         material.result.bytes.push(b' ');
-        assert!(crate::normal_data_staging::stage_material(&root, &material).is_err(),
-            "result artifact hash prevents silent whitespace change");
+        assert!(
+            crate::normal_data_staging::stage_material(&root, &material).is_err(),
+            "result artifact hash prevents silent whitespace change"
+        );
         assert_eq!(fs::read_dir(&root).expect("staging root").count(), 0);
     }
 
