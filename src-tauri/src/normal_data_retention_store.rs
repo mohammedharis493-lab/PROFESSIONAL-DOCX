@@ -152,7 +152,9 @@ fn safe_directory(path: &Path) -> Result<(), PersistenceError> {
 fn regular_file(path: &Path) -> Result<(), PersistenceError> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() {
-        return Err(denied("candidate artifact must be a regular non-symlink file"));
+        return Err(denied(
+            "candidate artifact must be a regular non-symlink file",
+        ));
     }
     Ok(())
 }
@@ -295,8 +297,8 @@ fn verify_candidate_folder(
     {
         return Err(denied("retained result bytes do not match manifest"));
     }
-    let result: ComparisonResult =
-        serde_json::from_slice(&result_bytes).map_err(|_| denied("retained result JSON invalid"))?;
+    let result: ComparisonResult = serde_json::from_slice(&result_bytes)
+        .map_err(|_| denied("retained result JSON invalid"))?;
     normal_data_comparison::verify_stored_result_digest(&result)
         .map_err(|_| denied("retained result semantic digest invalid"))?;
     if result.result_sha256_hex != manifest.result_semantic_sha256_hex {
@@ -305,10 +307,7 @@ fn verify_candidate_folder(
     Ok(manifest)
 }
 
-fn verify_candidate(
-    root: &Path,
-    stage_id: &str,
-) -> Result<CandidateManifest, PersistenceError> {
+fn verify_candidate(root: &Path, stage_id: &str) -> Result<CandidateManifest, PersistenceError> {
     safe_directory(root)?;
     let folder = package_path(root, stage_id, "candidate")?;
     verify_candidate_folder(&folder, stage_id)
@@ -450,7 +449,10 @@ fn load_record(
         .map_err(Into::into)
 }
 
-fn record_matches_manifest(record: &RetentionCandidateRecord, manifest: &CandidateManifest) -> bool {
+fn record_matches_manifest(
+    record: &RetentionCandidateRecord,
+    manifest: &CandidateManifest,
+) -> bool {
     record.stage_id == manifest.stage_id
         && record.run_id == manifest.run_id
         && record.workspace_id == manifest.workspace_id
@@ -482,7 +484,9 @@ fn register_verified_candidate(
     }
     if let Some(existing) = load_record(&tx, &manifest.stage_id)? {
         if !record_matches_manifest(&existing, manifest) {
-            return Err(denied("stored candidate metadata conflicts with retained bytes"));
+            return Err(denied(
+                "stored candidate metadata conflicts with retained bytes",
+            ));
         }
         tx.commit()?;
         return Ok(existing);
@@ -714,7 +718,9 @@ pub(crate) fn scan_retention_candidates(
         recorded.push(row?);
     }
     if recorded.len() > MAX_INVENTORY_ENTRIES {
-        return Err(denied("registered candidate inventory exceeds safe scan limit"));
+        return Err(denied(
+            "registered candidate inventory exceeds safe scan limit",
+        ));
     }
     for stage_id in recorded {
         observed
