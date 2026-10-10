@@ -75,7 +75,7 @@ impl<'a> SqlitePromotionPermissions<'a> {
 }
 
 impl PromotionPermission {
-    fn database_key(self) -> &'static str {
+    pub(crate) fn database_key(self) -> &'static str {
         match self {
             Self::ReadNormalDataWorkspace => "READ_NORMAL_DATA_WORKSPACE",
             Self::AttachEvidenceToEngagement => "ATTACH_EVIDENCE_TO_ENGAGEMENT",
