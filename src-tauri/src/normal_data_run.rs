@@ -908,6 +908,200 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_promotion_grants_deny_by_default_and_enforce_exact_resource_scopes() {
+        use promotion_policy::{PromotionIntent, SqlitePromotionPermissions, VerifiedPrincipal};
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("comparison run");
+        let source = normal_data_provenance::inspect_run(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("historical receipt");
+        let target = create_policy_target(&fixture.path, "DRAFT");
+        let intent = PromotionIntent {
+            run_id: &run.normal_data_comparison_run_id,
+            expected_workspace_id: &source.normal_data_workspace_id,
+            target_engagement_id: &target.engagement_id,
+            target_workpaper_id: &target.workpaper_id,
+            target_workpaper_revision_id: &target.revision_id,
+        };
+        let provider = SqlitePromotionPermissions::new(&fixture.path);
+        let subject_id = Uuid::new_v4().to_string();
+        let subject = VerifiedPrincipal::fixture(&subject_id);
+        // A subject ID is not an authenticated principal in production; the
+        // fixture constructor is available only when Rust tests are compiled.
+        assert!(promotion_policy::check_policy(&fixture.path, &intent, None, &provider).is_err());
+        assert!(
+            promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+                .is_err()
+        );
+        let conn = persistence::open_configured_connection(&fixture.path).expect("open database");
+        conn.execute(
+            "INSERT INTO normal_data_permission_subjects
+             (subject_id, identity_issuer, registered_at_ms)
+             VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)",
+            [&subject_id],
+        )
+        .expect("test-only subject enrollment");
+        // Enrollment alone grants zero access.
+        assert!(
+            promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+                .is_err()
+        );
+        let scopes = [
+            ("READ_NORMAL_DATA_WORKSPACE", source.normal_data_workspace_id.as_str()),
+            ("ATTACH_EVIDENCE_TO_ENGAGEMENT", target.engagement_id.as_str()),
+            ("MODIFY_WORKPAPER_REVISION", target.revision_id.as_str()),
+        ];
+        let mut ids = Vec::new();
+        for (index, (permission, resource)) in scopes.iter().enumerate() {
+            let grant_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO normal_data_permission_grants
+                 (grant_id, subject_id, permission, resource_id, granted_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, 1)",
+                params![&grant_id, &subject_id, permission, resource],
+            )
+            .expect("test-only exact-scoped grant");
+            ids.push(grant_id);
+            if index < 2 {
+                assert!(
+                    promotion_policy::check_policy(
+                        &fixture.path,
+                        &intent,
+                        Some(&subject),
+                        &provider,
+                    )
+                    .is_err(),
+                    "partial scope cannot authorize promotion"
+                );
+            }
+        }
+        promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+            .expect("three exact grants are necessary with a test-only verified principal");
+        let different_subject = VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
+        assert!(
+            promotion_policy::check_policy(
+                &fixture.path,
+                &intent,
+                Some(&different_subject),
+                &provider,
+            )
+            .is_err()
+        );
+        let other_engagement = Uuid::new_v4().to_string();
+        assert!(
+            promotion_policy::check_policy(
+                &fixture.path,
+                &PromotionIntent {
+                    target_engagement_id: &other_engagement,
+                    ..intent
+                },
+                Some(&subject),
+                &provider,
+            )
+            .is_err()
+        );
+
+        // Revocation takes effect on the very next independent policy read.
+        conn.execute(
+            "UPDATE normal_data_permission_grants
+             SET revoked_at_ms = 2 WHERE grant_id = ?1",
+            [&ids[2]],
+        )
+        .expect("revoke target revision write grant");
+        assert!(
+            promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+                .is_err()
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_permission_grants
+                 SET revoked_at_ms = NULL WHERE grant_id = ?1",
+                [&ids[2]],
+            )
+            .is_err(),
+            "a revoked grant cannot be restored in place"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_permission_grants
+                 SET resource_id = ?1 WHERE grant_id = ?2",
+                params![Uuid::new_v4().to_string(), &ids[0]],
+            )
+            .is_err(),
+            "resource scope is immutable"
+        );
+        assert!(
+            conn.execute(
+                "DELETE FROM normal_data_permission_grants WHERE grant_id = ?1",
+                [&ids[0]],
+            )
+            .is_err(),
+            "grant records are append-only except one-way revocation"
+        );
+
+        let expired_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO normal_data_permission_grants
+             (grant_id, subject_id, permission, resource_id, granted_at_ms, expires_at_ms)
+             VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 1, 2)",
+            params![&expired_id, &subject_id, &target.revision_id],
+        )
+        .expect("insert expired test grant");
+        assert!(
+            promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+                .is_err(),
+            "expired grants cannot reactivate a revision permission"
+        );
+        conn.execute(
+            "UPDATE normal_data_permission_grants
+             SET revoked_at_ms = 3 WHERE grant_id = ?1",
+            [&expired_id],
+        )
+        .expect("revoke expired grant before replacement");
+        conn.execute(
+            "INSERT INTO normal_data_permission_grants
+             (grant_id, subject_id, permission, resource_id, granted_at_ms)
+             VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 4)",
+            params![Uuid::new_v4().to_string(), &subject_id, &target.revision_id],
+        )
+        .expect("reissue new grant rather than mutating old row");
+        promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+            .expect("fresh scoped grant resumes test-only eligibility");
+
+        conn.execute(
+            "UPDATE normal_data_permission_subjects
+             SET disabled_at_ms = 5 WHERE subject_id = ?1",
+            [&subject_id],
+        )
+        .expect("one-way disable test subject");
+        assert!(
+            promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
+                .is_err(),
+            "disabled subject must lose all permissions"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_permission_subjects
+                 SET disabled_at_ms = NULL WHERE subject_id = ?1",
+                [&subject_id],
+            )
+            .is_err(),
+            "disabled subject cannot be silently re-enabled"
+        );
+
+        let evidence_links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0))
+            .expect("no links");
+        let preserved: i64 = conn
+            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0))
+            .expect("no evidence captures");
+        assert_eq!((evidence_links, preserved), (0, 0));
+    }
+
+    #[test]
     fn verified_csv_movement_persists_exact_hashes_and_immutable_audit_event() {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
