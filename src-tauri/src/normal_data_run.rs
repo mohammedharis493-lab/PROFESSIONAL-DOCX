@@ -2032,8 +2032,7 @@ mod tests {
     #[test]
     fn retention_candidate_bound_to_live_grants_exact_run_and_unreviewed_target() {
         use crate::{
-            normal_data_retention_policy,
-            normal_data_retention_store as retention_store,
+            normal_data_retention_policy, normal_data_retention_store as retention_store,
             normal_data_staging,
         };
         use promotion_policy::{PromotionIntent, VerifiedPrincipal};
@@ -2043,18 +2042,24 @@ mod tests {
         let second = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("second distinct run");
         let material = crate::normal_data_preservation_material::prepare_preservation_material(
-            &fixture.path, &first.normal_data_comparison_run_id,
-        ).expect("three exact materials");
+            &fixture.path,
+            &first.normal_data_comparison_run_id,
+        )
+        .expect("three exact materials");
         let staging_root = fixture.folder.join("bound-candidate-stage");
         let retention_root = fixture.folder.join("bound-candidate-retention");
         fs::create_dir(&staging_root).expect("stage root");
         fs::create_dir(&retention_root).expect("retention root");
-        let stage = normal_data_staging::stage_material(&staging_root, &material)
-            .expect("ready stage");
+        let stage =
+            normal_data_staging::stage_material(&staging_root, &material).expect("ready stage");
         let retained = retention_store::retain_staged_candidate(
-            &fixture.path, &staging_root, &retention_root,
-            &stage.stage_id, &first.normal_data_comparison_run_id,
-        ).expect("registered candidate");
+            &fixture.path,
+            &staging_root,
+            &retention_root,
+            &stage.stage_id,
+            &first.normal_data_comparison_run_id,
+        )
+        .expect("registered candidate");
         let target = create_policy_target(&fixture.path, "DRAFT");
         let subject = Uuid::new_v4().to_string();
         let principal = VerifiedPrincipal::fixture(&subject);
@@ -2071,21 +2076,29 @@ mod tests {
         };
         let inspect = |request: &PromotionIntent<'_>, actor: Option<&VerifiedPrincipal>| {
             normal_data_retention_policy::inspect_authorized_retention_candidate(
-                &fixture.path, &retention_root, &stage.stage_id, request, actor,
+                &fixture.path,
+                &retention_root,
+                &stage.stage_id,
+                request,
+                actor,
             )
         };
-        let conn = persistence::open_configured_connection(&fixture.path)
-            .expect("database");
-        let audit_before: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("audit count");
+        let conn = persistence::open_configured_connection(&fixture.path).expect("database");
+        let audit_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit count");
         assert!(inspect(&intent, None).is_err(), "missing identity denies");
         conn.execute(
             "INSERT INTO normal_data_permission_subjects
              (subject_id, identity_issuer, registered_at_ms)
-             VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)", [&subject],
-        ).expect("test enrolled subject");
-        assert!(inspect(&intent, Some(&principal)).is_err(), "no grants deny");
+             VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)",
+            [&subject],
+        )
+        .expect("test enrolled subject");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "no grants deny"
+        );
         for (permission, resource) in [
             ("READ_NORMAL_DATA_WORKSPACE", &material.workspace_id),
             ("ATTACH_EVIDENCE_TO_ENGAGEMENT", &target.engagement_id),
@@ -2096,14 +2109,17 @@ mod tests {
                  (grant_id, subject_id, permission, resource_id, granted_at_ms)
                  VALUES (?1, ?2, ?3, ?4, 1)",
                 params![Uuid::new_v4().to_string(), &subject, permission, resource],
-            ).expect("fixture grant");
+            )
+            .expect("fixture grant");
         }
         assert_eq!(
             inspect(&intent, Some(&principal)).expect("exact candidate and target"),
             retained,
         );
-        assert!(inspect(&second_intent, Some(&principal)).is_err(),
-            "same source hashes but different run ID deny");
+        assert!(
+            inspect(&second_intent, Some(&principal)).is_err(),
+            "same source hashes but different run ID deny"
+        );
 
         let folder = retention_root.join(format!("{}.candidate", stage.stage_id));
         let result_path = folder.join("result.json");
@@ -2113,14 +2129,16 @@ mod tests {
         let mut altered = original_result.clone();
         altered.push(b' ');
         fs::write(&result_path, &altered).expect("tamper result serialization");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&original_manifest)
-            .expect("manifest JSON");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&original_manifest).expect("manifest JSON");
         manifest["result"]["size_bytes"] = serde_json::Value::from(altered.len() as u64);
         manifest["result"]["sha256_hex"] = serde_json::Value::from(hex(&Sha256::digest(&altered)));
         fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON"))
             .expect("forge matching self-reported hash");
-        assert!(inspect(&intent, Some(&principal)).is_err(),
-            "self-consistent but nonhistorical result serialization denies");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "self-consistent but nonhistorical result serialization denies"
+        );
         fs::write(&manifest_path, &original_manifest).expect("restore manifest");
         fs::write(&result_path, &original_result).expect("restore exact result");
 
@@ -2128,42 +2146,66 @@ mod tests {
         let mut source = fs::read(&source_path).expect("source bytes");
         source[0] ^= 1;
         fs::write(&source_path, &source).expect("same-size source edit");
-        assert!(inspect(&intent, Some(&principal)).is_err(), "byte tamper denies");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "byte tamper denies"
+        );
         source[0] ^= 1;
         fs::write(&source_path, source).expect("restore source");
         let missing = retention_root.join(format!("{}.missing", stage.stage_id));
         fs::rename(&folder, &missing).expect("hide registered package");
-        assert!(inspect(&intent, Some(&principal)).is_err(), "missing package denies");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "missing package denies"
+        );
         fs::rename(&missing, &folder).expect("restore package");
-        assert!(inspect(&intent, Some(&principal)).is_ok(), "restored bytes revalidate");
+        assert!(
+            inspect(&intent, Some(&principal)).is_ok(),
+            "restored bytes revalidate"
+        );
 
         conn.execute(
             "UPDATE normal_data_permission_grants SET revoked_at_ms = 2
              WHERE subject_id = ?1 AND permission = 'MODIFY_WORKPAPER_REVISION'",
             [&subject],
-        ).expect("revoke grant");
-        assert!(inspect(&intent, Some(&principal)).is_err(), "revocation denies");
+        )
+        .expect("revoke grant");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "revocation denies"
+        );
         conn.execute(
             "INSERT INTO normal_data_permission_grants
              (grant_id, subject_id, permission, resource_id, granted_at_ms)
              VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 3)",
             params![Uuid::new_v4().to_string(), &subject, &target.revision_id],
-        ).expect("regrant fixture");
+        )
+        .expect("regrant fixture");
         conn.execute(
             "UPDATE workpapers SET workflow_state = 'SUBMITTED_FOR_REVIEW'
-             WHERE workpaper_id = ?1", [&target.workpaper_id],
-        ).expect("advance review");
-        assert!(inspect(&intent, Some(&principal)).is_err(), "reviewed target denies");
+             WHERE workpaper_id = ?1",
+            [&target.workpaper_id],
+        )
+        .expect("advance review");
+        assert!(
+            inspect(&intent, Some(&principal)).is_err(),
+            "reviewed target denies"
+        );
         for table in ["controlled_evidence_versions", "workpaper_evidence_links"] {
-            let count: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0),
-            ).expect("zero formal evidence");
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("zero formal evidence");
             assert_eq!(count, 0, "{table} remains unchanged");
         }
-        let audit_after: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("audit");
-        assert_eq!(audit_before, audit_after, "read-only policy never records approval");
+        let audit_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit");
+        assert_eq!(
+            audit_before, audit_after,
+            "read-only policy never records approval"
+        );
     }
 
     #[test]
@@ -2232,7 +2274,8 @@ mod tests {
                 &retention_root,
                 &staged.stage_id,
                 &run.normal_data_comparison_run_id,
-            ).is_err(),
+            )
+            .is_err(),
             "valid orphan still cannot pass registered-candidate inspection"
         );
         let recovered = retention_store::recover_retained_candidate(
@@ -2247,7 +2290,8 @@ mod tests {
                 &retention_root,
                 &staged.stage_id,
                 &run.normal_data_comparison_run_id,
-            ).expect("registered candidate revalidated"),
+            )
+            .expect("registered candidate revalidated"),
             recovered,
         );
         assert_eq!(recovered.stage_id, staged.stage_id);
