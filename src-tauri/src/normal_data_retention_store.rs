@@ -650,6 +650,34 @@ pub(crate) fn recover_retained_candidate(
     register_verified_candidate(database_path, &manifest)
 }
 
+/// Verify a published candidate without registering or repairing it.
+/// Caller MUST hold the same SQLite transaction used for grant/target checks.
+/// This method requires an existing v31 record: an orphan is not an approval.
+/// Retained bytes may change after the read; no durable authorization is issued.
+pub(crate) fn inspect_registered_candidate_on_connection(
+    connection: &Connection,
+    retention_root: &Path,
+    stage_id: &str,
+    expected_run_id: &str,
+) -> Result<RetentionCandidateRecord, PersistenceError> {
+    valid_uuid(stage_id)?;
+    valid_uuid(expected_run_id)?;
+    let manifest = verify_candidate(retention_root, stage_id)?;
+    if manifest.run_id != expected_run_id {
+        return Err(denied("retained candidate is for another run"));
+    }
+    let expected = expected_on_connection(connection, expected_run_id)?;
+    if !manifest_matches_expected(&manifest, &expected) {
+        return Err(denied("retained bytes do not match frozen provenance"));
+    }
+    let record = load_record(connection, stage_id)?
+        .ok_or_else(|| denied("candidate must be registered before inspection"))?;
+    if !record_matches_manifest(&record, &manifest) {
+        return Err(denied("candidate ledger does not match retained artifacts"));
+    }
+    Ok(record)
+}
+
 fn stored_status(
     database_path: &Path,
     manifest: &CandidateManifest,
