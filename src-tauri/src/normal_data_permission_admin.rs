@@ -221,7 +221,14 @@ pub(crate) fn revoke_grant(
     if updated != 1 {
         return Err(denied());
     }
-    append_admin_event(&tx, actor, &subject_id, Some(grant_id), "GRANT_REVOKED", now)?;
+    append_admin_event(
+        &tx,
+        actor,
+        &subject_id,
+        Some(grant_id),
+        "GRANT_REVOKED",
+        now,
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -271,9 +278,8 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let folder = std::env::temp_dir().join(format!(
-                "pdox-permission-admin-{}", Uuid::new_v4()
-            ));
+            let folder =
+                std::env::temp_dir().join(format!("pdox-permission-admin-{}", Uuid::new_v4()));
             fs::create_dir_all(&folder).expect("fixture folder");
             let path = folder.join("metadata.sqlite");
             persistence::initialize_database(&path).expect("migrate database");
@@ -288,38 +294,48 @@ mod tests {
                 "INSERT INTO normal_data_workspaces
                  (normal_data_workspace_id, created_at_ms) VALUES (?1, 1)",
                 [&workspace],
-            ).expect("workspace");
+            )
+            .expect("workspace");
             conn.execute(
                 "INSERT INTO clients (client_id, name, created_at_ms)
                  VALUES (?1, 'Client', 1)",
                 [&client],
-            ).expect("client");
+            )
+            .expect("client");
             conn.execute(
                 "INSERT INTO service_types (service_type_id, name, normalized_name, created_at_ms)
                  VALUES (?1, 'Audit', ?2, 1)",
                 params![&service, &service],
-            ).expect("service");
+            )
+            .expect("service");
             conn.execute(
                 "INSERT INTO engagements (
                     engagement_id, client_id, service_type_id, name, status, created_at_ms
                  ) VALUES (?1, ?2, ?3, 'Engagement', 'ACTIVE', 1)",
                 params![&engagement, &client, &service],
-            ).expect("engagement");
+            )
+            .expect("engagement");
             conn.execute(
                 "INSERT INTO workpapers (
                     workpaper_id, engagement_id, reference, title,
                     workflow_state, created_at_ms
                  ) VALUES (?1, ?2, ?3, 'Workpaper', 'DRAFT', 1)",
                 params![&workpaper, &engagement, &workpaper],
-            ).expect("workpaper");
+            )
+            .expect("workpaper");
             conn.execute(
                 "INSERT INTO workpaper_revisions (
                     workpaper_revision_id, workpaper_id, revision_number, created_at_ms
                  ) VALUES (?1, ?2, 1, 1)",
                 params![&revision, &workpaper],
-            ).expect("revision");
+            )
+            .expect("revision");
             Self {
-                folder, path, workspace, engagement, revision,
+                folder,
+                path,
+                workspace,
+                engagement,
+                revision,
             }
         }
     }
@@ -336,91 +352,169 @@ mod tests {
         let actor = VerifiedGrantAdministrator::fixture(&Uuid::new_v4().to_string());
         let subject = Uuid::new_v4().to_string();
         let provider = SqlitePromotionPermissions::new(&fixture.path);
-        assert!(issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace, None
-        ).is_err(), "unknown subject cannot receive a grant");
+        assert!(
+            issue_grant(
+                &fixture.path,
+                &actor,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                &fixture.workspace,
+                None
+            )
+            .is_err(),
+            "unknown subject cannot receive a grant"
+        );
         enroll_subject(&fixture.path, &actor, &subject).expect("trusted fixture enrollment");
         assert!(!provider.is_allowed(
-            &subject, PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace
+            &subject,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
         ));
         let read_id = issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace, None
-        ).expect("exact workspace grant");
+            &fixture.path,
+            &actor,
+            &subject,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace,
+            None,
+        )
+        .expect("exact workspace grant");
         let engagement_id = issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::AttachEvidenceToEngagement, &fixture.engagement, None
-        ).expect("exact engagement grant");
+            &fixture.path,
+            &actor,
+            &subject,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement,
+            None,
+        )
+        .expect("exact engagement grant");
         let revision_id = issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ModifyWorkpaperRevision, &fixture.revision, None
-        ).expect("exact revision grant");
+            &fixture.path,
+            &actor,
+            &subject,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.revision,
+            None,
+        )
+        .expect("exact revision grant");
         assert!(provider.is_allowed(
-            &subject, PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace
+            &subject,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
         ));
         assert!(provider.is_allowed(
-            &subject, PromotionPermission::AttachEvidenceToEngagement, &fixture.engagement
+            &subject,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
         ));
         assert!(provider.is_allowed(
-            &subject, PromotionPermission::ModifyWorkpaperRevision, &fixture.revision
+            &subject,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.revision
         ));
         assert!(!provider.is_allowed(
-            &subject, PromotionPermission::ModifyWorkpaperRevision, &fixture.workspace
+            &subject,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.workspace
         ));
-        assert!(issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ReadNormalDataWorkspace, &Uuid::new_v4().to_string(), None
-        ).is_err(), "nonexistent resource cannot be authorized");
-        assert!(issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace, Some(1)
-        ).is_err(), "expired grant denied");
+        assert!(
+            issue_grant(
+                &fixture.path,
+                &actor,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                &Uuid::new_v4().to_string(),
+                None
+            )
+            .is_err(),
+            "nonexistent resource cannot be authorized"
+        );
+        assert!(
+            issue_grant(
+                &fixture.path,
+                &actor,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                &fixture.workspace,
+                Some(1)
+            )
+            .is_err(),
+            "expired grant denied"
+        );
         revoke_grant(&fixture.path, &actor, &revision_id).expect("revoke exact revision grant");
         assert!(!provider.is_allowed(
-            &subject, PromotionPermission::ModifyWorkpaperRevision, &fixture.revision
+            &subject,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.revision
         ));
         assert!(revoke_grant(&fixture.path, &actor, &revision_id).is_err());
         disable_subject(&fixture.path, &actor, &subject).expect("disable subject");
         assert!(!provider.is_allowed(
-            &subject, PromotionPermission::ReadNormalDataWorkspace, &fixture.workspace
+            &subject,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
         ));
         assert!(!provider.is_allowed(
-            &subject, PromotionPermission::AttachEvidenceToEngagement, &fixture.engagement
+            &subject,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
         ));
         assert!(disable_subject(&fixture.path, &actor, &subject).is_err());
         assert!(enroll_subject(&fixture.path, &actor, &subject).is_err());
-        assert!(issue_grant(
-            &fixture.path, &actor, &subject,
-            PromotionPermission::ModifyWorkpaperRevision, &fixture.revision, None
-        ).is_err(), "disabled subject cannot be reauthorized");
+        assert!(
+            issue_grant(
+                &fixture.path,
+                &actor,
+                &subject,
+                PromotionPermission::ModifyWorkpaperRevision,
+                &fixture.revision,
+                None
+            )
+            .is_err(),
+            "disabled subject cannot be reauthorized"
+        );
 
         let conn = persistence::open_configured_connection(&fixture.path).expect("check audit");
-        let events: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM normal_data_permission_admin_events
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
              WHERE subject_id = ?1",
-            [&subject], |row| row.get(0)
-        ).expect("count administrator events");
+                [&subject],
+                |row| row.get(0),
+            )
+            .expect("count administrator events");
         assert_eq!(events, 6, "enroll + three issue + revoke + disable");
-        let issued: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM normal_data_permission_admin_events
+        let issued: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
              WHERE grant_id IN (?1, ?2) AND event_type = 'GRANT_ISSUED'",
-            params![&read_id, &engagement_id], |row| row.get(0)
-        ).expect("issued grant receipts");
+                params![&read_id, &engagement_id],
+                |row| row.get(0),
+            )
+            .expect("issued grant receipts");
         assert_eq!(issued, 2);
-        assert!(conn.execute(
-            "DELETE FROM normal_data_permission_admin_events WHERE subject_id = ?1",
-            [&subject]
-        ).is_err(), "administrator receipts cannot be deleted");
-        assert!(conn.execute(
-            "UPDATE normal_data_permission_admin_events SET event_type = 'SUBJECT_DISABLED'
+        assert!(
+            conn.execute(
+                "DELETE FROM normal_data_permission_admin_events WHERE subject_id = ?1",
+                [&subject]
+            )
+            .is_err(),
+            "administrator receipts cannot be deleted"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_permission_admin_events SET event_type = 'SUBJECT_DISABLED'
              WHERE subject_id = ?1",
-            [&subject]
-        ).is_err(), "administrator receipts cannot be altered");
-        let links: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workpaper_evidence_links",
-            [], |row| row.get(0)
-        ).expect("zero evidence links");
+                [&subject]
+            )
+            .is_err(),
+            "administrator receipts cannot be altered"
+        );
+        let links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("zero evidence links");
         assert_eq!(links, 0);
     }
 
@@ -434,33 +528,45 @@ mod tests {
             "CREATE TRIGGER test_block_permission_admin_events
              BEFORE INSERT ON normal_data_permission_admin_events
              BEGIN SELECT RAISE(ABORT, 'audit store unavailable'); END;",
-        ).expect("inject audit failure");
+        )
+        .expect("inject audit failure");
         assert!(enroll_subject(&fixture.path, &actor, &subject).is_err());
-        let enrolled: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM normal_data_permission_subjects
+        let enrolled: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_subjects
              WHERE subject_id = ?1",
-            [&subject], |row| row.get(0)
-        ).expect("rollback count");
+                [&subject],
+                |row| row.get(0),
+            )
+            .expect("rollback count");
         assert_eq!(enrolled, 0, "enrollment and audit must commit atomically");
         conn.execute_batch("DROP TRIGGER test_block_permission_admin_events;")
             .expect("restore audit");
         enroll_subject(&fixture.path, &actor, &subject).expect("enroll");
         let grant_id = issue_grant(
-            &fixture.path, &actor, &subject,
+            &fixture.path,
+            &actor,
+            &subject,
             PromotionPermission::ReadNormalDataWorkspace,
-            &fixture.workspace, None,
-        ).expect("issue grant");
+            &fixture.workspace,
+            None,
+        )
+        .expect("issue grant");
         conn.execute_batch(
             "CREATE TRIGGER test_block_permission_admin_events
              BEFORE INSERT ON normal_data_permission_admin_events
              BEGIN SELECT RAISE(ABORT, 'audit store unavailable'); END;",
-        ).expect("block audit again");
+        )
+        .expect("block audit again");
         assert!(revoke_grant(&fixture.path, &actor, &grant_id).is_err());
-        let revoked: Option<i64> = conn.query_row(
-            "SELECT revoked_at_ms FROM normal_data_permission_grants
+        let revoked: Option<i64> = conn
+            .query_row(
+                "SELECT revoked_at_ms FROM normal_data_permission_grants
              WHERE grant_id = ?1",
-            [&grant_id], |row| row.get(0)
-        ).expect("revoke rollback");
+                [&grant_id],
+                |row| row.get(0),
+            )
+            .expect("revoke rollback");
         assert_eq!(revoked, None, "revocation must roll back with its audit");
     }
 }
