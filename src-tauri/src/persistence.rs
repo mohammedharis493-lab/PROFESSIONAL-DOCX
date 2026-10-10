@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const LATEST_SCHEMA_VERSION: i64 = 27;
+const LATEST_SCHEMA_VERSION: i64 = 28;
 const FIRM_LIBRARY_DEFINITION_MAX_BYTES: usize = 262_144;
 const RECONCILIATION_PARAMETERS_MAX_BYTES: usize = 65_536;
 
@@ -163,6 +163,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 27,
         name: "normal_data_comparison_recipes",
         sql: include_str!("../migrations/0027_normal_data_comparison_recipes.sql"),
+    },
+    Migration {
+        version: 28,
+        name: "normal_data_permission_scopes",
+        sql: include_str!("../migrations/0028_normal_data_permission_scopes.sql"),
     },
 ];
 
@@ -17290,7 +17295,7 @@ mod tests {
             })
             .expect("migration history should be readable");
 
-        assert_eq!(migration_count, 27);
+        assert_eq!(migration_count, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17413,7 +17418,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17461,7 +17466,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_exists: i64 = connection
             .query_row(
@@ -17510,7 +17515,7 @@ mod tests {
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17555,14 +17560,14 @@ mod tests {
             assert_eq!(user_version, 4);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_exists: bool = connection
             .query_row(
@@ -17604,14 +17609,14 @@ mod tests {
             assert_eq!(user_version, 5);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17661,14 +17666,14 @@ mod tests {
             assert_eq!(user_version, 6);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17713,14 +17718,14 @@ mod tests {
             assert_eq!(user_version, 7);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17765,14 +17770,14 @@ mod tests {
             assert_eq!(user_version, 8);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17817,14 +17822,14 @@ mod tests {
             assert_eq!(user_version, 9);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17868,14 +17873,14 @@ mod tests {
             assert_eq!(user_version, 10);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17919,14 +17924,14 @@ mod tests {
             assert_eq!(user_version, 11);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -17983,14 +17988,14 @@ mod tests {
             assert_eq!(source_row_json_column_count, 1);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let source_row_json_column_count: i64 = connection
             .query_row(
@@ -18042,14 +18047,14 @@ mod tests {
             assert_eq!(user_version, 13);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18093,14 +18098,14 @@ mod tests {
             assert_eq!(user_version, 14);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_exists: bool = connection
             .query_row(
@@ -18142,14 +18147,14 @@ mod tests {
             assert_eq!(user_version, 15);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18193,14 +18198,14 @@ mod tests {
             assert_eq!(user_version, 16);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_exists: bool = connection
             .query_row(
@@ -18243,14 +18248,14 @@ mod tests {
             assert_eq!(user_version, 17);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18296,14 +18301,14 @@ mod tests {
             assert_eq!(user_version, 18);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18348,14 +18353,14 @@ mod tests {
             assert_eq!(user_version, 19);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18403,14 +18408,14 @@ mod tests {
             assert_eq!(user_version, 20);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18455,14 +18460,14 @@ mod tests {
             assert_eq!(user_version, 21);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18509,14 +18514,14 @@ mod tests {
             assert_eq!(user_version, 22);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
@@ -18558,7 +18563,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 27);
+        assert_eq!(version, 28);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18614,7 +18619,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 27);
+        assert_eq!(version, 28);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18670,7 +18675,7 @@ mod tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 27);
+        assert_eq!(version, 28);
         let tables: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
@@ -18718,14 +18723,14 @@ mod tests {
             assert_eq!(user_version, 23);
         }
 
-        initialize_database(&database.path).expect("database should upgrade to version 27");
+        initialize_database(&database.path).expect("database should upgrade to version 28");
 
         let connection =
             open_configured_connection(&database.path).expect("upgraded database should open");
         let user_version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("version should be readable");
-        assert_eq!(user_version, 27);
+        assert_eq!(user_version, 28);
 
         let table_count: i64 = connection
             .query_row(
