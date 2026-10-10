@@ -1599,17 +1599,18 @@ mod tests {
 
     #[test]
     fn staged_run_binding_denies_forged_metadata_and_rechecks_permissions() {
-        use promotion_policy::{PromotionIntent, VerifiedPrincipal};
         use crate::{normal_data_staged_policy, normal_data_staging};
+        use promotion_policy::{PromotionIntent, VerifiedPrincipal};
         let fixture = Fixture::new();
         let first = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("first frozen run");
         let second = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("second run from same recipe/source versions");
-        let material =
-            crate::normal_data_preservation_material::prepare_preservation_material(
-                &fixture.path, &first.normal_data_comparison_run_id,
-            ).expect("three exact artifacts");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &first.normal_data_comparison_run_id,
+        )
+        .expect("three exact artifacts");
         let root = fixture.folder.join("private-bound-staging");
         fs::create_dir(&root).expect("private staging root");
         let staged = normal_data_staging::stage_material(&root, &material)
@@ -1631,23 +1632,39 @@ mod tests {
             target_workpaper_id: &target.workpaper_id,
             target_workpaper_revision_id: &target.revision_id,
         };
-        let conn = persistence::open_configured_connection(&fixture.path)
-            .expect("connection");
-        let baseline: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("baseline audit");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, None,
-        ).is_err(), "missing identity is denied before staging inspection");
+        let conn = persistence::open_configured_connection(&fixture.path).expect("connection");
+        let baseline: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("baseline audit");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                None,
+            )
+            .is_err(),
+            "missing identity is denied before staging inspection"
+        );
         conn.execute(
             "INSERT INTO normal_data_permission_subjects (
                 subject_id, identity_issuer, registered_at_ms
              ) VALUES (?1, 'TRUSTED_NATIVE_IDP', 1)",
             [&subject],
-        ).expect("test-only subject registration");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_err(), "subject with no grants is denied");
+        )
+        .expect("test-only subject registration");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "subject with no grants is denied"
+        );
         for (permission, resource) in [
             ("READ_NORMAL_DATA_WORKSPACE", &material.workspace_id),
             ("ATTACH_EVIDENCE_TO_ENGAGEMENT", &target.engagement_id),
@@ -1658,20 +1675,35 @@ mod tests {
                     grant_id, subject_id, permission, resource_id, granted_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, 1)",
                 params![Uuid::new_v4().to_string(), &subject, permission, resource],
-            ).expect("test-only exact grant");
+            )
+            .expect("test-only exact grant");
         }
         let actual = normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).expect("exact ready stage bound to eligible frozen run");
+            &fixture.path,
+            &root,
+            &staged.stage_id,
+            &first_intent,
+            Some(&principal),
+        )
+        .expect("exact ready stage bound to eligible frozen run");
         assert_eq!(actual, staged);
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &second_intent, Some(&principal),
-        ).is_err(), "same input hashes do not authorize different run UUID");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &second_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "same input hashes do not authorize different run UUID"
+        );
 
         // Rewrite only the manifest's source binding: plain on-disk scan
         // still verifies the three bytes, but independent SQLite metadata
         // binding must reject this valid-looking package.
-        let manifest_path = root.join(format!("{}.ready", staged.stage_id))
+        let manifest_path = root
+            .join(format!("{}.ready", staged.stage_id))
             .join("manifest.json");
         let original_manifest = fs::read(&manifest_path).expect("manifest bytes");
         let mut manifest: serde_json::Value =
@@ -1680,16 +1712,27 @@ mod tests {
             serde_json::Value::String(Uuid::new_v4().to_string());
         fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON"))
             .expect("forge source content ID in manifest");
-        assert!(normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
-            "plain file scan only guarantees its own declared hashes");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_err(), "manifest source identity must match frozen run");
+        assert!(
+            normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
+            "plain file scan only guarantees its own declared hashes"
+        );
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "manifest source identity must match frozen run"
+        );
         fs::write(&manifest_path, &original_manifest).expect("restore original manifest");
 
         // A semantically equivalent JSON with one extra trailing space has
         // the same calculation digest but DIFFERENT serialized artifact hash.
-        let result_path = root.join(format!("{}.ready", staged.stage_id))
+        let result_path = root
+            .join(format!("{}.ready", staged.stage_id))
             .join("result.json");
         let original_result = fs::read(&result_path).expect("exact result bytes");
         let mut altered_result = original_result.clone();
@@ -1697,60 +1740,109 @@ mod tests {
         fs::write(&result_path, &altered_result).expect("replace staged JSON bytes");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&original_manifest).expect("manifest JSON");
-        manifest["result"]["size_bytes"] =
-            serde_json::Value::from(altered_result.len() as u64);
+        manifest["result"]["size_bytes"] = serde_json::Value::from(altered_result.len() as u64);
         manifest["result"]["sha256_hex"] = serde_json::Value::from(
             Sha256::digest(&altered_result)
-                .iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
         );
         fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON"))
             .expect("forge consistent artifact metadata");
-        assert!(normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
-            "semantic-digest-consistent serialization passes isolated scan");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_err(), "exact result JSON byte digest must come from run database");
+        assert!(
+            normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
+            "semantic-digest-consistent serialization passes isolated scan"
+        );
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "exact result JSON byte digest must come from run database"
+        );
         fs::write(&manifest_path, &original_manifest).expect("restore manifest");
         fs::write(&result_path, &original_result).expect("restore original JSON");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_ok(), "original restored bytes pass again");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_ok(),
+            "original restored bytes pass again"
+        );
 
         conn.execute(
             "UPDATE normal_data_permission_grants SET revoked_at_ms = 2
              WHERE subject_id = ?1
                AND permission = 'MODIFY_WORKPAPER_REVISION'",
             [&subject],
-        ).expect("fixture grant revocation");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_err(), "revocation invalidates next transactional check");
+        )
+        .expect("fixture grant revocation");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "revocation invalidates next transactional check"
+        );
         conn.execute(
             "INSERT INTO normal_data_permission_grants (
                 grant_id, subject_id, permission, resource_id, granted_at_ms
              ) VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 3)",
             params![Uuid::new_v4().to_string(), &subject, &target.revision_id],
-        ).expect("new fixture grant");
+        )
+        .expect("new fixture grant");
         conn.execute(
             "UPDATE workpapers SET workflow_state = 'SUBMITTED_FOR_REVIEW'
              WHERE workpaper_id = ?1",
             [&target.workpaper_id],
-        ).expect("target moves to review");
-        assert!(normal_data_staged_policy::inspect_authorized_staged_run(
-            &fixture.path, &root, &staged.stage_id, &first_intent, Some(&principal),
-        ).is_err(), "review state denies after regrant");
-        assert!(normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
-            "revocation or workflow state never mutates staging bytes");
-        let audit_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
-        ).expect("audit count");
-        let retained: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0),
-        ).expect("evidence count");
-        let links: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0),
-        ).expect("attachment count");
-        assert_eq!(baseline, audit_count, "inspection cannot record an audit event");
+        )
+        .expect("target moves to review");
+        assert!(
+            normal_data_staged_policy::inspect_authorized_staged_run(
+                &fixture.path,
+                &root,
+                &staged.stage_id,
+                &first_intent,
+                Some(&principal),
+            )
+            .is_err(),
+            "review state denies after regrant"
+        );
+        assert!(
+            normal_data_staging::inspect_stage(&root, &staged.stage_id).is_ok(),
+            "revocation or workflow state never mutates staging bytes"
+        );
+        let audit_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |row| row.get(0))
+            .expect("audit count");
+        let retained: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("evidence count");
+        let links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count");
+        assert_eq!(
+            baseline, audit_count,
+            "inspection cannot record an audit event"
+        );
         assert_eq!((retained, links), (0, 0), "inspection never promotes");
     }
 
