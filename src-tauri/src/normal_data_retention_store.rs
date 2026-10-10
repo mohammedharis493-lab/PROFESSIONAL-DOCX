@@ -62,6 +62,15 @@ struct CandidateManifest {
     result_semantic_sha256_hex: String,
 }
 
+/// The three bounded byte buffers produced by ONE candidate verification pass.
+/// Neither these bytes nor their local manifest represent controlled evidence.
+struct VerifiedCandidatePackage {
+    manifest: CandidateManifest,
+    source_a_bytes: Vec<u8>,
+    source_b_bytes: Vec<u8>,
+    result_json_bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetentionCandidateRecord {
     pub stage_id: String,
@@ -136,6 +145,15 @@ impl RetentionCandidateRecord {
             },
         }
     }
+}
+
+/// Bounded native-only working data, not controlled-evidence versions.
+/// Receiving buffers does not grant permission to capture, attach or sign off.
+pub(crate) struct BoundCandidateBytes {
+    pub record: RetentionCandidateRecord,
+    pub source_a_bytes: Vec<u8>,
+    pub source_b_bytes: Vec<u8>,
+    pub result_json_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,10 +334,10 @@ fn verify_source(
     Ok(bytes)
 }
 
-fn verify_candidate_folder(
+fn read_candidate_folder(
     folder: &Path,
     stage_id: &str,
-) -> Result<CandidateManifest, PersistenceError> {
+) -> Result<VerifiedCandidatePackage, PersistenceError> {
     safe_directory(folder)?;
     let manifest_bytes = read_bounded(&folder.join("candidate-manifest.json"), MAX_MANIFEST_BYTES)?;
     let manifest: CandidateManifest = serde_json::from_slice(&manifest_bytes)
@@ -335,8 +353,8 @@ fn verify_candidate_folder(
     ] {
         valid_uuid(id)?;
     }
-    let _source_a = verify_source(folder, &manifest.source_a, "source-a.bin")?;
-    let _source_b = verify_source(folder, &manifest.source_b, "source-b.bin")?;
+    let source_a_bytes = verify_source(folder, &manifest.source_a, "source-a.bin")?;
+    let source_b_bytes = verify_source(folder, &manifest.source_b, "source-b.bin")?;
     if manifest.result.file_name != "result.json"
         || manifest.result.size_bytes == 0
         || manifest.result.size_bytes > MAX_RESULT_BYTES as u64
@@ -358,13 +376,32 @@ fn verify_candidate_folder(
     if result.result_sha256_hex != manifest.result_semantic_sha256_hex {
         return Err(denied("retained result semantic digest mismatch"));
     }
-    Ok(manifest)
+    Ok(VerifiedCandidatePackage {
+        manifest,
+        source_a_bytes,
+        source_b_bytes,
+        result_json_bytes: result_bytes,
+    })
+}
+
+fn verify_candidate_folder(
+    folder: &Path,
+    stage_id: &str,
+) -> Result<CandidateManifest, PersistenceError> {
+    Ok(read_candidate_folder(folder, stage_id)?.manifest)
+}
+
+fn read_candidate(
+    root: &Path,
+    stage_id: &str,
+) -> Result<VerifiedCandidatePackage, PersistenceError> {
+    safe_directory(root)?;
+    let folder = package_path(root, stage_id, "candidate")?;
+    read_candidate_folder(&folder, stage_id)
 }
 
 fn verify_candidate(root: &Path, stage_id: &str) -> Result<CandidateManifest, PersistenceError> {
-    safe_directory(root)?;
-    let folder = package_path(root, stage_id, "candidate")?;
-    verify_candidate_folder(&folder, stage_id)
+    Ok(read_candidate(root, stage_id)?.manifest)
 }
 
 fn frozen_document_id(
@@ -714,22 +751,46 @@ pub(crate) fn inspect_registered_candidate_on_connection(
     stage_id: &str,
     expected_run_id: &str,
 ) -> Result<RetentionCandidateRecord, PersistenceError> {
+    Ok(read_registered_candidate_bytes_on_connection(
+        connection,
+        retention_root,
+        stage_id,
+        expected_run_id,
+    )?
+    .record)
+}
+
+/// Return the three bounded working-data buffers from the SAME verification
+/// pass as the v31 ledger and the exact immutable run/source/result comparison.
+/// Caller must hold the SQLite authorization transaction. Bytes are NOT
+/// evidence and their possession cannot authorize a later write.
+pub(crate) fn read_registered_candidate_bytes_on_connection(
+    connection: &Connection,
+    retention_root: &Path,
+    stage_id: &str,
+    expected_run_id: &str,
+) -> Result<BoundCandidateBytes, PersistenceError> {
     valid_uuid(stage_id)?;
     valid_uuid(expected_run_id)?;
-    let manifest = verify_candidate(retention_root, stage_id)?;
-    if manifest.run_id != expected_run_id {
+    let verified = read_candidate(retention_root, stage_id)?;
+    if verified.manifest.run_id != expected_run_id {
         return Err(denied("retained candidate is for another run"));
     }
     let expected = expected_on_connection(connection, expected_run_id)?;
-    if !manifest_matches_expected(&manifest, &expected) {
+    if !manifest_matches_expected(&verified.manifest, &expected) {
         return Err(denied("retained bytes do not match frozen provenance"));
     }
     let record = load_record(connection, stage_id)?
         .ok_or_else(|| denied("candidate must be registered before inspection"))?;
-    if !record_matches_manifest(&record, &manifest) {
+    if !record_matches_manifest(&record, &verified.manifest) {
         return Err(denied("candidate ledger does not match retained artifacts"));
     }
-    Ok(record)
+    Ok(BoundCandidateBytes {
+        record,
+        source_a_bytes: verified.source_a_bytes,
+        source_b_bytes: verified.source_b_bytes,
+        result_json_bytes: verified.result_json_bytes,
+    })
 }
 
 fn stored_status(

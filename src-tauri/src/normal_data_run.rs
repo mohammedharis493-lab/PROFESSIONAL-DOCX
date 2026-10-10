@@ -2154,6 +2154,26 @@ mod tests {
         );
         let preflight = capture_preflight(&intent, Some(&principal))
             .expect("exact source A, source B and result preflight");
+        let capture_material = |request: &PromotionIntent<'_>,
+                                actor: Option<&VerifiedPrincipal>| {
+            crate::normal_data_capture_preflight::read_exact_capture_material(
+                &fixture.path,
+                &retention_root,
+                &stage.stage_id,
+                request,
+                actor,
+            )
+        };
+        assert!(
+            capture_material(&intent, None).is_err(),
+            "working bytes are unavailable without trusted principal"
+        );
+        let exact_bytes = capture_material(&intent, Some(&principal))
+            .expect("one exact transaction-bound three-buffer read");
+        assert_eq!(exact_bytes.preflight, preflight);
+        assert_eq!(exact_bytes.original_a_bytes, material.source_a.bytes);
+        assert_eq!(exact_bytes.original_b_bytes, material.source_b.bytes);
+        assert_eq!(exact_bytes.frozen_result_json_bytes, material.result.bytes);
         assert_eq!(preflight.candidate_stage_id, stage.stage_id);
         assert_eq!(preflight.run_id, first.normal_data_comparison_run_id);
         assert_eq!(preflight.workspace_id, material.workspace_id);
@@ -2218,6 +2238,10 @@ mod tests {
             "same bytes from a different frozen run cannot be rebound"
         );
         assert!(
+            capture_material(&second_intent, Some(&principal)).is_err(),
+            "raw candidate bytes cannot be rebound to a different frozen run"
+        );
+        assert!(
             inspect(&second_intent, Some(&principal)).is_err(),
             "same source hashes but different run ID deny"
         );
@@ -2237,6 +2261,10 @@ mod tests {
         fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON"))
             .expect("forge matching self-reported hash");
         assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "rewritten manifest cannot authorize altered result bytes"
+        );
+        assert!(
             capture_preflight(&intent, Some(&principal)).is_err(),
             "artifact-byte tampering rejects capture preflight even with rewritten manifest"
         );
@@ -2247,10 +2275,25 @@ mod tests {
         fs::write(&manifest_path, &original_manifest).expect("restore manifest");
         fs::write(&result_path, &original_result).expect("restore exact result");
 
+        let source_a_path = folder.join("source-a.bin");
+        let mut source_a = fs::read(&source_a_path).expect("original A bytes");
+        source_a[0] ^= 1;
+        fs::write(&source_a_path, &source_a).expect("same-size A edit");
+        assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "modified original A fails exact bound byte read"
+        );
+        source_a[0] ^= 1;
+        fs::write(&source_a_path, source_a).expect("restore original A");
+
         let source_path = folder.join("source-b.bin");
         let mut source = fs::read(&source_path).expect("source bytes");
         source[0] ^= 1;
         fs::write(&source_path, &source).expect("same-size source edit");
+        assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "modified original B fails exact bound byte read"
+        );
         assert!(
             capture_preflight(&intent, Some(&principal)).is_err(),
             "same-size source tampering denies the three-artifact preflight"
@@ -2263,6 +2306,10 @@ mod tests {
         fs::write(&source_path, source).expect("restore source");
         let missing = retention_root.join(format!("{}.missing", stage.stage_id));
         fs::rename(&folder, &missing).expect("hide registered package");
+        assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "missing recorded candidate yields no exact working buffers"
+        );
         assert!(
             capture_preflight(&intent, Some(&principal)).is_err(),
             "missing retained bytes deny preflight"
@@ -2284,6 +2331,10 @@ mod tests {
         )
         .expect("revoke grant");
         assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "revoked permission blocks fresh working-data bytes"
+        );
+        assert!(
             capture_preflight(&intent, Some(&principal)).is_err(),
             "revoked scoped permission denies fresh preflight"
         );
@@ -2304,6 +2355,10 @@ mod tests {
             [&target.workpaper_id],
         )
         .expect("advance review");
+        assert!(
+            capture_material(&intent, Some(&principal)).is_err(),
+            "submitted-for-review workpaper blocks fresh working-data bytes"
+        );
         assert!(
             capture_preflight(&intent, Some(&principal)).is_err(),
             "submitted-for-review specialist target denies preflight"
@@ -2405,6 +2460,16 @@ mod tests {
             )
             .is_err(),
             "valid orphan still cannot pass registered-candidate inspection"
+        );
+        assert!(
+            retention_store::read_registered_candidate_bytes_on_connection(
+                &connection,
+                &retention_root,
+                &staged.stage_id,
+                &run.normal_data_comparison_run_id,
+            )
+            .is_err(),
+            "an unregistered orphan can never produce trusted capture buffers"
         );
         let recovered = retention_store::recover_retained_candidate(
             &fixture.path,
