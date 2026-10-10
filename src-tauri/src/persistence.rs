@@ -22512,7 +22512,10 @@ mod tests {
              )",
             [],
         );
-        assert!(invalid.is_err(), "invalid candidate metadata must be rejected");
+        assert!(
+            invalid.is_err(),
+            "invalid candidate metadata must be rejected"
+        );
     }
 
     #[test]
