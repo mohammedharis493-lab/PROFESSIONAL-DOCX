@@ -57,12 +57,13 @@ pub(crate) fn read_exact_capture_material(
         intent,
         principal,
         |tx| {
-            let verified = normal_data_retention_store::read_registered_candidate_bytes_on_connection(
-                tx,
-                retention_root,
-                stage_id,
-                intent.run_id,
-            )?;
+            let verified =
+                normal_data_retention_store::read_registered_candidate_bytes_on_connection(
+                    tx,
+                    retention_root,
+                    stage_id,
+                    intent.run_id,
+                )?;
             let record = &verified.record;
             if record.run_id != intent.run_id
                 || record.workspace_id != intent.expected_workspace_id
@@ -98,12 +99,8 @@ pub(crate) fn inspect_exact_capture_preflight(
     intent: &PromotionIntent<'_>,
     principal: Option<&VerifiedPrincipal>,
 ) -> Result<CapturePreflightObservation, PersistenceError> {
-    Ok(read_exact_capture_material(
-        database_path,
-        retention_root,
-        stage_id,
-        intent,
-        principal,
-    )?
-    .preflight)
+    Ok(
+        read_exact_capture_material(database_path, retention_root, stage_id, intent, principal)?
+            .preflight,
+    )
 }
