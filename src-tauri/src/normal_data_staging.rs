@@ -346,12 +346,12 @@ pub(crate) fn stage_material(
         return Err(invalid("staging identifier already exists"));
     }
     fs::create_dir(&partial)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&partial, fs::Permissions::from_mode(0o700))?;
-    }
     let result = (|| -> Result<(), PersistenceError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&partial, fs::Permissions::from_mode(0o700))?;
+        }
         write_synced(&partial.join("source-a.bin"), &material.source_a.bytes)?;
         write_synced(&partial.join("source-b.bin"), &material.source_b.bytes)?;
         write_synced(&partial.join("result.json"), &material.result.bytes)?;
@@ -406,8 +406,10 @@ pub(crate) fn scan_stages(
 ) -> Result<Vec<StageInventoryEntry>, PersistenceError> {
     safe_directory(root)?;
     let mut output = Vec::new();
+    let mut entries_seen = 0usize;
     for entry in fs::read_dir(root)? {
-        if output.len() >= MAX_SCAN_ENTRIES {
+        entries_seen += 1;
+        if entries_seen > MAX_SCAN_ENTRIES {
             return Err(invalid("staging inventory exceeds safe scan limit"));
         }
         let entry = entry?;
@@ -433,4 +435,90 @@ pub(crate) fn scan_stages(
     }
     output.sort_by(|a, b| a.stage_id.cmp(&b.stage_id));
     Ok(output)
+}
+
+/// Discard ONLY a known incomplete package. A ready package is never deleted
+/// by recovery; future authorized retention controls must own that lifecycle.
+pub(crate) fn discard_interrupted(
+    root: &Path,
+    stage_id: &str,
+) -> Result<(), PersistenceError> {
+    safe_directory(root)?;
+    let partial = package_path(root, stage_id, "partial")?;
+    safe_directory(&partial)?;
+    fs::remove_dir_all(partial)?;
+    sync_dir(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("pdox-staging-test-{}", Uuid::new_v4()));
+            fs::create_dir(&path).expect("create dedicated staging root");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn scan_identifies_incomplete_and_corrupt_ready_and_discards_only_partial() {
+        let root = TestRoot::new();
+        let interrupted_id = Uuid::new_v4().to_string();
+        let corrupted_id = Uuid::new_v4().to_string();
+        fs::create_dir(root.0.join(format!("{interrupted_id}.partial")))
+            .expect("orphan unfinished stage");
+        fs::create_dir(root.0.join(format!("{corrupted_id}.ready")))
+            .expect("orphan malformed ready stage");
+        let inventory = scan_stages(&root.0).expect("scan after interrupted write");
+        assert_eq!(
+            inventory,
+            vec![
+                StageInventoryEntry {
+                    stage_id: interrupted_id.clone(),
+                    status: StageStatus::Interrupted
+                },
+                StageInventoryEntry {
+                    stage_id: corrupted_id.clone(),
+                    status: StageStatus::Corrupt
+                }
+            ].into_iter().collect::<Vec<_>>()
+        );
+        assert!(inspect_stage(&root.0, &interrupted_id).is_err());
+        assert!(inspect_stage(&root.0, &corrupted_id).is_err());
+        assert!(discard_interrupted(&root.0, &corrupted_id).is_err(),
+            "recovery must not delete ready directories");
+        assert!(discard_interrupted(&root.0, "../other").is_err(),
+            "recovery cannot accept path traversal");
+        discard_interrupted(&root.0, &interrupted_id)
+            .expect("clean incomplete package by exact generated ID");
+        assert!(!root.0.join(format!("{interrupted_id}.partial")).exists());
+        assert!(root.0.join(format!("{corrupted_id}.ready")).exists(),
+            "corrupt ready package remains for explicit examination");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_staging_root_and_insecure_directory() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = TestRoot::new();
+        let alias = root.0.with_extension("alias");
+        symlink(&root.0, &alias).expect("symlink root");
+        assert!(scan_stages(&alias).is_err());
+        fs::remove_file(alias).expect("remove symlink");
+        fs::set_permissions(&root.0, fs::Permissions::from_mode(0o777))
+            .expect("make untrusted root writable");
+        assert!(scan_stages(&root.0).is_err());
+    }
 }
