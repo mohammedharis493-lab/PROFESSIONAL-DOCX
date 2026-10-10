@@ -109,9 +109,7 @@ fn materialize_result(
     for byte in stored_digest {
         write!(&mut semantic_hex, "{byte:02x}").expect("hex encoding cannot fail");
     }
-    if semantic_hex != receipt.result_sha256_hex
-        || result.result_sha256_hex != semantic_hex
-    {
+    if semantic_hex != receipt.result_sha256_hex || result.result_sha256_hex != semantic_hex {
         return Err(invalid());
     }
     let bytes = json.into_bytes();
