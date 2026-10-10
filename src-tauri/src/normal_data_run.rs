@@ -1847,6 +1847,61 @@ mod tests {
     }
 
     #[test]
+    fn recovery_journal_observes_valid_ready_stage_then_corruption_without_evidence() {
+        use crate::{
+            normal_data_stage_recovery_journal as recovery_journal,
+            normal_data_staging::{self, StageStatus},
+        };
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison run");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("exact three artifacts");
+        let root = fixture.folder.join("recovery-journal-root");
+        fs::create_dir(&root).expect("private root");
+        let staged = normal_data_staging::stage_material(&root, &material)
+            .expect("stage verified exact bytes");
+        let first = recovery_journal::record_recovery_snapshot(&fixture.path, &root)
+            .expect("record initial recovery observation");
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(first.entries[0].stage_id, staged.stage_id);
+        assert_eq!(first.entries[0].status, StageStatus::ReadyVerified);
+        assert_eq!(
+            recovery_journal::read_recovery_snapshot(&fixture.path, &first.recovery_scan_id)
+                .expect("reopen snapshot"),
+            first,
+        );
+
+        let source_path = root
+            .join(format!("{}.ready", staged.stage_id))
+            .join("source-b.bin");
+        let mut bytes = fs::read(&source_path).expect("staged source B");
+        bytes[0] ^= 1;
+        fs::write(source_path, bytes).expect("simulate same-size corruption");
+        let second = recovery_journal::record_recovery_snapshot(&fixture.path, &root)
+            .expect("record changed stage observation");
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.entries[0].status, StageStatus::Corrupt);
+        assert_eq!(
+            recovery_journal::read_recovery_snapshot(&fixture.path, &first.recovery_scan_id)
+                .expect("historical scan immutable"),
+            first,
+        );
+        let conn = persistence::open_configured_connection(&fixture.path).expect("database");
+        for table in ["workpaper_evidence_links", "controlled_evidence_versions"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("no formal retained evidence created");
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[test]
     fn staging_denies_modified_material_before_writing_any_package() {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)

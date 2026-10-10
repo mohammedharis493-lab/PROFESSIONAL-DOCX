@@ -190,6 +190,27 @@ outside a SQLite transaction and no retained controlled copies or crash-safe
 database/filesystem commit exist. A future authorized evidence linkage must
 recheck all invariants while preserving and linking the exact retained bytes.
 
+## Append-only recovery inventory observations (D2B2B2B2B2A)
+
+Schema v30 introduces two default-empty, append-only SQLite tables for
+historical inventory scans of the private staging root. The native-only
+`record_recovery_snapshot` checks each candidate package on disk, then
+transactionally writes a scan UUID, observation time, entry count, and each
+stage UUID/status. States are `READY_LOCAL_HASH_VALID` (stage matches its own
+manifest during that scan), `READY_CORRUPT`, and `PARTIAL_INTERRUPTED`.
+A failed entry insertion rolls back the entire scan including its header.
+Old snapshots are immutable; a new scan can document that a previously
+hash-valid ready package is now corrupt. Snapshot reads verify entry counts.
+
+**This is recovery visibility, not evidence.** The filesystem scan is completed
+before the SQLite write transaction; the observations do not claim an atomic
+filesystem/database snapshot or continuing artifact validity. They contain
+no raw source bytes, filesystem paths, controlled evidence IDs, administrator
+identity, approvals, or specialist links. Scan and stored statuses do not
+grant authorization and cannot substitute for fresh verified-byte retention,
+trusted authentication or an exact in-transaction linkage check. A malicious
+local database or staging-root owner remains outside this integrity model.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
