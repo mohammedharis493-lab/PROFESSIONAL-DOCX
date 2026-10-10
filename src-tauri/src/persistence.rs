@@ -22414,13 +22414,11 @@ mod tests {
         fs::create_dir_all(database.path.parent().expect("database parent"))
             .expect("create database parent");
         {
-            let mut connection =
-                open_configured_connection(&database.path).expect("open database");
+            let mut connection = open_configured_connection(&database.path).expect("open database");
             ensure_migration_history_table(&connection).expect("migration history");
             for migration in &MIGRATIONS[..28] {
                 let checksum = migration_checksum(migration.sql);
-                apply_migration(&mut connection, migration, &checksum)
-                    .expect("apply through v28");
+                apply_migration(&mut connection, migration, &checksum).expect("apply through v28");
             }
             let version: i64 = connection
                 .query_row("PRAGMA user_version;", [], |row| row.get(0))
@@ -22428,16 +22426,17 @@ mod tests {
             assert_eq!(version, 28);
         }
         initialize_database(&database.path).expect("upgrade v28 to v29");
-        let connection =
-            open_configured_connection(&database.path).expect("upgraded database");
+        let connection = open_configured_connection(&database.path).expect("upgraded database");
         let version: i64 = connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
             .expect("new version");
         assert_eq!(version, 29);
         let events: i64 = connection
-            .query_row("SELECT COUNT(*) FROM normal_data_permission_admin_events", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events",
+                [],
+                |row| row.get(0),
+            )
             .expect("empty administrator ledger");
         assert_eq!(events, 0);
     }
