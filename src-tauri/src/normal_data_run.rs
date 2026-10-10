@@ -911,13 +911,11 @@ mod tests {
     fn sqlite_promotion_grants_deny_by_default_and_enforce_exact_resource_scopes() {
         use promotion_policy::{PromotionIntent, SqlitePromotionPermissions, VerifiedPrincipal};
         let fixture = Fixture::new();
-        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
-            .expect("comparison run");
-        let source = normal_data_provenance::inspect_run(
-            &fixture.path,
-            &run.normal_data_comparison_run_id,
-        )
-        .expect("historical receipt");
+        let run =
+            execute_comparison(&fixture.path, &fixture.recipe_version_id).expect("comparison run");
+        let source =
+            normal_data_provenance::inspect_run(&fixture.path, &run.normal_data_comparison_run_id)
+                .expect("historical receipt");
         let target = create_policy_target(&fixture.path, "DRAFT");
         let intent = PromotionIntent {
             run_id: &run.normal_data_comparison_run_id,
@@ -950,8 +948,14 @@ mod tests {
                 .is_err()
         );
         let scopes = [
-            ("READ_NORMAL_DATA_WORKSPACE", source.normal_data_workspace_id.as_str()),
-            ("ATTACH_EVIDENCE_TO_ENGAGEMENT", target.engagement_id.as_str()),
+            (
+                "READ_NORMAL_DATA_WORKSPACE",
+                source.normal_data_workspace_id.as_str(),
+            ),
+            (
+                "ATTACH_EVIDENCE_TO_ENGAGEMENT",
+                target.engagement_id.as_str(),
+            ),
             ("MODIFY_WORKPAPER_REVISION", target.revision_id.as_str()),
         ];
         let mut ids = Vec::new();
@@ -981,28 +985,24 @@ mod tests {
         promotion_policy::check_policy(&fixture.path, &intent, Some(&subject), &provider)
             .expect("three exact grants are necessary with a test-only verified principal");
         let different_subject = VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
-        assert!(
-            promotion_policy::check_policy(
-                &fixture.path,
-                &intent,
-                Some(&different_subject),
-                &provider,
-            )
-            .is_err()
-        );
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &intent,
+            Some(&different_subject),
+            &provider,
+        )
+        .is_err());
         let other_engagement = Uuid::new_v4().to_string();
-        assert!(
-            promotion_policy::check_policy(
-                &fixture.path,
-                &PromotionIntent {
-                    target_engagement_id: &other_engagement,
-                    ..intent
-                },
-                Some(&subject),
-                &provider,
-            )
-            .is_err()
-        );
+        assert!(promotion_policy::check_policy(
+            &fixture.path,
+            &PromotionIntent {
+                target_engagement_id: &other_engagement,
+                ..intent
+            },
+            Some(&subject),
+            &provider,
+        )
+        .is_err());
 
         // Revocation takes effect on the very next independent policy read.
         conn.execute(
@@ -1093,10 +1093,16 @@ mod tests {
         );
 
         let evidence_links: i64 = conn
-            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
             .expect("no links");
         let preserved: i64 = conn
-            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
             .expect("no evidence captures");
         assert_eq!((evidence_links, preserved), (0, 0));
     }
