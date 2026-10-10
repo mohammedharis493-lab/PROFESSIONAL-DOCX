@@ -482,19 +482,15 @@ mod tests {
         fs::create_dir(root.0.join(format!("{corrupted_id}.ready")))
             .expect("orphan malformed ready stage");
         let inventory = scan_stages(&root.0).expect("scan after interrupted write");
-        assert_eq!(
-            inventory,
-            vec![
-                StageInventoryEntry {
-                    stage_id: interrupted_id.clone(),
-                    status: StageStatus::Interrupted
-                },
-                StageInventoryEntry {
-                    stage_id: corrupted_id.clone(),
-                    status: StageStatus::Corrupt
-                }
-            ].into_iter().collect::<Vec<_>>()
-        );
+        assert_eq!(inventory.len(), 2);
+        assert!(inventory.contains(&StageInventoryEntry {
+            stage_id: interrupted_id.clone(),
+            status: StageStatus::Interrupted,
+        }));
+        assert!(inventory.contains(&StageInventoryEntry {
+            stage_id: corrupted_id.clone(),
+            status: StageStatus::Corrupt,
+        }));
         assert!(inspect_stage(&root.0, &interrupted_id).is_err());
         assert!(inspect_stage(&root.0, &corrupted_id).is_err());
         assert!(discard_interrupted(&root.0, &corrupted_id).is_err(),
