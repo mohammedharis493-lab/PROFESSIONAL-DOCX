@@ -151,7 +151,10 @@ pub(crate) fn check_policy(
                            AND c.archived_at_ms IS NULL
              WHERE wr.workpaper_revision_id = ?1
                AND wr.workpaper_id = ?2",
-            params![intent.target_workpaper_revision_id, intent.target_workpaper_id],
+            params![
+                intent.target_workpaper_revision_id,
+                intent.target_workpaper_id
+            ],
             |row| {
                 Ok((
                     row.get(0)?,
