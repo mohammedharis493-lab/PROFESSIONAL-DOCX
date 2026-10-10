@@ -30,9 +30,13 @@ pub(crate) fn inspect_authorized_retention_candidate(
         principal,
         |tx| {
             let record = normal_data_retention_store::inspect_registered_candidate_on_connection(
-                tx, retention_root, stage_id, intent.run_id,
+                tx,
+                retention_root,
+                stage_id,
+                intent.run_id,
             )?;
-            if record.run_id != intent.run_id || record.workspace_id != intent.expected_workspace_id {
+            if record.run_id != intent.run_id || record.workspace_id != intent.expected_workspace_id
+            {
                 return Err(denied());
             }
             Ok(record)
