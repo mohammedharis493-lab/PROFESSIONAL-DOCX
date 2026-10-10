@@ -1855,10 +1855,11 @@ mod tests {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
             .expect("verified comparison run");
-        let material =
-            crate::normal_data_preservation_material::prepare_preservation_material(
-                &fixture.path, &run.normal_data_comparison_run_id,
-            ).expect("exact three artifacts");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        )
+        .expect("exact three artifacts");
         let root = fixture.folder.join("recovery-journal-root");
         fs::create_dir(&root).expect("private root");
         let staged = normal_data_staging::stage_material(&root, &material)
@@ -1874,7 +1875,8 @@ mod tests {
             first,
         );
 
-        let source_path = root.join(format!("{}.ready", staged.stage_id))
+        let source_path = root
+            .join(format!("{}.ready", staged.stage_id))
             .join("source-b.bin");
         let mut bytes = fs::read(&source_path).expect("staged source B");
         bytes[0] ^= 1;
@@ -1888,13 +1890,13 @@ mod tests {
                 .expect("historical scan immutable"),
             first,
         );
-        let conn = persistence::open_configured_connection(&fixture.path)
-            .expect("database");
+        let conn = persistence::open_configured_connection(&fixture.path).expect("database");
         for table in ["workpaper_evidence_links", "controlled_evidence_versions"] {
-            let count: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [],
-                |row| row.get(0),
-            ).expect("no formal retained evidence created");
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("no formal retained evidence created");
             assert_eq!(count, 0);
         }
     }
