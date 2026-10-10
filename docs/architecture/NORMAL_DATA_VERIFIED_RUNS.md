@@ -211,6 +211,26 @@ grant authorization and cannot substitute for fresh verified-byte retention,
 trusted authentication or an exact in-transaction linkage check. A malicious
 local database or staging-root owner remains outside this integrity model.
 
+## Recovery drift diagnostics (D2B2B2B2B2A1)
+
+A native-only differential inspection can compare a saved immutable recovery scan
+against a **fresh**, bounded staging-root inventory. It reports the exact
+package UUIDs that are missing, newly present, or have changed their local
+state (including partial-to-corrupt-ready transitions). Unchanged stages are
+omitted. The comparison creates no audit row, evidence record, grant or
+workpaper link; historical recovery snapshots remain untouched.
+
+A simultaneous `<UUID>.partial` and `<UUID>.ready` pair is rejected as an
+ambiguous stage identity before any scan is journalled. Both packages remain
+on disk for explicit examination; recovery does not guess which one wins.
+
+The comparison is a transient observation, NOT a safe retention lifecycle or
+authorization check. Files can change immediately before, during or after
+the read; a previously or currently `READY_LOCAL_HASH_VALID` stage is still
+only manifest-local working data. It is not proof of authentic historical run
+identity, authenticated authority, controlled-evidence retention or specialist
+linkage. No new Tauri command or authentication provider exists.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
