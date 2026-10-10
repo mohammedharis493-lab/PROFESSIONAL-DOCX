@@ -35,6 +35,22 @@ disappears, and reports `currentSourceBytesChecked: false` plus
 This is an inspection receipt, not a source-retention or independent audit
 attestation. See [ADR_NORMAL_DATA_PROMOTION_BOUNDARY.md](ADR_NORMAL_DATA_PROMOTION_BOUNDARY.md).
 
+## Explicit live source recheck (D2A, not promotion)
+
+`recheck_normal_data_run_sources` accepts only a completed comparison-run UUID.
+It first validates the frozen run, then separately reads source A and B through
+the existing native approved-root/stable-read verifier (32 MiB maximum each).
+Each source must match its immutable content version **and** the exact SHA-256
+recorded in that historical run. Success returns two separately timestamped
+read observations; either source's change, missing file, source-version
+mismatch, or failed verification returns an error and no success receipt.
+
+The observations are sequential, not an atomic two-file snapshot. There is no
+stored source copy, permission grant, workpaper link, evidence capture, or
+promise that bytes will remain the same for a later operation. A future
+capture must independently authorize and re-verify the originals. This
+command does not modify the database, evidence store, or run history.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
