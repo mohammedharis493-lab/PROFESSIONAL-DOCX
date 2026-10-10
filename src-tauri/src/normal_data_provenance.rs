@@ -240,8 +240,10 @@ fn verify_one_current_source(
     // The existing approved-root reader enforces the indexed document / file /
     // content-version binding, a stable source read, 32 MiB maximum size, and
     // SHA-256 equality. It returns no user-controlled filesystem path.
-    let verified =
-        normal_data_source_reader::read_verified_dataset(database_path, &frozen.dataset_version_id)?;
+    let verified = normal_data_source_reader::read_verified_dataset(
+        database_path,
+        &frozen.dataset_version_id,
+    )?;
     if verified.dataset_version_id != frozen.dataset_version_id
         || verified.content_version_id != frozen.content_version_id
         || encode_hash(&verified.sha256)? != frozen.sha256_hex
