@@ -1510,6 +1510,109 @@ mod tests {
     }
 
     #[test]
+    fn staged_preservation_is_recoverable_and_never_promotes_working_data() {
+        use crate::normal_data_staging::{self, StageStatus};
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("frozen verified run");
+        let material = crate::normal_data_preservation_material::prepare_preservation_material(
+            &fixture.path,
+            &run.normal_data_comparison_run_id,
+        ).expect("exact three artifact bytes");
+        let root = fixture.folder.join("private-staging");
+        fs::create_dir(&root).expect("private root");
+        let conn = persistence::open_configured_connection(&fixture.path).expect("database");
+        let audit_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
+        ).expect("audit before");
+        let receipt = normal_data_staging::stage_material(&root, &material)
+            .expect("private staging");
+        assert_eq!(receipt.run_id, run.normal_data_comparison_run_id);
+        assert_eq!(receipt.workspace_id, material.workspace_id);
+        assert_eq!(receipt.source_a_sha256_hex, material.source_a.sha256_hex);
+        assert_eq!(receipt.source_b_sha256_hex, material.source_b.sha256_hex);
+        assert_eq!(
+            receipt.result_semantic_sha256_hex,
+            material.result.semantic_result_sha256_hex,
+        );
+        assert_eq!(
+            receipt.result_artifact_sha256_hex,
+            material.result.artifact_sha256_hex,
+        );
+        let package = root.join(format!("{}.ready", receipt.stage_id));
+        assert!(package.exists());
+        assert!(!root.join(format!("{}.partial", receipt.stage_id)).exists());
+        assert_eq!(
+            fs::read(package.join("source-a.bin")).expect("staged A"),
+            material.source_a.bytes,
+        );
+        assert_eq!(
+            fs::read(package.join("source-b.bin")).expect("staged B"),
+            material.source_b.bytes,
+        );
+        assert_eq!(
+            fs::read(package.join("result.json")).expect("staged result"),
+            material.result.bytes,
+        );
+        let manifest = fs::read_to_string(package.join("manifest.json"))
+            .expect("identity-only manifest");
+        assert!(!manifest.contains("INV-100"));
+        assert_eq!(
+            normal_data_staging::inspect_stage(&root, &receipt.stage_id)
+                .expect("reopened receipt"),
+            receipt,
+        );
+        let inventory = normal_data_staging::scan_stages(&root).expect("restart scan");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].stage_id, receipt.stage_id);
+        assert_eq!(inventory[0].status, StageStatus::ReadyVerified);
+        assert!(normal_data_staging::discard_interrupted(&root, &receipt.stage_id).is_err());
+
+        let audit_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM audit_events", [], |row| row.get(0),
+        ).expect("audit after");
+        let evidence_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0),
+        ).expect("controlled evidence");
+        let links_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0),
+        ).expect("links");
+        assert_eq!(audit_before, audit_after);
+        assert_eq!((evidence_count, links_count), (0, 0));
+
+        // The integrity scan must not claim a ready package is still sound
+        // after an out-of-band same-size disk edit.
+        let mut changed = fs::read(package.join("source-b.bin")).expect("staged source");
+        changed[0] ^= 1;
+        fs::write(package.join("source-b.bin"), changed).expect("tamper staged bytes");
+        assert!(normal_data_staging::inspect_stage(&root, &receipt.stage_id).is_err());
+        let scan = normal_data_staging::scan_stages(&root).expect("corruption scan");
+        assert_eq!(scan.len(), 1);
+        assert_eq!(scan[0].status, StageStatus::Corrupt);
+    }
+
+    #[test]
+    fn staging_denies_modified_material_before_writing_any_package() {
+        let fixture = Fixture::new();
+        let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
+            .expect("verified comparison run");
+        let mut material =
+            crate::normal_data_preservation_material::prepare_preservation_material(
+                &fixture.path, &run.normal_data_comparison_run_id,
+            ).expect("exact material");
+        let root = fixture.folder.join("private-staging-reject");
+        fs::create_dir(&root).expect("dedicated staging root");
+        material.source_a.bytes[0] ^= 1;
+        assert!(crate::normal_data_staging::stage_material(&root, &material).is_err());
+        assert_eq!(fs::read_dir(&root).expect("staging root").count(), 0);
+        material.source_a.bytes[0] ^= 1;
+        material.result.bytes.push(b' ');
+        assert!(crate::normal_data_staging::stage_material(&root, &material).is_err(),
+            "result artifact hash prevents silent whitespace change");
+        assert_eq!(fs::read_dir(&root).expect("staging root").count(), 0);
+    }
+
+    #[test]
     fn verified_csv_movement_persists_exact_hashes_and_immutable_audit_event() {
         let fixture = Fixture::new();
         let run = execute_comparison(&fixture.path, &fixture.recipe_version_id)
