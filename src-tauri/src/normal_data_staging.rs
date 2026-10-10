@@ -133,11 +133,7 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, PersistenceError
     Ok(bytes)
 }
 
-fn artifact(
-    name: &str,
-    bytes: &[u8],
-    source: Option<&SourceMaterial>,
-) -> Artifact {
+fn artifact(name: &str, bytes: &[u8], source: Option<&SourceMaterial>) -> Artifact {
     Artifact {
         file_name: name.to_owned(),
         size_bytes: bytes.len() as u64,
@@ -152,7 +148,11 @@ fn checked_manifest(
     stage_id: &str,
     material: &PreservationMaterial,
 ) -> Result<Manifest, PersistenceError> {
-    for id in [&material.run_id, &material.workspace_id, &material.recipe_version_id] {
+    for id in [
+        &material.run_id,
+        &material.workspace_id,
+        &material.recipe_version_id,
+    ] {
         uuid(id)?;
     }
     for source in [&material.source_a, &material.source_b] {
@@ -193,8 +193,16 @@ fn checked_manifest(
         run_id: material.run_id.clone(),
         workspace_id: material.workspace_id.clone(),
         recipe_version_id: material.recipe_version_id.clone(),
-        source_a: artifact("source-a.bin", &material.source_a.bytes, Some(&material.source_a)),
-        source_b: artifact("source-b.bin", &material.source_b.bytes, Some(&material.source_b)),
+        source_a: artifact(
+            "source-a.bin",
+            &material.source_a.bytes,
+            Some(&material.source_a),
+        ),
+        source_b: artifact(
+            "source-b.bin",
+            &material.source_b.bytes,
+            Some(&material.source_b),
+        ),
         result: artifact("result.json", &output.bytes, None),
         result_semantic_sha256_hex: output.semantic_result_sha256_hex.clone(),
     })
@@ -287,13 +295,25 @@ fn verify_package(root: &Path, stage_id: &str) -> Result<StageReceipt, Persisten
         uuid(id)?;
     }
     let _source_a = verify_artifact(
-        &folder, &manifest.source_a, "source-a.bin", MAX_SOURCE_BYTES, true,
+        &folder,
+        &manifest.source_a,
+        "source-a.bin",
+        MAX_SOURCE_BYTES,
+        true,
     )?;
     let _source_b = verify_artifact(
-        &folder, &manifest.source_b, "source-b.bin", MAX_SOURCE_BYTES, true,
+        &folder,
+        &manifest.source_b,
+        "source-b.bin",
+        MAX_SOURCE_BYTES,
+        true,
     )?;
     let result_bytes = verify_artifact(
-        &folder, &manifest.result, "result.json", MAX_RESULT_BYTES, false,
+        &folder,
+        &manifest.result,
+        "result.json",
+        MAX_RESULT_BYTES,
+        false,
     )?;
     if !valid_digest(&manifest.result_semantic_sha256_hex) {
         return Err(invalid("semantic result digest format is invalid"));
@@ -335,8 +355,8 @@ pub(crate) fn stage_material(
     safe_directory(root)?;
     let stage_id = Uuid::new_v4().to_string();
     let manifest = checked_manifest(&stage_id, material)?;
-    let encoded_manifest = serde_json::to_vec(&manifest)
-        .map_err(|_| invalid("could not encode staging manifest"))?;
+    let encoded_manifest =
+        serde_json::to_vec(&manifest).map_err(|_| invalid("could not encode staging manifest"))?;
     if encoded_manifest.len() > MAX_MANIFEST_BYTES {
         return Err(invalid("staging manifest exceeds byte limit"));
     }
@@ -359,13 +379,25 @@ pub(crate) fn stage_material(
         sync_dir(&partial)?;
         // Verify the exact staged bytes before publishing the ready marker.
         let a = verify_artifact(
-            &partial, &manifest.source_a, "source-a.bin", MAX_SOURCE_BYTES, true,
+            &partial,
+            &manifest.source_a,
+            "source-a.bin",
+            MAX_SOURCE_BYTES,
+            true,
         )?;
         let b = verify_artifact(
-            &partial, &manifest.source_b, "source-b.bin", MAX_SOURCE_BYTES, true,
+            &partial,
+            &manifest.source_b,
+            "source-b.bin",
+            MAX_SOURCE_BYTES,
+            true,
         )?;
         let result_bytes = verify_artifact(
-            &partial, &manifest.result, "result.json", MAX_RESULT_BYTES, false,
+            &partial,
+            &manifest.result,
+            "result.json",
+            MAX_RESULT_BYTES,
+            false,
         )?;
         if a != material.source_a.bytes
             || b != material.source_b.bytes
@@ -391,19 +423,14 @@ pub(crate) fn stage_material(
 
 /// Inspect a known staged package by re-reading all three disk artifacts.
 /// Returns no raw bytes and never creates an evidence/approval record.
-pub(crate) fn inspect_stage(
-    root: &Path,
-    stage_id: &str,
-) -> Result<StageReceipt, PersistenceError> {
+pub(crate) fn inspect_stage(root: &Path, stage_id: &str) -> Result<StageReceipt, PersistenceError> {
     verify_package(root, stage_id)
 }
 
 /// Recovery inventory. No mutation, automatic deletion, or authorization.
 /// A '.partial' directory is always incomplete, even if all files happen to
 /// be present; any '.ready' directory must pass exact-byte verification.
-pub(crate) fn scan_stages(
-    root: &Path,
-) -> Result<Vec<StageInventoryEntry>, PersistenceError> {
+pub(crate) fn scan_stages(root: &Path) -> Result<Vec<StageInventoryEntry>, PersistenceError> {
     safe_directory(root)?;
     let mut output = Vec::new();
     let mut entries_seen = 0usize;
@@ -439,10 +466,7 @@ pub(crate) fn scan_stages(
 
 /// Discard ONLY a known incomplete package. A ready package is never deleted
 /// by recovery; future authorized retention controls must own that lifecycle.
-pub(crate) fn discard_interrupted(
-    root: &Path,
-    stage_id: &str,
-) -> Result<(), PersistenceError> {
+pub(crate) fn discard_interrupted(root: &Path, stage_id: &str) -> Result<(), PersistenceError> {
     safe_directory(root)?;
     let partial = package_path(root, stage_id, "partial")?;
     safe_directory(&partial)?;
@@ -459,8 +483,7 @@ mod tests {
 
     impl TestRoot {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("pdox-staging-test-{}", Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("pdox-staging-test-{}", Uuid::new_v4()));
             fs::create_dir(&path).expect("create dedicated staging root");
             Self(path)
         }
@@ -493,15 +516,21 @@ mod tests {
         }));
         assert!(inspect_stage(&root.0, &interrupted_id).is_err());
         assert!(inspect_stage(&root.0, &corrupted_id).is_err());
-        assert!(discard_interrupted(&root.0, &corrupted_id).is_err(),
-            "recovery must not delete ready directories");
-        assert!(discard_interrupted(&root.0, "../other").is_err(),
-            "recovery cannot accept path traversal");
+        assert!(
+            discard_interrupted(&root.0, &corrupted_id).is_err(),
+            "recovery must not delete ready directories"
+        );
+        assert!(
+            discard_interrupted(&root.0, "../other").is_err(),
+            "recovery cannot accept path traversal"
+        );
         discard_interrupted(&root.0, &interrupted_id)
             .expect("clean incomplete package by exact generated ID");
         assert!(!root.0.join(format!("{interrupted_id}.partial")).exists());
-        assert!(root.0.join(format!("{corrupted_id}.ready")).exists(),
-            "corrupt ready package remains for explicit examination");
+        assert!(
+            root.0.join(format!("{corrupted_id}.ready")).exists(),
+            "corrupt ready package remains for explicit examination"
+        );
     }
 
     #[cfg(unix)]
