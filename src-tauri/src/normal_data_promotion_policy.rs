@@ -60,6 +60,72 @@ impl PromotionPermissionPolicy for DenyAllPromotionPermissions {
     }
 }
 
+/// Read-only adapter to the default-empty, versioned permission registry.
+/// This does not authenticate anyone or provide a way to enroll a subject or
+/// create grants: those must originate from a separately reviewed trusted
+/// provisioning authority that does not exist yet. DB failures deny access.
+pub(crate) struct SqlitePromotionPermissions<'a> {
+    database_path: &'a Path,
+}
+
+impl<'a> SqlitePromotionPermissions<'a> {
+    pub(crate) fn new(database_path: &'a Path) -> Self {
+        Self { database_path }
+    }
+}
+
+impl PromotionPermission {
+    fn database_key(self) -> &'static str {
+        match self {
+            Self::ReadNormalDataWorkspace => "READ_NORMAL_DATA_WORKSPACE",
+            Self::AttachEvidenceToEngagement => "ATTACH_EVIDENCE_TO_ENGAGEMENT",
+            Self::ModifyWorkpaperRevision => "MODIFY_WORKPAPER_REVISION",
+        }
+    }
+}
+
+impl PromotionPermissionPolicy for SqlitePromotionPermissions<'_> {
+    fn is_allowed(
+        &self,
+        principal_id: &str,
+        permission: PromotionPermission,
+        resource_id: &str,
+    ) -> bool {
+        // A locally stored subject row never creates a verified principal.
+        // Its UUID merely correlates a separately authenticated identity to
+        // an enrollment/grant ledger. Missing, suspended, expired or corrupt
+        // records fail closed; do not fall back to actor role or ownership.
+        if Uuid::parse_str(principal_id).is_err() || Uuid::parse_str(resource_id).is_err() {
+            return false;
+        }
+        let Ok(now) = persistence::now_unix_ms() else {
+            return false;
+        };
+        let Ok(connection) = persistence::open_configured_connection(self.database_path) else {
+            return false;
+        };
+        let result: rusqlite::Result<i64> = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM normal_data_permission_grants g
+                 JOIN normal_data_permission_subjects s ON s.subject_id = g.subject_id
+                 WHERE g.subject_id = ?1
+                   AND s.identity_issuer = 'TRUSTED_NATIVE_IDP'
+                   AND s.disabled_at_ms IS NULL
+                   AND s.registered_at_ms <= ?4
+                   AND g.permission = ?2
+                   AND g.resource_id = ?3
+                   AND g.granted_at_ms <= ?4
+                   AND (g.expires_at_ms IS NULL OR g.expires_at_ms > ?4)
+                   AND g.revoked_at_ms IS NULL
+             )",
+            params![principal_id, permission.database_key(), resource_id, now],
+            |row| row.get(0),
+        );
+        matches!(result, Ok(1))
+    }
+}
+
 /// Caller-selected IDs must each be independently verified against immutable
 /// database relationships and trusted permissions, never against a path or
 /// the "latest" data version.
