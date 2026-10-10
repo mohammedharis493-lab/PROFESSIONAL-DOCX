@@ -140,6 +140,65 @@ pub(crate) fn read_recovery_snapshot(
     })
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryDrift {
+    pub stage_id: String,
+    pub recorded: Option<StageStatus>,
+    pub observed_now: Option<StageStatus>,
+}
+
+/// Re-scan a native-chosen private root and compare it with an immutable
+/// historical journal snapshot. Absence, additions and state transitions are
+/// reported rather than silently assuming that an old valid stage is still
+/// valid. This check intentionally writes NOTHING and is not an authorization,
+/// retained-evidence, or crash-atomic filesystem/database snapshot.
+pub(crate) fn compare_recovery_snapshot_to_live(
+    database_path: &Path,
+    staging_root: &Path,
+    scan_id: &str,
+) -> Result<Vec<RecoveryDrift>, PersistenceError> {
+    use std::collections::BTreeMap;
+
+    let historical = read_recovery_snapshot(database_path, scan_id)?;
+    let live = normal_data_staging::scan_stages(staging_root)?;
+    if live.len() > MAX_RECOVERY_ENTRIES {
+        return Err(denied("too many current packages"));
+    }
+    let mut old = BTreeMap::new();
+    for entry in historical.entries {
+        if old.insert(entry.stage_id, entry.status).is_some() {
+            return Err(denied("ambiguous historical package identity"));
+        }
+    }
+    let mut current = BTreeMap::new();
+    for entry in live {
+        if current.insert(entry.stage_id, entry.status).is_some() {
+            return Err(denied("ambiguous current package identity"));
+        }
+    }
+    let mut result = Vec::new();
+    for (stage_id, old_state) in &old {
+        let new_state = current.remove(stage_id);
+        if new_state != Some(*old_state) {
+            result.push(RecoveryDrift {
+                stage_id: stage_id.clone(),
+                recorded: Some(*old_state),
+                observed_now: new_state,
+            });
+        }
+    }
+    for (stage_id, new_state) in current {
+        result.push(RecoveryDrift {
+            stage_id,
+            recorded: None,
+            observed_now: Some(new_state),
+        });
+    }
+    result.sort_by(|a, b| a.stage_id.cmp(&b.stage_id));
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,4 +344,73 @@ mod tests {
             2,
         );
     }
+
+    #[test]
+    fn drift_detects_missing_added_and_changed_packages_without_mutating_history() {
+        let fixture = Fixture::new();
+        let root = fixture.stage_root();
+        let missing = Uuid::new_v4().to_string();
+        let unchanged = Uuid::new_v4().to_string();
+        let changed = Uuid::new_v4().to_string();
+        let added = Uuid::new_v4().to_string();
+        for id in [&missing, &unchanged, &changed] {
+            fs::create_dir(root.join(format!("{id}.partial"))).expect("partial stage");
+        }
+        let snapshot = record_recovery_snapshot(&fixture.db, &root).expect("historical snapshot");
+        assert!(compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
+            .expect("no drift").is_empty());
+        fs::remove_dir(root.join(format!("{missing}.partial"))).expect("remove partial");
+        fs::remove_dir(root.join(format!("{changed}.partial"))).expect("remove old state");
+        fs::create_dir(root.join(format!("{changed}.ready"))).expect("replace with corrupt ready");
+        fs::create_dir(root.join(format!("{added}.partial"))).expect("new partial");
+        let drift = compare_recovery_snapshot_to_live(&fixture.db, &root, &snapshot.recovery_scan_id)
+            .expect("fresh local inspection");
+        assert_eq!(drift.len(), 3);
+        assert!(drift.contains(&RecoveryDrift {
+            stage_id: missing,
+            recorded: Some(StageStatus::Interrupted),
+            observed_now: None,
+        }));
+        assert!(drift.contains(&RecoveryDrift {
+            stage_id: changed,
+            recorded: Some(StageStatus::Interrupted),
+            observed_now: Some(StageStatus::Corrupt),
+        }));
+        assert!(drift.contains(&RecoveryDrift {
+            stage_id: added,
+            recorded: None,
+            observed_now: Some(StageStatus::Interrupted),
+        }));
+        assert_eq!(read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
+            .expect("historical scan is untouched"), snapshot);
+        let connection = persistence::open_configured_connection(&fixture.db).expect("database");
+        let scans: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM normal_data_stage_recovery_scans", [], |row| row.get(0)
+        ).expect("read count");
+        assert_eq!(scans, 1, "differential inspection never appends a scan");
+        for table in ["controlled_evidence_versions", "workpaper_evidence_links"] {
+            let count: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)
+            ).expect("no formal evidence");
+            assert_eq!(count, 0);
+        }
+        assert!(compare_recovery_snapshot_to_live(&fixture.db, &root, "not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn drift_fails_closed_on_ambiguous_partial_and_ready_identity() {
+        let fixture = Fixture::new();
+        let root = fixture.stage_root();
+        let same = Uuid::new_v4().to_string();
+        fs::create_dir(root.join(format!("{same}.partial"))).expect("partial");
+        let snapshot = record_recovery_snapshot(&fixture.db, &root).expect("initial");
+        fs::create_dir(root.join(format!("{same}.ready"))).expect("conflicting ready");
+        assert!(compare_recovery_snapshot_to_live(
+            &fixture.db, &root, &snapshot.recovery_scan_id
+        ).is_err(), "duplicate stage identifiers must not be resolved arbitrarily");
+        assert!(record_recovery_snapshot(&fixture.db, &root).is_err());
+        assert_eq!(read_recovery_snapshot(&fixture.db, &snapshot.recovery_scan_id)
+            .expect("initial is immutable"), snapshot);
+    }
+
 }
