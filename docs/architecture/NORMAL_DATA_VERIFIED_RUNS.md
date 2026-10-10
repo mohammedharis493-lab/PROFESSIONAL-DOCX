@@ -88,6 +88,24 @@ repeat permission evaluation inside a future atomic write transaction. The
 current read-only check returns no approval token and is not safe to use as
 the sole authorization at write time.
 
+## Native-only audited administrator lifecycle (D2B2B1, schema v29)
+
+Schema v29 adds immutable administrator event rows for subject enrollment,
+grant issuance, grant revocation and permanent subject disabling. A native-only
+administrator module performs these mutations and the associated audit insert
+inside one SQLite IMMEDIATE transaction. Missing resources, archived targets,
+unknown/disabled subjects and expired grants are denied; audit insertion failure
+rolls back the permission change. No evidence attachment or controlled capture
+can be created through this module.
+
+The administrator capability has only a test-only constructor. There is still
+**no trusted authenticated administrator in production**, no frontend/Tauri
+admin command, no permission bootstrap path and no permission token issued by
+viewing the grant ledger. The local database cannot prove a user is the named
+administrator against a malicious database owner. Next work must supply secure
+native identity and privilege attestation, enforce it at use time inside the
+specialist write transaction and design the controlled-capture recovery plan.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
