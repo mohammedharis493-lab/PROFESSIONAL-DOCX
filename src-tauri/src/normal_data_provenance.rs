@@ -3,6 +3,7 @@
 //! authorization to promote, or evidence eligible for audit sign-off.
 use crate::{
     normal_data_comparison::{self, ComparisonResult, PeriodBasis},
+    normal_data_source_reader,
     persistence::{self, PersistenceError},
 };
 use rusqlite::OptionalExtension;
@@ -34,6 +35,30 @@ pub struct RunProvenanceReceipt {
     /// not a fresh file read, certificate of retention, or current file status.
     pub verification_at_execution: String,
     pub current_source_bytes_checked: bool,
+    pub is_controlled_evidence: bool,
+    pub specialist_promotion_authorized: bool,
+}
+
+/// A separate live read of one immutable dataset source. The read-time
+/// observation is not a retained capture and may become stale immediately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceReadObservation {
+    pub dataset_version_id: String,
+    pub content_version_id: String,
+    pub sha256_hex: String,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSourcePreflight {
+    pub normal_data_comparison_run_id: String,
+    pub source_a: SourceReadObservation,
+    pub source_b: SourceReadObservation,
+    /// Two independent, sequential hash-verified reads—not an atomic snapshot
+    /// of both files and not a guarantee about subsequent capture operations.
+    pub exact_sources_verified_at_read: bool,
     pub is_controlled_evidence: bool,
     pub specialist_promotion_authorized: bool,
 }
@@ -203,6 +228,59 @@ pub fn inspect_run(
         completed_at_ms: frozen.completed_at_ms,
         verification_at_execution: "HASH_VERIFIED_RECORDED".to_string(),
         current_source_bytes_checked: false,
+        is_controlled_evidence: false,
+        specialist_promotion_authorized: false,
+    })
+}
+
+fn verify_one_current_source(
+    database_path: &Path,
+    frozen: &RunSourceReceipt,
+) -> Result<SourceReadObservation, PersistenceError> {
+    // The existing approved-root reader enforces the indexed document / file /
+    // content-version binding, a stable source read, 32 MiB maximum size, and
+    // SHA-256 equality. It returns no user-controlled filesystem path.
+    let verified = normal_data_source_reader::read_verified_dataset(
+        database_path,
+        &frozen.dataset_version_id,
+    )?;
+    if verified.dataset_version_id != frozen.dataset_version_id
+        || verified.content_version_id != frozen.content_version_id
+        || encode_hash(&verified.sha256)? != frozen.sha256_hex
+    {
+        return Err(invalid(
+            "live source does not match the exact frozen comparison-run input",
+        ));
+    }
+    // Read has finished before the observation is stamped. Discard its bytes:
+    // preflight must never persist or expose the originals.
+    Ok(SourceReadObservation {
+        dataset_version_id: verified.dataset_version_id,
+        content_version_id: verified.content_version_id,
+        sha256_hex: frozen.sha256_hex.clone(),
+        observed_at_ms: persistence::now_unix_ms()?,
+    })
+}
+
+/// Optional explicit, bounded live input recheck. Fails closed if either input
+/// is missing, has changed (including same-size tampering), or no longer passes
+/// the approved-root / stable-read / SHA-256 checks. This command is **not**
+/// evidence capture, caller authorization, or promotion approval; a subsequent
+/// operation must re-check its own sources and access policy.
+pub fn recheck_run_sources(
+    database_path: &Path,
+    run_id: &str,
+) -> Result<RunSourcePreflight, PersistenceError> {
+    let historical = inspect_run(database_path, run_id)?;
+    // Individual observations occur at different times; no atomicity across
+    // files and no promise that bytes remain identical after these reads.
+    let source_a = verify_one_current_source(database_path, &historical.source_a)?;
+    let source_b = verify_one_current_source(database_path, &historical.source_b)?;
+    Ok(RunSourcePreflight {
+        normal_data_comparison_run_id: historical.normal_data_comparison_run_id,
+        source_a,
+        source_b,
+        exact_sources_verified_at_read: true,
         is_controlled_evidence: false,
         specialist_promotion_authorized: false,
     })
