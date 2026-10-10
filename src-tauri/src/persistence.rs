@@ -18557,7 +18557,7 @@ mod tests {
                 .expect("prior version");
             assert_eq!(prior, 26);
         }
-        initialize_database(&database.path).expect("upgrade v26 to v27");
+        initialize_database(&database.path).expect("upgrade v26 through v28");
         let connection =
             open_configured_connection(&database.path).expect("open upgraded database");
         let version: i64 = connection
@@ -22355,6 +22355,47 @@ mod tests {
             .expect_err("tampered migration history must be rejected");
 
         assert!(error.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn twenty_eighth_migration_upgrades_v27_with_empty_default_deny_registry() {
+        let database = TestDatabase::new();
+        fs::create_dir_all(database.path.parent().expect("database parent"))
+            .expect("create database parent");
+        {
+            let mut connection =
+                open_configured_connection(&database.path).expect("open database");
+            ensure_migration_history_table(&connection).expect("migration history");
+            for migration in &MIGRATIONS[..27] {
+                let checksum = migration_checksum(migration.sql);
+                apply_migration(&mut connection, migration, &checksum)
+                    .expect("apply v1-v27 migrations");
+            }
+            let version: i64 = connection
+                .query_row("PRAGMA user_version;", [], |row| row.get(0))
+                .expect("prior schema version");
+            assert_eq!(version, 27);
+        }
+        initialize_database(&database.path).expect("upgrade v27 to v28");
+        let connection =
+            open_configured_connection(&database.path).expect("upgraded database");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .expect("upgraded schema version");
+        assert_eq!(version, 28);
+        for table in [
+            "normal_data_permission_subjects",
+            "normal_data_permission_grants",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .expect("empty permission ledger");
+            assert_eq!(count, 0, "{table} must default to no authorization");
+        }
+        let migration_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .expect("migrations preserved");
+        assert_eq!(migration_count, 28);
     }
 
     #[test]
