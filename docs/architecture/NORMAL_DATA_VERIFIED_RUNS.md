@@ -68,6 +68,26 @@ no runtime grants, identity provider, specialist capture or append operation
 are installed. Recheck policy and source hashes in the eventual write
 transaction; a prior preflight is never a reusable permission token.
 
+## Internal durable grant resolution (D2B2A, schema v28)
+
+Schema v28 adds a **default-empty** native permission registry for subject IDs
+enrolled by a future trusted authentication authority and exact resource grants
+for workspace read, engagement attachment and revision modification. The
+`SqlitePromotionPermissions` adapter reads these grants and denies when a
+subject is not enrolled, is disabled, the grant is absent, revoked, expired or
+for a different resource, or the database cannot be read. Resource/permission
+changes and subject reactivation are blocked by SQLite triggers; revoke is a
+one-way state transition.
+
+No frontend command creates a subject, grants, authorizes a caller, or performs
+promotion. A local subject row is **not authentication**; the production code
+cannot construct `VerifiedPrincipal`. SQL content itself is not a signed
+authorization credential or protection against a compromised database owner.
+D2B2B must establish trusted identity and privileged grant administration and
+repeat permission evaluation inside a future atomic write transaction. The
+current read-only check returns no approval token and is not safe to use as
+the sole authorization at write time.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
