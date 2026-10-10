@@ -1046,7 +1046,7 @@ mod tests {
         conn.execute(
             "INSERT INTO normal_data_permission_grants
              (grant_id, subject_id, permission, resource_id, granted_at_ms, expires_at_ms)
-             VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 1, 2)",
+             VALUES (?1, ?2, 'MODIFY_WORKPAPER_REVISION', ?3, 2, 3)",
             params![&expired_id, &subject_id, &target.revision_id],
         )
         .expect("insert expired test grant");
