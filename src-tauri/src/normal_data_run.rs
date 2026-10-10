@@ -2138,6 +2138,85 @@ mod tests {
             inspect(&intent, Some(&principal)).expect("exact candidate and target"),
             retained,
         );
+        let capture_preflight =
+            |request: &PromotionIntent<'_>, actor: Option<&VerifiedPrincipal>| {
+                crate::normal_data_capture_preflight::inspect_exact_capture_preflight(
+                    &fixture.path,
+                    &retention_root,
+                    &stage.stage_id,
+                    request,
+                    actor,
+                )
+            };
+        assert!(
+            capture_preflight(&intent, None).is_err(),
+            "unverified identity never receives capture preflight metadata"
+        );
+        let preflight = capture_preflight(&intent, Some(&principal))
+            .expect("exact source A, source B and result preflight");
+        assert_eq!(preflight.candidate_stage_id, stage.stage_id);
+        assert_eq!(preflight.run_id, first.normal_data_comparison_run_id);
+        assert_eq!(preflight.workspace_id, material.workspace_id);
+        assert_eq!(preflight.recipe_version_id, material.recipe_version_id);
+        assert_eq!(preflight.target_engagement_id, target.engagement_id);
+        assert_eq!(preflight.target_workpaper_id, target.workpaper_id);
+        assert_eq!(preflight.target_workpaper_revision_id, target.revision_id);
+        assert_eq!(
+            preflight.artifacts.original_a.dataset_version_id,
+            material.source_a.dataset_version_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_a.document_id,
+            material.source_a.document_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_a.content_version_id,
+            material.source_a.content_version_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_a.sha256_hex,
+            material.source_a.sha256_hex
+        );
+        assert_eq!(
+            preflight.artifacts.original_a.size_bytes,
+            material.source_a.bytes.len() as u64
+        );
+        assert_eq!(
+            preflight.artifacts.original_b.dataset_version_id,
+            material.source_b.dataset_version_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_b.document_id,
+            material.source_b.document_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_b.content_version_id,
+            material.source_b.content_version_id
+        );
+        assert_eq!(
+            preflight.artifacts.original_b.sha256_hex,
+            material.source_b.sha256_hex
+        );
+        assert_eq!(
+            preflight.artifacts.original_b.size_bytes,
+            material.source_b.bytes.len() as u64
+        );
+        assert_eq!(
+            preflight.artifacts.frozen_result.artifact_sha256_hex,
+            material.result.artifact_sha256_hex
+        );
+        assert_eq!(
+            preflight.artifacts.frozen_result.semantic_sha256_hex,
+            material.result.semantic_result_sha256_hex
+        );
+        assert_eq!(
+            preflight.artifacts.frozen_result.size_bytes,
+            material.result.bytes.len() as u64
+        );
+        assert!(
+            capture_preflight(&second_intent, Some(&principal)).is_err(),
+            "same bytes from a different frozen run cannot be rebound"
+        );
         assert!(
             inspect(&second_intent, Some(&principal)).is_err(),
             "same source hashes but different run ID deny"
@@ -2158,6 +2237,10 @@ mod tests {
         fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON"))
             .expect("forge matching self-reported hash");
         assert!(
+            capture_preflight(&intent, Some(&principal)).is_err(),
+            "artifact-byte tampering rejects capture preflight even with rewritten manifest"
+        );
+        assert!(
             inspect(&intent, Some(&principal)).is_err(),
             "self-consistent but nonhistorical result serialization denies"
         );
@@ -2169,6 +2252,10 @@ mod tests {
         source[0] ^= 1;
         fs::write(&source_path, &source).expect("same-size source edit");
         assert!(
+            capture_preflight(&intent, Some(&principal)).is_err(),
+            "same-size source tampering denies the three-artifact preflight"
+        );
+        assert!(
             inspect(&intent, Some(&principal)).is_err(),
             "byte tamper denies"
         );
@@ -2176,6 +2263,10 @@ mod tests {
         fs::write(&source_path, source).expect("restore source");
         let missing = retention_root.join(format!("{}.missing", stage.stage_id));
         fs::rename(&folder, &missing).expect("hide registered package");
+        assert!(
+            capture_preflight(&intent, Some(&principal)).is_err(),
+            "missing retained bytes deny preflight"
+        );
         assert!(
             inspect(&intent, Some(&principal)).is_err(),
             "missing package denies"
@@ -2193,6 +2284,10 @@ mod tests {
         )
         .expect("revoke grant");
         assert!(
+            capture_preflight(&intent, Some(&principal)).is_err(),
+            "revoked scoped permission denies fresh preflight"
+        );
+        assert!(
             inspect(&intent, Some(&principal)).is_err(),
             "revocation denies"
         );
@@ -2209,6 +2304,10 @@ mod tests {
             [&target.workpaper_id],
         )
         .expect("advance review");
+        assert!(
+            capture_preflight(&intent, Some(&principal)).is_err(),
+            "submitted-for-review specialist target denies preflight"
+        );
         assert!(
             inspect(&intent, Some(&principal)).is_err(),
             "reviewed target denies"

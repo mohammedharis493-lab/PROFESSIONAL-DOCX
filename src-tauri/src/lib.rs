@@ -4,6 +4,8 @@ mod indexer;
 mod launcher;
 mod ledger;
 mod normal_data;
+#[allow(dead_code)]
+mod normal_data_capture_preflight;
 pub mod normal_data_comparison;
 mod normal_data_csv;
 mod normal_data_datasets;
