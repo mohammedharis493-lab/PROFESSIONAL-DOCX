@@ -51,6 +51,23 @@ promise that bytes will remain the same for a later operation. A future
 capture must independently authorize and re-verify the originals. This
 command does not modify the database, evidence store, or run history.
 
+## Internal specialist authorization boundary (D2B1)
+
+A native-only `normal_data_promotion_policy` module defines the **future**
+authorization preflight; it is intentionally **not** a Tauri command. No
+production authenticator can currently construct its verified principal.
+Without that principal, or if even one of the three permissions (workspace
+read, engagement evidence attachment, exact workpaper revision modification)
+is missing, it fails closed. The source run must belong to that exact Normal
+Data workspace and the active target revision must belong to the exact
+engagement/workpaper pair. Stale, archived, signed, review-stage and
+unresolved-review-note targets cannot pass the structural policy.
+
+A positive **unit-test fixture** is not proof of production authorization:
+no runtime grants, identity provider, specialist capture or append operation
+are installed. Recheck policy and source hashes in the eventual write
+transaction; a prior preflight is never a reusable permission token.
+
 ## Deferred features
 
 XLSX import, configured decimal scales, controlled evidence promotion, paginated history and authenticated reviewer workflow remain separate slices. Workspace, recipe and bounded history UI exist; formal specialist attachment and retention do not.
