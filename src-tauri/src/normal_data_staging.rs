@@ -84,10 +84,7 @@ fn matches_frozen_source(
         && staged.sha256_hex == sha256_hex
 }
 
-fn matches_frozen_run(
-    stage: &Manifest,
-    expected: &ExpectedStageRun<'_>,
-) -> bool {
+fn matches_frozen_run(stage: &Manifest, expected: &ExpectedStageRun<'_>) -> bool {
     let frozen = expected.provenance;
     stage.run_id == frozen.normal_data_comparison_run_id
         && stage.workspace_id == frozen.normal_data_workspace_id
