@@ -22470,16 +22470,14 @@ mod tests {
     #[test]
     fn thirty_second_migration_adds_empty_append_only_candidate_observation_history() {
         let database = TestDatabase::new();
-        fs::create_dir_all(database.path.parent().expect("database parent"))
-            .expect("parent");
+        fs::create_dir_all(database.path.parent().expect("database parent")).expect("parent");
         {
             let mut connection =
                 open_configured_connection(&database.path).expect("open old database");
             ensure_migration_history_table(&connection).expect("migration table");
             for migration in &MIGRATIONS[..31] {
                 let checksum = migration_checksum(migration.sql);
-                apply_migration(&mut connection, migration, &checksum)
-                    .expect("apply through v31");
+                apply_migration(&mut connection, migration, &checksum).expect("apply through v31");
             }
             let old_version: i64 = connection
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -22501,32 +22499,51 @@ mod tests {
             "normal_data_permission_grants",
         ] {
             let count: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("empty new migration");
             assert_eq!(count, 0, "{table} must remain empty after migration");
         }
-        assert!(connection.execute(
-            "INSERT INTO normal_data_retention_recovery_entries
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO normal_data_retention_recovery_entries
              (recovery_scan_id, stage_id, observed_state)
              VALUES ('invalid', 'invalid', 'PROMOTED')",
-            [],
-        ).is_err(), "unknown state and unregistered scan cannot be recorded");
+                    [],
+                )
+                .is_err(),
+            "unknown state and unregistered scan cannot be recorded"
+        );
         let scan = Uuid::new_v4().to_string();
-        connection.execute(
-            "INSERT INTO normal_data_retention_recovery_scans
+        connection
+            .execute(
+                "INSERT INTO normal_data_retention_recovery_scans
              (recovery_scan_id, observed_at_ms, entry_count) VALUES (?1, 1, 0)",
-            [&scan],
-        ).expect("empty snapshot header");
-        assert!(connection.execute(
-            "UPDATE normal_data_retention_recovery_scans SET entry_count = 1
+                [&scan],
+            )
+            .expect("empty snapshot header");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE normal_data_retention_recovery_scans SET entry_count = 1
              WHERE recovery_scan_id = ?1",
-            [&scan],
-        ).is_err(), "snapshot metadata is immutable");
-        assert!(connection.execute(
-            "DELETE FROM normal_data_retention_recovery_scans
+                    [&scan],
+                )
+                .is_err(),
+            "snapshot metadata is immutable"
+        );
+        assert!(
+            connection
+                .execute(
+                    "DELETE FROM normal_data_retention_recovery_scans
              WHERE recovery_scan_id = ?1",
-            [&scan],
-        ).is_err(), "snapshot cannot be removed");
+                    [&scan],
+                )
+                .is_err(),
+            "snapshot cannot be removed"
+        );
     }
 
     #[test]
