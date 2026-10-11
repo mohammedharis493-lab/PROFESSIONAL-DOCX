@@ -8,7 +8,8 @@ use crate::{
     persistence::{self, PersistenceError},
 };
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
-use std::{collections::BTreeMap, path::Path};
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, fmt::Write, fs, path::Path};
 use uuid::Uuid;
 
 const MAX_ENTRIES: usize = 10_000;
@@ -17,6 +18,8 @@ const MAX_ENTRIES: usize = 10_000;
 pub(crate) struct RetentionRecoverySnapshot {
     pub recovery_scan_id: String,
     pub observed_at_ms: i64,
+    /// None only for older v32 scans that could not record their root.
+    pub canonical_root_sha256_hex: Option<String>,
     pub entries: Vec<RetentionCandidateInventoryEntry>,
 }
 
@@ -31,6 +34,46 @@ fn denied(why: &str) -> PersistenceError {
     PersistenceError::Configuration(format!(
         "Normal Data candidate observation unavailable: {why}"
     ))
+}
+
+/// Bind snapshots to the canonical root path without persisting an absolute
+/// path. This is a comparison scope, not a filesystem ownership attestation.
+/// It cannot detect replacement of the contents at the SAME path by a hostile
+/// local owner; formal controlled-evidence capture remains disabled.
+fn canonical_root_digest(root: &Path) -> Result<String, PersistenceError> {
+    let meta = fs::symlink_metadata(root)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(denied("retention root must be a real directory"));
+    }
+    let canonical = fs::canonicalize(root)?;
+    let mut hash = Sha256::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        hash.update(b"pdox:retention-root:unix:v1\0");
+        hash.update(canonical.as_os_str().as_bytes());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        hash.update(b"pdox:retention-root:windows:v1\0");
+        for unit in canonical.as_os_str().encode_wide() {
+            hash.update(unit.to_le_bytes());
+        }
+    }
+    let mut output = String::with_capacity(64);
+    for byte in hash.finalize() {
+        write!(&mut output, "{byte:02x}").expect("hex encoding is infallible");
+    }
+    Ok(output)
+}
+
+fn valid_scope_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 fn state_key(state: RetentionCandidateStatus) -> &'static str {
@@ -57,14 +100,19 @@ fn state_from_key(key: &str) -> Result<RetentionCandidateStatus, PersistenceErro
 /// Observe the candidate filesystem and registration ledger, then append the
 /// bounded identity/state-only snapshot as a single IMMEDIATE transaction.
 /// Failed entries roll back their header and all previous entries.
-/// No actor identity, paths, raw bytes, hashes, evidence IDs or grants stored.
+/// No actor identity, raw paths, source bytes/hashes, evidence IDs or grants
+/// stored; the canonical root *path digest* is scoped metadata only.
 /// Validity is true only AT inspection; never use this journal to authorize.
 pub(crate) fn record_retention_recovery_snapshot(
     database_path: &Path,
     retention_root: &Path,
 ) -> Result<RetentionRecoverySnapshot, PersistenceError> {
+    let root_scope = canonical_root_digest(retention_root)?;
     let entries =
         normal_data_retention_store::scan_retention_candidates(database_path, retention_root)?;
+    if canonical_root_digest(retention_root)? != root_scope {
+        return Err(denied("retention root changed during observation"));
+    }
     if entries.len() > MAX_ENTRIES {
         return Err(denied("too many observed candidates"));
     }
@@ -77,6 +125,11 @@ pub(crate) fn record_retention_recovery_snapshot(
              (recovery_scan_id, observed_at_ms, entry_count)
          VALUES (?1, ?2, ?3)",
         params![recovery_scan_id, observed_at_ms, entries.len() as i64],
+    )?;
+    tx.execute(
+        "INSERT INTO normal_data_retention_recovery_root_scopes
+             (recovery_scan_id, canonical_root_sha256_hex) VALUES (?1, ?2)",
+        params![recovery_scan_id, root_scope],
     )?;
     for entry in &entries {
         Uuid::parse_str(&entry.stage_id).map_err(|_| denied("invalid candidate stage ID"))?;
@@ -100,6 +153,7 @@ pub(crate) fn record_retention_recovery_snapshot(
     Ok(RetentionRecoverySnapshot {
         recovery_scan_id,
         observed_at_ms,
+        canonical_root_sha256_hex: Some(root_scope),
         entries,
     })
 }
@@ -112,15 +166,25 @@ pub(crate) fn read_retention_recovery_snapshot(
 ) -> Result<RetentionRecoverySnapshot, PersistenceError> {
     Uuid::parse_str(scan_id).map_err(|_| denied("invalid snapshot identifier"))?;
     let connection = persistence::open_configured_connection(database_path)?;
-    let header: Option<(i64, i64)> = connection
+    let header: Option<(i64, i64, Option<String>)> = connection
         .query_row(
-            "SELECT observed_at_ms, entry_count
-         FROM normal_data_retention_recovery_scans WHERE recovery_scan_id = ?1",
+            "SELECT s.observed_at_ms, s.entry_count, roots.canonical_root_sha256_hex
+             FROM normal_data_retention_recovery_scans s
+             LEFT JOIN normal_data_retention_recovery_root_scopes roots
+               ON roots.recovery_scan_id = s.recovery_scan_id
+             WHERE s.recovery_scan_id = ?1",
             [scan_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let (observed_at_ms, expected_count) = header.ok_or_else(|| denied("snapshot not found"))?;
+    let (observed_at_ms, expected_count, root_scope) =
+        header.ok_or_else(|| denied("snapshot not found"))?;
+    if root_scope
+        .as_deref()
+        .is_some_and(|value| !valid_scope_hash(value))
+    {
+        return Err(denied("invalid saved root scope digest"));
+    }
     if !(0..=MAX_ENTRIES as i64).contains(&expected_count) {
         return Err(denied("stored entry count exceeds limit"));
     }
@@ -150,22 +214,33 @@ pub(crate) fn read_retention_recovery_snapshot(
     Ok(RetentionRecoverySnapshot {
         recovery_scan_id: scan_id.to_owned(),
         observed_at_ms,
+        canonical_root_sha256_hex: root_scope,
         entries,
     })
 }
 
 /// Observe current disk + v31 registry and compare to a historical snapshot.
 /// Detect additions, removals and status transitions. Writes no records.
-/// The private root supplied by the caller MUST be the same root as before;
-/// a scan stores no absolute paths, and cannot independently prove root identity.
+/// Reject a different canonical root or a historical v32 scan without
+/// root scope. A path hash is NOT proof of directory ownership or integrity:
+/// malicious substitution under the SAME path remains outside this model.
 pub(crate) fn compare_retention_recovery_snapshot_to_live(
     database_path: &Path,
     retention_root: &Path,
     scan_id: &str,
 ) -> Result<Vec<RetentionRecoveryDrift>, PersistenceError> {
     let historical = read_retention_recovery_snapshot(database_path, scan_id)?;
+    let root_scope = canonical_root_digest(retention_root)?;
+    if historical.canonical_root_sha256_hex.as_deref() != Some(root_scope.as_str()) {
+        return Err(denied(
+            "snapshot does not bind this canonical retention root",
+        ));
+    }
     let current =
         normal_data_retention_store::scan_retention_candidates(database_path, retention_root)?;
+    if canonical_root_digest(retention_root)? != root_scope {
+        return Err(denied("retention root changed during live comparison"));
+    }
     if current.len() > MAX_ENTRIES {
         return Err(denied("current candidate list exceeds limit"));
     }
@@ -232,6 +307,118 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn canonical_root_scope_rejects_cross_root_and_unbound_legacy_comparisons() {
+        let fixture = Fixture::new();
+        let root = fixture.candidates();
+        let another = fixture.root.join("another-private-root");
+        fs::create_dir(&another).expect("other existing root");
+        let recorded = record_retention_recovery_snapshot(&fixture.database, &root)
+            .expect("record even an empty inventory");
+        let fingerprint = recorded
+            .canonical_root_sha256_hex
+            .as_ref()
+            .expect("v33 observation must record canonical root scope");
+        assert!(valid_scope_hash(fingerprint));
+        assert_eq!(recorded.entries.len(), 0);
+        let other = record_retention_recovery_snapshot(&fixture.database, &another)
+            .expect("separate root observation");
+        assert_ne!(
+            recorded.canonical_root_sha256_hex,
+            other.canonical_root_sha256_hex
+        );
+        assert!(
+            compare_retention_recovery_snapshot_to_live(
+                &fixture.database,
+                &another,
+                &recorded.recovery_scan_id,
+            )
+            .is_err(),
+            "different empty roots cannot appear to have no drift"
+        );
+        assert!(
+            compare_retention_recovery_snapshot_to_live(
+                &fixture.database,
+                &root,
+                &other.recovery_scan_id,
+            )
+            .is_err(),
+            "root mismatch must fail in either direction"
+        );
+        assert!(compare_retention_recovery_snapshot_to_live(
+            &fixture.database,
+            &root,
+            &recorded.recovery_scan_id,
+        )
+        .expect("same canonical root")
+        .is_empty());
+        assert_eq!(
+            read_retention_recovery_snapshot(&fixture.database, &recorded.recovery_scan_id)
+                .expect("immutable scope persisted"),
+            recorded,
+        );
+
+        let conn =
+            persistence::open_configured_connection(&fixture.database).expect("v33 connection");
+        let legacy_scan_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO normal_data_retention_recovery_scans
+             (recovery_scan_id, observed_at_ms, entry_count) VALUES (?1, 1, 0)",
+            [&legacy_scan_id],
+        )
+        .expect("a pre-v33 header has no root fingerprint");
+        let legacy = read_retention_recovery_snapshot(&fixture.database, &legacy_scan_id)
+            .expect("old unscoped header remains readable");
+        assert_eq!(legacy.canonical_root_sha256_hex, None);
+        assert!(
+            compare_retention_recovery_snapshot_to_live(&fixture.database, &root, &legacy_scan_id,)
+                .is_err(),
+            "legacy unscoped observations cannot be cross-root drift inputs"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_retention_recovery_root_scopes
+             SET canonical_root_sha256_hex = ?1
+             WHERE recovery_scan_id = ?2",
+                params![fingerprint, recorded.recovery_scan_id],
+            )
+            .is_err(),
+            "root scope is immutable"
+        );
+        assert!(
+            conn.execute(
+                "DELETE FROM normal_data_retention_recovery_root_scopes
+             WHERE recovery_scan_id = ?1",
+                [&recorded.recovery_scan_id],
+            )
+            .is_err(),
+            "saved root binding cannot be deleted"
+        );
+        let scope_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_recovery_root_scopes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scope count");
+        assert_eq!(
+            scope_count, 2,
+            "neither comparisons nor legacy read append scope"
+        );
+        for table in [
+            "controlled_evidence_versions",
+            "workpaper_evidence_links",
+            "normal_data_permission_grants",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("formal side effects");
+            assert_eq!(count, 0, "{table} cannot be created by a scope observation");
         }
     }
 
@@ -356,6 +543,7 @@ mod tests {
         for table in [
             "normal_data_retention_recovery_scans",
             "normal_data_retention_recovery_entries",
+            "normal_data_retention_recovery_root_scopes",
         ] {
             let count: i64 = connection
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
