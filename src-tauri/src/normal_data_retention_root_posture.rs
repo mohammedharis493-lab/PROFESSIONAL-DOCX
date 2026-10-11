@@ -55,17 +55,23 @@ fn check_unix_component(
     let owner = metadata.uid();
     if is_final_root {
         if owner != effective_uid {
-            return Err(denied("private retention root is not owned by current effective user"));
+            return Err(denied(
+                "private retention root is not owned by current effective user",
+            ));
         }
         // Owner-only access is a necessary baseline, not an ACL attestation.
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(denied("private retention root is accessible to other Unix users"));
+            return Err(denied(
+                "private retention root is accessible to other Unix users",
+            ));
         }
     } else if owner != effective_uid && owner != 0 {
         return Err(denied("a retention-root ancestor has an unexpected owner"));
     }
     if metadata.permissions().mode() & 0o022 != 0 {
-        return Err(denied("a retention-root ancestor is writable by other Unix users"));
+        return Err(denied(
+            "a retention-root ancestor is writable by other Unix users",
+        ));
     }
     Ok(())
 }
@@ -75,11 +81,13 @@ fn inspect_unix_root(root: &Path) -> Result<(), PersistenceError> {
     use std::{fs, path::Component};
 
     if !root.is_absolute()
-        || root.components().any(|component| {
-            !matches!(component, Component::RootDir | Component::Normal(_))
-        })
+        || root
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
     {
-        return Err(denied("retention root must use an absolute, normalized path"));
+        return Err(denied(
+            "retention root must use an absolute, normalized path",
+        ));
     }
     let chain: Vec<_> = root.ancestors().collect();
     if chain.is_empty() {
@@ -91,7 +99,9 @@ fn inspect_unix_root(root: &Path) -> Result<(), PersistenceError> {
     for directory in chain.iter().rev() {
         let metadata = fs::symlink_metadata(directory)?;
         if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-            return Err(denied("retention root has a symlink or non-directory ancestor"));
+            return Err(denied(
+                "retention root has a symlink or non-directory ancestor",
+            ));
         }
     }
     if fs::canonicalize(root)? != root {
@@ -153,15 +163,27 @@ mod tests {
 
         fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o750))
             .expect("group-readable root");
-        assert!(check_unix_component(
-            &fs::symlink_metadata(&scratch.0).expect("metadata"), uid, true
-        ).is_err(), "private root must reject group read access");
+        assert!(
+            check_unix_component(
+                &fs::symlink_metadata(&scratch.0).expect("metadata"),
+                uid,
+                true
+            )
+            .is_err(),
+            "private root must reject group read access"
+        );
 
         fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o770))
             .expect("group writable root");
-        assert!(check_unix_component(
-            &fs::symlink_metadata(&scratch.0).expect("metadata"), uid, false
-        ).is_err(), "even an ancestor must reject group write access");
+        assert!(
+            check_unix_component(
+                &fs::symlink_metadata(&scratch.0).expect("metadata"),
+                uid,
+                false
+            )
+            .is_err(),
+            "even an ancestor must reject group write access"
+        );
     }
 
     #[cfg(unix)]
@@ -175,18 +197,20 @@ mod tests {
         fs::create_dir_all(&private).expect("private candidate root");
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700))
             .expect("private directory");
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777))
-            .expect("insecure ancestor");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).expect("insecure ancestor");
         assert!(inspect_retention_root_posture(&private).is_err());
 
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))
-            .expect("fix ancestor");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).expect("fix ancestor");
         let shortcut = scratch.0.join("shortcut");
         symlink(&parent, &shortcut).expect("link to parent");
-        assert!(inspect_retention_root_posture(&shortcut.join("private")).is_err(),
-            "intermediate symlink must fail closed");
-        assert!(inspect_retention_root_posture(&shortcut).is_err(),
-            "symlink used as root must fail closed");
+        assert!(
+            inspect_retention_root_posture(&shortcut.join("private")).is_err(),
+            "intermediate symlink must fail closed"
+        );
+        assert!(
+            inspect_retention_root_posture(&shortcut).is_err(),
+            "symlink used as root must fail closed"
+        );
     }
 
     #[cfg(not(unix))]
