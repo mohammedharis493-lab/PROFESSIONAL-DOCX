@@ -154,7 +154,8 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
         ));
     }
     let mut observed = Vec::new();
-    for directory in root.ancestors().rev() {
+    let ancestors: Vec<_> = root.ancestors().collect();
+    for directory in ancestors.into_iter().rev() {
         let (handle, volume_id, file_id) = open_windows_directory_without_following(directory)?;
         observed.push((directory.to_path_buf(), handle, volume_id, file_id));
     }
