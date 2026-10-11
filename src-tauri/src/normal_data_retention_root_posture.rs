@@ -165,7 +165,9 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
         let (_second_handle, second_volume, second_id) =
             open_windows_directory_without_following(path)?;
         if *volume_id != second_volume || *file_id != second_id {
-            return Err(denied("Windows directory identity changed during observation"));
+            return Err(denied(
+                "Windows directory identity changed during observation",
+            ));
         }
     }
     Ok(())
@@ -175,8 +177,7 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
 fn windows_is_plain_directory(attributes: u32) -> bool {
     const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    attributes & FILE_ATTRIBUTE_DIRECTORY != 0
-        && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    attributes & FILE_ATTRIBUTE_DIRECTORY != 0 && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
 #[cfg(windows)]
@@ -193,20 +194,16 @@ fn open_windows_directory_without_following(
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     let prior = fs::symlink_metadata(path)?;
-    if !prior.file_type().is_dir()
-        || !windows_is_plain_directory(prior.file_attributes())
-    {
+    if !prior.file_type().is_dir() || !windows_is_plain_directory(prior.file_attributes()) {
         return Err(denied("Windows path has a reparse point or non-directory"));
     }
     let mut options = OpenOptions::new();
-    options.access_mode(0).custom_flags(
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-    );
+    options
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     let handle = options.open(path)?;
     let opened = handle.metadata()?;
-    if !opened.file_type().is_dir()
-        || !windows_is_plain_directory(opened.file_attributes())
-    {
+    if !opened.file_type().is_dir() || !windows_is_plain_directory(opened.file_attributes()) {
         return Err(denied("Windows opened directory is a reparse point"));
     }
     let identity = filesystem::platform_file_metadata_from_open_file(&handle, &opened);
@@ -221,10 +218,10 @@ fn open_windows_directory_without_following(
     }
     // Catch an obvious path substitution after opening a no-follow handle.
     let latest = fs::symlink_metadata(path)?;
-    if !latest.file_type().is_dir()
-        || !windows_is_plain_directory(latest.file_attributes())
-    {
-        return Err(denied("Windows path changed to reparse point or non-directory"));
+    if !latest.file_type().is_dir() || !windows_is_plain_directory(latest.file_attributes()) {
+        return Err(denied(
+            "Windows path changed to reparse point or non-directory",
+        ));
     }
     Ok((handle, volume_id, file_id))
 }
