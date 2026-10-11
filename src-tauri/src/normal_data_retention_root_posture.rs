@@ -353,11 +353,19 @@ mod tests {
         assert!(!windows_is_plain_directory(0x400));
         assert!(!windows_is_plain_directory(0));
         let scratch = Scratch::new();
-        let observation = inspect_windows_root_path_shape(&scratch.0);
-        assert!(
-            observation.is_ok(),
-            "Windows root owner SID observation failed: {observation:?}"
-        );
+        // Windows runners may assign a freshly created directory to the
+        // Administrators SID instead of the runner's process-user SID.
+        // That must be an explicit owner-mismatch refusal, not an approval.
+        match inspect_windows_root_path_shape(&scratch.0) {
+            Ok(()) => {}
+            Err(PersistenceError::Configuration(message)) => {
+                assert!(
+                    message.contains("directory owner is not the current process token user"),
+                    "unexpected Windows owner observation error: {message}"
+                );
+            }
+            Err(error) => panic!("Windows owner observation failed unexpectedly: {error:?}"),
+        }
         assert!(inspect_retention_root_posture(&scratch.0).is_err());
         assert!(inspect_windows_root_path_shape(&scratch.0.join("missing")).is_err());
         assert!(inspect_windows_root_path_shape(Path::new("relative-root")).is_err());
