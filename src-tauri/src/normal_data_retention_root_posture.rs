@@ -1,4 +1,4 @@
-//! Native-only *observational* retention-root Unix posture inspection.
+//! Native-only *observational* retention-root platform posture inspection.
 //! This check NEVER authorizes capture, declares controlled custody, or creates
 //! a principal. A path check cannot lock filesystem objects or attest ACLs,
 //! ownership across a later write, mount policy, or power-loss durability.
@@ -13,15 +13,23 @@ fn denied(why: &str) -> PersistenceError {
 
 /// Observe a private retention root on the current host. This is an early,
 /// read-only prerequisite for a FUTURE protected-storage design, never a
-/// certificate or transfer token. Windows is deliberately unsupported until
-/// handle-based reparse/ACL/owner inspection and durable storage are designed.
+/// certificate or transfer token. Windows can observe path/reparse shapes,
+/// but it NEVER approves a root without verified owner/ACL and durability.
 /// This function is not connected to any Tauri command or promotion workflow.
 pub(crate) fn inspect_retention_root_posture(root: &Path) -> Result<(), PersistenceError> {
     #[cfg(unix)]
     {
         inspect_unix_root(root)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Validate shape only. This check is NOT an ACL/owner/durability proof.
+        inspect_windows_root_path_shape(root)?;
+        Err(denied(
+            "Windows owner/ACL and durable protected storage are not verified",
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = root;
         Err(denied(
@@ -119,6 +127,108 @@ fn inspect_unix_root(root: &Path) -> Result<(), PersistenceError> {
     Ok(())
 }
 
+/// Windows path-shape inspection is a diagnostic prerequisite ONLY. It does
+/// not examine the effective token, DACLs, owner SIDs, inherited permissions,
+/// remote share controls, or crash-consistent directory persistence.
+///
+/// Each ancestor is opened as a directory with OPEN_REPARSE_POINT so symbolic
+/// links, junctions and mount-point reparse attributes cannot silently be
+/// followed for the *final component*. Held handles are compared to second
+/// no-follow opens to detect some replacement races; this is not atomic with
+/// path traversal and never grants custody or authorization.
+#[cfg(windows)]
+fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> {
+    use std::path::{Component, Prefix};
+
+    let mut parts = root.components();
+    if !root.is_absolute()
+        || !matches!(
+            parts.next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+        )
+        || !matches!(parts.next(), Some(Component::RootDir))
+        || parts.any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(denied(
+            "Windows retention root must be an absolute local drive path",
+        ));
+    }
+    let mut observed = Vec::new();
+    for directory in root.ancestors().rev() {
+        let (handle, volume_id, file_id) = open_windows_directory_without_following(directory)?;
+        observed.push((directory.to_path_buf(), handle, volume_id, file_id));
+    }
+    if observed.is_empty() {
+        return Err(denied("Windows retention root has no directory components"));
+    }
+    for (path, _held_handle, volume_id, file_id) in &observed {
+        let (_second_handle, second_volume, second_id) =
+            open_windows_directory_without_following(path)?;
+        if *volume_id != second_volume || *file_id != second_id {
+            return Err(denied("Windows directory identity changed during observation"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_is_plain_directory(attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+#[cfg(windows)]
+fn open_windows_directory_without_following(
+    path: &Path,
+) -> Result<(std::fs::File, Vec<u8>, Vec<u8>), PersistenceError> {
+    use crate::filesystem;
+    use std::fs::{self, OpenOptions};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    // Rust OpenOptions custom_flags maps to Win32 dwFlagsAndAttributes.
+    // BACKUP_SEMANTICS opens directories. OPEN_REPARSE_POINT prevents the
+    // terminal junction/symlink from resolving before handle inspection.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let prior = fs::symlink_metadata(path)?;
+    if !prior.file_type().is_dir()
+        || !windows_is_plain_directory(prior.file_attributes())
+    {
+        return Err(denied("Windows path has a reparse point or non-directory"));
+    }
+    let mut options = OpenOptions::new();
+    options.access_mode(0).custom_flags(
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+    );
+    let handle = options.open(path)?;
+    let opened = handle.metadata()?;
+    if !opened.file_type().is_dir()
+        || !windows_is_plain_directory(opened.file_attributes())
+    {
+        return Err(denied("Windows opened directory is a reparse point"));
+    }
+    let identity = filesystem::platform_file_metadata_from_open_file(&handle, &opened);
+    let volume_id = identity
+        .volume_identity
+        .ok_or_else(|| denied("Windows directory volume identity unavailable"))?;
+    let file_id = identity
+        .filesystem_identity
+        .ok_or_else(|| denied("Windows directory file identity unavailable"))?;
+    if volume_id.is_empty() || file_id.is_empty() {
+        return Err(denied("Windows directory identity is incomplete"));
+    }
+    // Catch an obvious path substitution after opening a no-follow handle.
+    let latest = fs::symlink_metadata(path)?;
+    if !latest.file_type().is_dir()
+        || !windows_is_plain_directory(latest.file_attributes())
+    {
+        return Err(denied("Windows path changed to reparse point or non-directory"));
+    }
+    Ok((handle, volume_id, file_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +321,21 @@ mod tests {
             inspect_retention_root_posture(&shortcut).is_err(),
             "symlink used as root must fail closed"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_root_path_probe_checks_attributes_and_never_authorizes() {
+        assert!(windows_is_plain_directory(0x10));
+        assert!(!windows_is_plain_directory(0x410));
+        assert!(!windows_is_plain_directory(0x400));
+        assert!(!windows_is_plain_directory(0));
+        let scratch = Scratch::new();
+        assert!(inspect_windows_root_path_shape(&scratch.0).is_ok());
+        assert!(inspect_retention_root_posture(&scratch.0).is_err());
+        assert!(inspect_windows_root_path_shape(&scratch.0.join("missing")).is_err());
+        assert!(inspect_windows_root_path_shape(Path::new("relative-root")).is_err());
+        assert!(inspect_windows_root_path_shape(&scratch.0.join("..").join("different")).is_err());
     }
 
     #[cfg(not(unix))]
