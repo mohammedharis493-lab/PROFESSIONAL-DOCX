@@ -187,6 +187,9 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
         return Err(denied("Windows owner handle does not match retained root"));
     }
     crate::normal_data_windows_owner_probe::observe_owner_matches_process_user(&owner_handle)?;
+    // A readable, non-null, structurally valid DACL is another *necessary*
+    // observation. The ACE grants themselves remain unevaluated.
+    let _ = crate::normal_data_windows_dacl_probe::observe_dacl_structure(&owner_handle)?;
     Ok(())
 }
 
@@ -370,6 +373,25 @@ mod tests {
         assert!(inspect_windows_root_path_shape(&scratch.0.join("missing")).is_err());
         assert!(inspect_windows_root_path_shape(Path::new("relative-root")).is_err());
         assert!(inspect_windows_root_path_shape(&scratch.0.join("..").join("different")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_root_dacl_is_read_from_same_identity_bound_handle() {
+        let scratch = Scratch::new();
+        const READ_CONTROL: u32 = 0x0002_0000;
+        let (handle, volume, identity) =
+            open_windows_directory_with_access(&scratch.0, READ_CONTROL)
+                .expect("new local test directory must be handle-observable");
+        assert!(!volume.is_empty() && !identity.is_empty());
+        let structure = crate::normal_data_windows_dacl_probe::observe_dacl_structure(&handle)
+            .expect("test directory should expose a non-null structurally valid DACL");
+        assert!(structure.ace_count > 0);
+        assert!(structure.bytes_in_use >= 8);
+        assert!(
+            inspect_retention_root_posture(&scratch.0).is_err(),
+            "DACL readability does not permit controlled-custody approval"
+        );
     }
 
     #[cfg(not(unix))]
