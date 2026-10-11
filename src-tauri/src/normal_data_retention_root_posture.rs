@@ -23,10 +23,11 @@ pub(crate) fn inspect_retention_root_posture(root: &Path) -> Result<(), Persiste
     }
     #[cfg(windows)]
     {
-        // Validate shape only. This check is NOT an ACL/owner/durability proof.
+        // Observe no-follow path identity and the root's process-user owner SID.
+        // Neither observation is a DACL/ACL or durable-custody proof.
         inspect_windows_root_path_shape(root)?;
         Err(denied(
-            "Windows owner/ACL and durable protected storage are not verified",
+            "Windows DACL permissions and durable protected storage are not verified",
         ))
     }
     #[cfg(not(any(unix, windows)))]
@@ -130,6 +131,8 @@ fn inspect_unix_root(root: &Path) -> Result<(), PersistenceError> {
 /// Windows path-shape inspection is a diagnostic prerequisite ONLY. It does
 /// not examine the effective token, DACLs, owner SIDs, inherited permissions,
 /// remote share controls, or crash-consistent directory persistence.
+/// It checks only the final root owner SID against the current process token
+/// user SID; it does not inspect DACLs, ACEs, groups or token impersonation.
 ///
 /// Each ancestor is opened as a directory with OPEN_REPARSE_POINT so symbolic
 /// links, junctions and mount-point reparse attributes cannot silently be
@@ -171,6 +174,19 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
             ));
         }
     }
+    // The owner query needs READ_CONTROL, which the shape handles purposely
+    // avoid requesting. A second no-follow handle must match the held root
+    // volume/file ID before its owner SID is compared with the process token.
+    let (root_path, _, volume_id, file_id) = observed
+        .last()
+        .ok_or_else(|| denied("Windows retention root was not observed"))?;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    let (owner_handle, owner_volume, owner_file) =
+        open_windows_directory_with_access(root_path, READ_CONTROL)?;
+    if *volume_id != owner_volume || *file_id != owner_file {
+        return Err(denied("Windows owner handle does not match retained root"));
+    }
+    crate::normal_data_windows_owner_probe::observe_owner_matches_process_user(&owner_handle)?;
     Ok(())
 }
 
@@ -184,6 +200,14 @@ fn windows_is_plain_directory(attributes: u32) -> bool {
 #[cfg(windows)]
 fn open_windows_directory_without_following(
     path: &Path,
+) -> Result<(std::fs::File, Vec<u8>, Vec<u8>), PersistenceError> {
+    open_windows_directory_with_access(path, 0)
+}
+
+#[cfg(windows)]
+fn open_windows_directory_with_access(
+    path: &Path,
+    requested_access: u32,
 ) -> Result<(std::fs::File, Vec<u8>, Vec<u8>), PersistenceError> {
     use crate::filesystem;
     use std::fs::{self, OpenOptions};
@@ -200,7 +224,7 @@ fn open_windows_directory_without_following(
     }
     let mut options = OpenOptions::new();
     options
-        .access_mode(0)
+        .access_mode(requested_access)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     let handle = options.open(path)?;
     let opened = handle.metadata()?;
@@ -329,7 +353,10 @@ mod tests {
         assert!(!windows_is_plain_directory(0x400));
         assert!(!windows_is_plain_directory(0));
         let scratch = Scratch::new();
-        assert!(inspect_windows_root_path_shape(&scratch.0).is_ok());
+        assert!(
+            inspect_windows_root_path_shape(&scratch.0).is_ok(),
+            "new local test root must match the actual process token owner SID"
+        );
         assert!(inspect_retention_root_posture(&scratch.0).is_err());
         assert!(inspect_windows_root_path_shape(&scratch.0.join("missing")).is_err());
         assert!(inspect_windows_root_path_shape(Path::new("relative-root")).is_err());
