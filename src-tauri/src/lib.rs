@@ -23,6 +23,8 @@ mod normal_data_retention_policy;
 #[allow(dead_code)]
 mod normal_data_retention_recovery_journal;
 #[allow(dead_code)]
+mod normal_data_retention_root_posture;
+#[allow(dead_code)]
 mod normal_data_retention_store;
 mod normal_data_run;
 pub mod normal_data_source_reader;
