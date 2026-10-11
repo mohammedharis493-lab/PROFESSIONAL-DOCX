@@ -102,9 +102,7 @@ fn validate_dacl_shape(
 
 /// Inspect a directory handle already opened with READ_CONTROL and bound to
 /// its expected volume/file identity by the caller. Never returns an approval.
-pub(crate) fn observe_dacl_structure(
-    handle: &File,
-) -> Result<WindowsDaclShape, PersistenceError> {
+pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, PersistenceError> {
     const SE_FILE_OBJECT: u32 = 1;
     const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
     const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
@@ -163,7 +161,8 @@ mod tests {
                 acl_bytes_in_use: 8,
                 acl_bytes_free: 0,
             }
-        ).is_err());
+        )
+        .is_err());
         assert!(validate_dacl_shape(
             true,
             AclSizeInformation {
@@ -171,7 +170,8 @@ mod tests {
                 acl_bytes_in_use: u32::MAX,
                 acl_bytes_free: 1,
             }
-        ).is_err());
+        )
+        .is_err());
         assert_eq!(
             validate_dacl_shape(
                 true,
@@ -180,7 +180,8 @@ mod tests {
                     acl_bytes_in_use: 24,
                     acl_bytes_free: 8,
                 }
-            ).expect("structurally plausible ACL"),
+            )
+            .expect("structurally plausible ACL"),
             WindowsDaclShape {
                 ace_count: 1,
                 bytes_in_use: 24,
