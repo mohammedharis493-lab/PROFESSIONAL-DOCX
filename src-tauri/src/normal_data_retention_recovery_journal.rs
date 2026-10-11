@@ -179,7 +179,10 @@ pub(crate) fn read_retention_recovery_snapshot(
         .optional()?;
     let (observed_at_ms, expected_count, root_scope) =
         header.ok_or_else(|| denied("snapshot not found"))?;
-    if root_scope.as_deref().is_some_and(|value| !valid_scope_hash(value)) {
+    if root_scope
+        .as_deref()
+        .is_some_and(|value| !valid_scope_hash(value))
+    {
         return Err(denied("invalid saved root scope digest"));
     }
     if !(0..=MAX_ENTRIES as i64).contains(&expected_count) {
@@ -229,7 +232,9 @@ pub(crate) fn compare_retention_recovery_snapshot_to_live(
     let historical = read_retention_recovery_snapshot(database_path, scan_id)?;
     let root_scope = canonical_root_digest(retention_root)?;
     if historical.canonical_root_sha256_hex.as_deref() != Some(root_scope.as_str()) {
-        return Err(denied("snapshot does not bind this canonical retention root"));
+        return Err(denied(
+            "snapshot does not bind this canonical retention root",
+        ));
     }
     let current =
         normal_data_retention_store::scan_retention_candidates(database_path, retention_root)?;
@@ -321,33 +326,43 @@ mod tests {
         assert_eq!(recorded.entries.len(), 0);
         let other = record_retention_recovery_snapshot(&fixture.database, &another)
             .expect("separate root observation");
-        assert_ne!(recorded.canonical_root_sha256_hex, other.canonical_root_sha256_hex);
-        assert!(compare_retention_recovery_snapshot_to_live(
-            &fixture.database,
-            &another,
-            &recorded.recovery_scan_id,
-        )
-        .is_err(), "different empty roots cannot appear to have no drift");
+        assert_ne!(
+            recorded.canonical_root_sha256_hex,
+            other.canonical_root_sha256_hex
+        );
+        assert!(
+            compare_retention_recovery_snapshot_to_live(
+                &fixture.database,
+                &another,
+                &recorded.recovery_scan_id,
+            )
+            .is_err(),
+            "different empty roots cannot appear to have no drift"
+        );
+        assert!(
+            compare_retention_recovery_snapshot_to_live(
+                &fixture.database,
+                &root,
+                &other.recovery_scan_id,
+            )
+            .is_err(),
+            "root mismatch must fail in either direction"
+        );
         assert!(compare_retention_recovery_snapshot_to_live(
             &fixture.database,
             &root,
-            &other.recovery_scan_id,
-        )
-        .is_err(), "root mismatch must fail in either direction");
-        assert!(compare_retention_recovery_snapshot_to_live(
-            &fixture.database,
-            &root,
             &recorded.recovery_scan_id,
         )
-        .expect("same canonical root").is_empty());
+        .expect("same canonical root")
+        .is_empty());
         assert_eq!(
             read_retention_recovery_snapshot(&fixture.database, &recorded.recovery_scan_id)
                 .expect("immutable scope persisted"),
             recorded,
         );
 
-        let conn = persistence::open_configured_connection(&fixture.database)
-            .expect("v33 connection");
+        let conn =
+            persistence::open_configured_connection(&fixture.database).expect("v33 connection");
         let legacy_scan_id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO normal_data_retention_recovery_scans
@@ -358,33 +373,51 @@ mod tests {
         let legacy = read_retention_recovery_snapshot(&fixture.database, &legacy_scan_id)
             .expect("old unscoped header remains readable");
         assert_eq!(legacy.canonical_root_sha256_hex, None);
-        assert!(compare_retention_recovery_snapshot_to_live(
-            &fixture.database,
-            &root,
-            &legacy_scan_id,
-        ).is_err(), "legacy unscoped observations cannot be cross-root drift inputs");
-        assert!(conn.execute(
-            "UPDATE normal_data_retention_recovery_root_scopes
+        assert!(
+            compare_retention_recovery_snapshot_to_live(&fixture.database, &root, &legacy_scan_id,)
+                .is_err(),
+            "legacy unscoped observations cannot be cross-root drift inputs"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE normal_data_retention_recovery_root_scopes
              SET canonical_root_sha256_hex = ?1
              WHERE recovery_scan_id = ?2",
-            params![fingerprint, recorded.recovery_scan_id],
-        ).is_err(), "root scope is immutable");
-        assert!(conn.execute(
-            "DELETE FROM normal_data_retention_recovery_root_scopes
+                params![fingerprint, recorded.recovery_scan_id],
+            )
+            .is_err(),
+            "root scope is immutable"
+        );
+        assert!(
+            conn.execute(
+                "DELETE FROM normal_data_retention_recovery_root_scopes
              WHERE recovery_scan_id = ?1",
-            [&recorded.recovery_scan_id],
-        ).is_err(), "saved root binding cannot be deleted");
-        let scope_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM normal_data_retention_recovery_root_scopes",
-            [],
-            |row| row.get(0),
-        ).expect("scope count");
-        assert_eq!(scope_count, 2, "neither comparisons nor legacy read append scope");
-        for table in ["controlled_evidence_versions", "workpaper_evidence_links",
-                      "normal_data_permission_grants"] {
-            let count: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0),
-            ).expect("formal side effects");
+                [&recorded.recovery_scan_id],
+            )
+            .is_err(),
+            "saved root binding cannot be deleted"
+        );
+        let scope_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_recovery_root_scopes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scope count");
+        assert_eq!(
+            scope_count, 2,
+            "neither comparisons nor legacy read append scope"
+        );
+        for table in [
+            "controlled_evidence_versions",
+            "workpaper_evidence_links",
+            "normal_data_permission_grants",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("formal side effects");
             assert_eq!(count, 0, "{table} cannot be created by a scope observation");
         }
     }

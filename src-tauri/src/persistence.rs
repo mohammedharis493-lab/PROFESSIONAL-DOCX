@@ -22479,64 +22479,90 @@ mod tests {
             .expect("create parent");
         let legacy_scan = Uuid::new_v4().to_string();
         {
-            let mut connection = open_configured_connection(&database.path)
-                .expect("open v32 database");
+            let mut connection =
+                open_configured_connection(&database.path).expect("open v32 database");
             ensure_migration_history_table(&connection).expect("history");
             for migration in &MIGRATIONS[..32] {
                 let checksum = migration_checksum(migration.sql);
-                apply_migration(&mut connection, migration, &checksum)
-                    .expect("apply through v32");
+                apply_migration(&mut connection, migration, &checksum).expect("apply through v32");
             }
-            let prior: i64 = connection.query_row(
-                "PRAGMA user_version", [], |row| row.get(0),
-            ).expect("prior schema");
+            let prior: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("prior schema");
             assert_eq!(prior, 32);
-            connection.execute(
-                "INSERT INTO normal_data_retention_recovery_scans
+            connection
+                .execute(
+                    "INSERT INTO normal_data_retention_recovery_scans
                  (recovery_scan_id, observed_at_ms, entry_count) VALUES (?1, 1, 0)",
-                [&legacy_scan],
-            ).expect("historical root-unbound observation");
+                    [&legacy_scan],
+                )
+                .expect("historical root-unbound observation");
         }
         initialize_database(&database.path).expect("v32 to v33 migration");
         let connection = open_configured_connection(&database.path).expect("v33");
-        let version: i64 = connection.query_row(
-            "PRAGMA user_version", [], |row| row.get(0),
-        ).expect("current version");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("current version");
         assert_eq!(version, 33);
-        let history: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_retention_recovery_scans
+        let history: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_recovery_scans
              WHERE recovery_scan_id = ?1",
-            [&legacy_scan], |row| row.get(0),
-        ).expect("legacy observation retained");
+                [&legacy_scan],
+                |row| row.get(0),
+            )
+            .expect("legacy observation retained");
         assert_eq!(history, 1);
-        let scopes: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM normal_data_retention_recovery_root_scopes",
-            [], |row| row.get(0),
-        ).expect("new scoped binding table");
-        assert_eq!(scopes, 0, "old scans cannot receive invented root attestations");
+        let scopes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_retention_recovery_root_scopes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("new scoped binding table");
+        assert_eq!(
+            scopes, 0,
+            "old scans cannot receive invented root attestations"
+        );
         let unknown_id = Uuid::new_v4().to_string();
-        assert!(connection.execute(
-            "INSERT INTO normal_data_retention_recovery_root_scopes
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO normal_data_retention_recovery_root_scopes
              (recovery_scan_id, canonical_root_sha256_hex) VALUES (?1, ?2)",
-            params![unknown_id, "a".repeat(64)],
-        ).is_err(), "root scopes require an existing scan foreign key");
-        assert!(connection.execute(
-            "INSERT INTO normal_data_retention_recovery_root_scopes
+                    params![unknown_id, "a".repeat(64)],
+                )
+                .is_err(),
+            "root scopes require an existing scan foreign key"
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO normal_data_retention_recovery_root_scopes
              (recovery_scan_id, canonical_root_sha256_hex) VALUES (?1, 'INVALID')",
-            [&legacy_scan],
-        ).is_err(), "root fingerprints must be lowercase 64-hex SHA-256");
+                    [&legacy_scan],
+                )
+                .is_err(),
+            "root fingerprints must be lowercase 64-hex SHA-256"
+        );
         for table in [
-            "controlled_evidence_versions", "workpaper_evidence_links",
-            "normal_data_permission_grants", "normal_data_retention_candidates",
+            "controlled_evidence_versions",
+            "workpaper_evidence_links",
+            "normal_data_permission_grants",
+            "normal_data_retention_candidates",
         ] {
-            let count: i64 = connection.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0),
-            ).expect("no formal or permission side effects");
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("no formal or permission side effects");
             assert_eq!(count, 0, "{table} remains untouched by v33 migration");
         }
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0),
-        ).expect("tracked schema upgrade");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("tracked schema upgrade");
         assert_eq!(count, 33);
     }
 
