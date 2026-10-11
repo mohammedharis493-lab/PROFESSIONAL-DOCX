@@ -353,9 +353,10 @@ mod tests {
         assert!(!windows_is_plain_directory(0x400));
         assert!(!windows_is_plain_directory(0));
         let scratch = Scratch::new();
+        let observation = inspect_windows_root_path_shape(&scratch.0);
         assert!(
-            inspect_windows_root_path_shape(&scratch.0).is_ok(),
-            "new local test root must match the actual process token owner SID"
+            observation.is_ok(),
+            "Windows root owner SID observation failed: {observation:?}"
         );
         assert!(inspect_retention_root_posture(&scratch.0).is_err());
         assert!(inspect_windows_root_path_shape(&scratch.0.join("missing")).is_err());
