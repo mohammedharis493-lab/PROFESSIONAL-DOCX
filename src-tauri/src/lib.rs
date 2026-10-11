@@ -34,6 +34,9 @@ mod normal_data_stage_recovery_journal;
 mod normal_data_staged_policy;
 #[allow(dead_code)]
 mod normal_data_staging;
+#[cfg(windows)]
+#[allow(dead_code)]
+mod normal_data_windows_owner_probe;
 mod persistence;
 mod preview;
 mod reconciliation;
