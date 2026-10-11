@@ -36,6 +36,9 @@ mod normal_data_staged_policy;
 mod normal_data_staging;
 #[cfg(windows)]
 #[allow(dead_code)]
+mod normal_data_windows_dacl_probe;
+#[cfg(windows)]
+#[allow(dead_code)]
 mod normal_data_windows_owner_probe;
 mod persistence;
 mod preview;
