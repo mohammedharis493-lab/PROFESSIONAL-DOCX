@@ -105,13 +105,7 @@ pub(crate) fn observe_owner_matches_process_user(handle: &File) -> Result<(), Pe
     }
     let mut required_bytes = 0u32;
     let first_call = unsafe {
-        GetTokenInformation(
-            token.0,
-            TOKEN_USER,
-            ptr::null_mut(),
-            0,
-            &mut required_bytes,
-        )
+        GetTokenInformation(token.0, TOKEN_USER, ptr::null_mut(), 0, &mut required_bytes)
     };
     if first_call != 0
         || std::io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER)
@@ -142,7 +136,9 @@ pub(crate) fn observe_owner_matches_process_user(handle: &File) -> Result<(), Pe
         return Err(denied("process token has no user SID"));
     }
     if unsafe { EqualSid(owner_sid, user_sid) } == 0 {
-        return Err(denied("directory owner is not the current process token user"));
+        return Err(denied(
+            "directory owner is not the current process token user",
+        ));
     }
     Ok(())
 }
