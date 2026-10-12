@@ -148,6 +148,12 @@ fn validate_acl_header(bytes: &[u8], size: &AclSizeInformation) -> Result<(), Pe
     Ok(())
 }
 
+fn acl_metadata_unchanged(before: &AclSizeInformation, after: &AclSizeInformation) -> bool {
+    before.ace_count == after.ace_count
+        && before.acl_bytes_in_use == after.acl_bytes_in_use
+        && before.acl_bytes_free == after.acl_bytes_free
+}
+
 fn validate_ace_bounds(
     dacl_address: usize,
     bytes_in_use: u32,
@@ -350,6 +356,22 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
+    // Re-query after traversal rather than silently relying on a stale ACL
+    // metadata snapshot. This is NOT a concurrent-mutation or race guarantee.
+    let mut after = AclSizeInformation::default();
+    let repeat_ok = unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut after as *mut AclSizeInformation).cast(),
+            std::mem::size_of::<AclSizeInformation>() as u32,
+            ACL_SIZE_INFORMATION_CLASS,
+        )
+    };
+    if repeat_ok == 0 || !acl_metadata_unchanged(&size, &after) {
+        return Err(denied(
+            "DACL metadata changed or became unreadable during observation",
+        ));
+    }
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
         bytes_in_use: bounds.bytes_in_use,
@@ -454,6 +476,29 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn post_inspection_acl_metadata_must_be_identical() {
+        let initial = AclSizeInformation {
+            ace_count: 2,
+            acl_bytes_in_use: 48,
+            acl_bytes_free: 8,
+        };
+        let mut next = AclSizeInformation {
+            ace_count: 2,
+            acl_bytes_in_use: 48,
+            acl_bytes_free: 8,
+        };
+        assert!(acl_metadata_unchanged(&initial, &next));
+        next.ace_count = 3;
+        assert!(!acl_metadata_unchanged(&initial, &next));
+        next.ace_count = 2;
+        next.acl_bytes_in_use = 44;
+        assert!(!acl_metadata_unchanged(&initial, &next));
+        next.acl_bytes_in_use = 48;
+        next.acl_bytes_free = 12;
+        assert!(!acl_metadata_unchanged(&initial, &next));
     }
 
     #[test]
