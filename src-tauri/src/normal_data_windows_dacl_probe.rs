@@ -375,6 +375,12 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
+    // A second bounded copy must still match the earlier ACL header. This
+    // detects snapshot differences, not every concurrent ACL mutation.
+    let repeated_acl_header = copy_ace_bytes(dacl, 8)?;
+    if repeated_acl_header != acl_header {
+        return Err(denied("DACL header changed during observation"));
+    }
     // Re-query after traversal rather than silently relying on a stale ACL
     // metadata snapshot. This is NOT a concurrent-mutation or race guarantee.
     let mut after = AclSizeInformation::default();
