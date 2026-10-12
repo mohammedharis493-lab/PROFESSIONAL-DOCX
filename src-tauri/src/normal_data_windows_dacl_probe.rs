@@ -151,6 +151,41 @@ fn validate_descriptor_dacl_extent(
     Ok(())
 }
 
+/// Cross-check the self-relative header's DACL DWORD offset against the
+/// separately queried DACL pointer. Only already-bounded, copied bytes
+/// are inspected; this is not an effective-permission decision.
+fn validate_self_relative_dacl_offset(
+    header: &[u8],
+    control: u16,
+    revision: u32,
+    descriptor_base: usize,
+    descriptor_bytes: u32,
+    dacl_address: usize,
+) -> Result<(), PersistenceError> {
+    const SECURITY_DESCRIPTOR_HEADER: usize = 20;
+    if header.len() != SECURITY_DESCRIPTOR_HEADER
+        || header[0] != 1
+        || revision != 1
+        || header[1] != 0
+        || u16::from_le_bytes([header[2], header[3]]) != control
+    {
+        return Err(denied("self-relative descriptor header inconsistent"));
+    }
+    let offset = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
+    if offset < SECURITY_DESCRIPTOR_HEADER as u32 || offset % 4 != 0 || offset > descriptor_bytes {
+        return Err(denied("self-relative DACL offset invalid"));
+    }
+    let actual_address = descriptor_base
+        .checked_add(offset as usize)
+        .ok_or_else(|| denied("self-relative DACL offset address overflow"))?;
+    if actual_address != dacl_address {
+        return Err(denied(
+            "self-relative DACL offset disagrees with native pointer",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -514,6 +549,17 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         dacl as usize,
         dacl_bytes,
     )?;
+    // Descriptor length and containment were checked before copying the
+    // fixed header into owned bytes. Never dereference an unchecked pointer.
+    let descriptor_header = copy_ace_bytes(descriptor.0, 20)?;
+    validate_self_relative_dacl_offset(
+        &descriptor_header,
+        descriptor_control,
+        descriptor_revision,
+        descriptor.0 as usize,
+        descriptor_bytes,
+        dacl as usize,
+    )?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -561,6 +607,40 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_relative_dacl_offset_must_match_native_pointer() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        header[16..20].copy_from_slice(&20u32.to_le_bytes());
+        let observe =
+            |bytes: &[u8]| validate_self_relative_dacl_offset(bytes, 0x8004, 1, 0x1000, 64, 0x1014);
+        assert!(observe(&header).is_ok());
+        assert!(observe(&header[..19]).is_err());
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 0, 0x1000, 64, 0x1014).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8000, 1, 0x1000, 64, 0x1014).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1018).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 1, usize::MAX - 8, 64, 0).is_err()
+        );
+        header[1] = 1;
+        assert!(observe(&header).is_err());
+        header[1] = 0;
+        for offset in [0u32, 16, 21, 68] {
+            header[16..20].copy_from_slice(&offset.to_le_bytes());
+            assert!(observe(&header).is_err());
+        }
+        header[16..20].copy_from_slice(&20u32.to_le_bytes());
+        header[0] = 2;
+        assert!(observe(&header).is_err());
+    }
 
     #[test]
     fn self_relative_descriptor_must_contain_entire_dacl() {
