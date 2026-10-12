@@ -187,6 +187,11 @@ fn validate_basic_ace_bytes(bytes: &[u8]) -> Result<u32, PersistenceError> {
     if bytes[0] != 0 && bytes[0] != 1 {
         return Err(denied("not a basic allow/deny ACE"));
     }
+    // Ordinary allow/deny ACEs only use documented inheritance flag bits.
+    // Audit-success/failure and reserved flags are not interpreted here.
+    if bytes[1] & !0x1f != 0 {
+        return Err(denied("basic access ACE contains unsupported flag bits"));
+    }
     if usize::from(u16::from_le_bytes([bytes[2], bytes[3]])) != bytes.len() {
         return Err(denied("basic ACE header length differs from copied bytes"));
     }
@@ -404,6 +409,15 @@ mod tests {
         );
         bytes[0] = 1;
         assert!(validate_basic_ace_bytes(&bytes).is_ok());
+        bytes[1] = 0x13; // recognized inheritance bits
+        assert!(validate_basic_ace_bytes(&bytes).is_ok());
+        bytes[1] = 0x40; // audit-success bit
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[1] = 0x80; // audit-failure bit
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[1] = 0x20; // reserved bit
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[1] = 0;
         bytes[0] = 5;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         bytes[0] = 0;
