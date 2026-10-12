@@ -368,7 +368,9 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         )
     };
     if repeat_ok == 0 || !acl_metadata_unchanged(&size, &after) {
-        return Err(denied("DACL metadata changed or became unreadable during observation"));
+        return Err(denied(
+            "DACL metadata changed or became unreadable during observation",
+        ));
     }
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
