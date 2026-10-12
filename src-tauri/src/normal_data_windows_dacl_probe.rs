@@ -129,10 +129,7 @@ fn validate_dacl_shape(
 /// Cross-check the owned ACL header against independent Win32 size metadata.
 /// ACL_REVISION (2) and ACL_REVISION_DS (4) are recognized structurally.
 /// This does not determine whether any entry confers a protected right.
-fn validate_acl_header(
-    bytes: &[u8],
-    size: &AclSizeInformation,
-) -> Result<(), PersistenceError> {
+fn validate_acl_header(bytes: &[u8], size: &AclSizeInformation) -> Result<(), PersistenceError> {
     if bytes.len() != 8 || (bytes[0] != 2 && bytes[0] != 4) || bytes[1] != 0 {
         return Err(denied("ACL header revision or reserved byte invalid"));
     }
