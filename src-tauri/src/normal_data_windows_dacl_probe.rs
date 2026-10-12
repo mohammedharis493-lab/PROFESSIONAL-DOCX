@@ -118,7 +118,9 @@ fn validate_descriptor_dacl_identity(
     queried_dacl: usize,
 ) -> Result<(), PersistenceError> {
     if !present || descriptor_dacl == 0 || descriptor_dacl != queried_dacl {
-        return Err(denied("Descriptor DACL identity differs from GetSecurityInfo"));
+        return Err(denied(
+            "Descriptor DACL identity differs from GetSecurityInfo",
+        ));
     }
     Ok(())
 }
@@ -438,11 +440,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     {
         return Err(denied("Descriptor DACL could not be inspected"));
     }
-    validate_descriptor_dacl_identity(
-        dacl_present != 0,
-        descriptor_dacl as usize,
-        dacl as usize,
-    )?;
+    validate_descriptor_dacl_identity(dacl_present != 0, descriptor_dacl as usize, dacl as usize)?;
     let dacl_defaulted_flag = dacl_defaulted != 0;
     if unsafe { IsValidAcl(dacl) } == 0 {
         return Err(denied("Windows reported an invalid DACL"));
