@@ -149,6 +149,10 @@ fn validate_acl_header(bytes: &[u8], size: &AclSizeInformation) -> Result<(), Pe
     Ok(())
 }
 
+fn acl_header_snapshots_match(before: &[u8], after: &[u8]) -> bool {
+    before.len() == 8 && after.len() == 8 && before == after
+}
+
 fn acl_metadata_unchanged(before: &AclSizeInformation, after: &AclSizeInformation) -> bool {
     before.ace_count == after.ace_count
         && before.acl_bytes_in_use == after.acl_bytes_in_use
@@ -378,7 +382,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     // A second bounded copy must still match the earlier ACL header. This
     // detects snapshot differences, not every concurrent ACL mutation.
     let repeated_acl_header = copy_ace_bytes(dacl, 8)?;
-    if repeated_acl_header != acl_header {
+    if !acl_header_snapshots_match(&acl_header, &repeated_acl_header) {
         return Err(denied("DACL header changed during observation"));
     }
     // Re-query after traversal rather than silently relying on a stale ACL
@@ -501,6 +505,20 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn post_inspection_acl_header_must_match_exactly() {
+        let before = [2u8, 0, 32, 0, 1, 0, 0, 0];
+        let mut after = before;
+        assert!(acl_header_snapshots_match(&before, &after));
+        after[4] = 2;
+        assert!(!acl_header_snapshots_match(&before, &after));
+        after = before;
+        after[6] = 1;
+        assert!(!acl_header_snapshots_match(&before, &after));
+        assert!(!acl_header_snapshots_match(&before[..7], &before));
+        assert!(!acl_header_snapshots_match(&before, &before[..7]));
     }
 
     #[test]
