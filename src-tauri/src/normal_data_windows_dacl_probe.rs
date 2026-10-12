@@ -87,6 +87,8 @@ pub(crate) struct WindowsDaclShape {
     pub(crate) ace_count: u32,
     pub(crate) bytes_in_use: u32,
     pub(crate) ace_bytes: u32,
+    pub(crate) basic_trustee_aces: u32,
+    pub(crate) unexamined_ace_types: u32,
 }
 
 /// Reject a NULL, empty, inconsistent or oversized DACL before any ACE is
@@ -174,10 +176,62 @@ fn read_ace_header(ace: WinHandle) -> Result<AceHeader, PersistenceError> {
     Ok(header)
 }
 
-fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<u32, PersistenceError> {
+/// Only ordinary ACCESS_ALLOWED_ACE (0) and ACCESS_DENIED_ACE (1) have
+/// the fixed [header, mask, SID] layout below. Object, callback, audit and
+/// other ACE types remain unexamined; none is ever treated as permission proof.
+fn validate_basic_ace_bytes(bytes: &[u8]) -> Result<u32, PersistenceError> {
+    const PREFIX: usize = 8;
+    if bytes.len() < PREFIX + 8 || bytes.len() % 4 != 0 {
+        return Err(denied("basic ACE is too short or misaligned"));
+    }
+    if bytes[0] != 0 && bytes[0] != 1 {
+        return Err(denied("not a basic allow/deny ACE"));
+    }
+    if usize::from(u16::from_le_bytes([bytes[2], bytes[3]])) != bytes.len() {
+        return Err(denied("basic ACE header length differs from copied bytes"));
+    }
+    // SID is revision, subauthority count, 6-byte identifier authority,
+    // followed by exactly count DWORD subauthorities.
+    let sid = &bytes[PREFIX..];
+    if sid[0] != 1 || sid[1] > 15 {
+        return Err(denied("basic ACE trustee SID revision/count invalid"));
+    }
+    let sid_length = 8usize
+        .checked_add(usize::from(sid[1]) * 4)
+        .ok_or_else(|| denied("basic ACE SID size overflow"))?;
+    if sid.len() != sid_length {
+        return Err(denied("basic ACE trustee SID size does not match ACE"));
+    }
+    Ok(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
+}
+
+fn copy_ace_bytes(ace: WinHandle, size: usize) -> Result<Vec<u8>, PersistenceError> {
+    let mut bytes = vec![0u8; size];
+    let mut bytes_read = 0usize;
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            ace as *const c_void,
+            bytes.as_mut_ptr().cast(),
+            size,
+            &mut bytes_read,
+        )
+    };
+    if ok == 0 || bytes_read != size {
+        return Err(denied("DACL basic ACE memory could not be copied safely"));
+    }
+    Ok(bytes)
+}
+
+fn inspect_ace_layout(
+    dacl: WinHandle,
+    bounds: DaclBounds,
+) -> Result<(u32, u32, u32), PersistenceError> {
     const ACL_HEADER_BYTES: u32 = 8;
     let dacl_address = dacl as usize;
     let mut offset = ACL_HEADER_BYTES;
+    let mut basic_trustee_aces = 0u32;
+    let mut unexamined_ace_types = 0u32;
 
     for index in 0..bounds.ace_count {
         let mut ace = ptr::null_mut();
@@ -194,18 +248,32 @@ fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<u32, Persis
             return Err(denied("DACL ACE pointer does not match contiguous layout"));
         }
         let header = read_ace_header(ace)?;
-        offset = validate_ace_bounds(
+        let next_offset = validate_ace_bounds(
             dacl_address,
             bounds.bytes_in_use,
             offset,
             ace as usize,
             header,
         )?;
+        if header._ace_type == 0 || header._ace_type == 1 {
+            // The ACE was already proven wholly inside the DACL allocation.
+            // Copy into owned memory before examining mask or SID fields.
+            let bytes = copy_ace_bytes(ace, usize::from(header.ace_size))?;
+            let _observed_mask = validate_basic_ace_bytes(&bytes)?;
+            basic_trustee_aces += 1;
+        } else {
+            unexamined_ace_types += 1;
+        }
+        offset = next_offset;
     }
     if offset != bounds.bytes_in_use {
         return Err(denied("DACL ACE sizes do not account for bytes in use"));
     }
-    Ok(offset - ACL_HEADER_BYTES)
+    Ok((
+        offset - ACL_HEADER_BYTES,
+        basic_trustee_aces,
+        unexamined_ace_types,
+    ))
 }
 
 /// Inspect a directory handle already opened with READ_CONTROL and bound to
@@ -252,11 +320,13 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         return Err(denied("DACL entry count and bounds could not be inspected"));
     }
     let bounds = validate_dacl_shape(true, size)?;
-    let ace_bytes = inspect_ace_layout(dacl, bounds)?;
+    let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
         bytes_in_use: bounds.bytes_in_use,
         ace_bytes,
+        basic_trustee_aces,
+        unexamined_ace_types,
     })
 }
 
@@ -316,6 +386,41 @@ mod tests {
         assert_eq!(copied._ace_flags, 3);
         assert_eq!(copied.ace_size, 20);
         assert!(read_ace_header(ptr::null_mut()).is_err());
+    }
+
+    #[test]
+    fn basic_ace_trustee_sid_and_mask_structure_is_bounded() {
+        let mut bytes = vec![0u8; 20];
+        bytes[0] = 0; // ACCESS_ALLOWED_ACE_TYPE
+        bytes[2..4].copy_from_slice(&20u16.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0x001f_01ffu32.to_le_bytes());
+        bytes[8] = 1; // SID revision
+        bytes[9] = 1; // one subauthority
+        bytes[15] = 5; // NT identifier authority
+        bytes[16..20].copy_from_slice(&32u32.to_le_bytes());
+        assert_eq!(
+            validate_basic_ace_bytes(&bytes).expect("bounded allow ACE"),
+            0x001f_01ff
+        );
+        bytes[0] = 1;
+        assert!(validate_basic_ace_bytes(&bytes).is_ok());
+        bytes[0] = 5;
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[0] = 0;
+        bytes[9] = 2;
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[9] = 1;
+        bytes[8] = 2;
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        bytes[8] = 1;
+        bytes[2] = 16;
+        assert!(validate_basic_ace_bytes(&bytes).is_err());
+        assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn basic_ace_copy_refuses_unreadable_memory() {
+        assert!(copy_ace_bytes(ptr::null_mut(), 20).is_err());
     }
 
     #[test]
