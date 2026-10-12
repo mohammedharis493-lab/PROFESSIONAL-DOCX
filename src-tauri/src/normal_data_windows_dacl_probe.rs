@@ -21,6 +21,7 @@ unsafe extern "system" {
         descriptor: *mut WinHandle,
     ) -> u32;
     fn IsValidAcl(acl: WinHandle) -> i32;
+    fn IsValidSid(sid: WinHandle) -> i32;
     fn GetAclInformation(
         acl: WinHandle,
         information: WinHandle,
@@ -234,6 +235,11 @@ fn validate_basic_ace_bytes(bytes: &[u8]) -> Result<u32, PersistenceError> {
         .ok_or_else(|| denied("basic ACE SID size overflow"))?;
     if sid.len() != sid_length {
         return Err(denied("basic ACE trustee SID size does not match ACE"));
+    }
+    // SID points exclusively into validated owned memory, never into an
+    // unchecked GetAce pointer. Let Windows reject structurally invalid SIDs.
+    if unsafe { IsValidSid(sid.as_ptr() as WinHandle) } == 0 {
+        return Err(denied("Windows rejected basic ACE trustee SID"));
     }
     Ok(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
 }
