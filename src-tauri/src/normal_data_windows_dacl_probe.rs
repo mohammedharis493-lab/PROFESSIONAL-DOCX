@@ -238,6 +238,16 @@ fn validate_basic_ace_bytes(bytes: &[u8]) -> Result<u32, PersistenceError> {
     Ok(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
 }
 
+/// Confirm the copied ACE still has the exact header that was bounded
+/// before the copy. This detects a mismatched snapshot, not all races.
+fn header_matches_copied_ace(header: AceHeader, bytes: &[u8]) -> bool {
+    bytes.len() == usize::from(header.ace_size)
+        && bytes.len() >= 4
+        && bytes[0] == header._ace_type
+        && bytes[1] == header._ace_flags
+        && bytes[2..4] == header.ace_size.to_le_bytes()
+}
+
 fn copy_ace_bytes(ace: WinHandle, size: usize) -> Result<Vec<u8>, PersistenceError> {
     let mut bytes = vec![0u8; size];
     let mut bytes_read = 0usize;
@@ -292,6 +302,9 @@ fn inspect_ace_layout(
             // The ACE was already proven wholly inside the DACL allocation.
             // Copy into owned memory before examining mask or SID fields.
             let bytes = copy_ace_bytes(ace, usize::from(header.ace_size))?;
+            if !header_matches_copied_ace(header, &bytes) {
+                return Err(denied("DACL ACE header changed between checked reads"));
+            }
             let _observed_mask = validate_basic_ace_bytes(&bytes)?;
             basic_trustee_aces += 1;
         } else {
@@ -527,6 +540,24 @@ mod tests {
         header[7] = 1;
         assert!(validate_acl_header(&header, &metadata).is_err());
         assert!(validate_acl_header(&header[..7], &metadata).is_err());
+    }
+
+    #[test]
+    fn copied_ace_header_must_equal_checked_header() {
+        let header = AceHeader {
+            _ace_type: 0,
+            _ace_flags: 0x10,
+            ace_size: 20,
+        };
+        let mut bytes = vec![0u8; 20];
+        bytes[..4].copy_from_slice(&[0, 0x10, 20, 0]);
+        assert!(header_matches_copied_ace(header, &bytes));
+        bytes[1] = 0;
+        assert!(!header_matches_copied_ace(header, &bytes));
+        bytes[1] = 0x10;
+        bytes[2] = 16;
+        assert!(!header_matches_copied_ace(header, &bytes));
+        assert!(!header_matches_copied_ace(header, &bytes[..12]));
     }
 
     #[test]
