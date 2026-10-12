@@ -148,6 +148,12 @@ fn validate_acl_header(bytes: &[u8], size: &AclSizeInformation) -> Result<(), Pe
     Ok(())
 }
 
+fn acl_metadata_unchanged(before: &AclSizeInformation, after: &AclSizeInformation) -> bool {
+    before.ace_count == after.ace_count
+        && before.acl_bytes_in_use == after.acl_bytes_in_use
+        && before.acl_bytes_free == after.acl_bytes_free
+}
+
 fn validate_ace_bounds(
     dacl_address: usize,
     bytes_in_use: u32,
@@ -361,10 +367,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
             ACL_SIZE_INFORMATION_CLASS,
         )
     };
-    if repeat_ok == 0 || after.ace_count != size.ace_count
-        || after.acl_bytes_in_use != size.acl_bytes_in_use
-        || after.acl_bytes_free != size.acl_bytes_free
-    {
+    if repeat_ok == 0 || !acl_metadata_unchanged(&size, &after) {
         return Err(denied("DACL metadata changed or became unreadable during observation"));
     }
     Ok(WindowsDaclShape {
@@ -471,6 +474,29 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn post_inspection_acl_metadata_must_be_identical() {
+        let initial = AclSizeInformation {
+            ace_count: 2,
+            acl_bytes_in_use: 48,
+            acl_bytes_free: 8,
+        };
+        let mut next = AclSizeInformation {
+            ace_count: 2,
+            acl_bytes_in_use: 48,
+            acl_bytes_free: 8,
+        };
+        assert!(acl_metadata_unchanged(&initial, &next));
+        next.ace_count = 3;
+        assert!(!acl_metadata_unchanged(&initial, &next));
+        next.ace_count = 2;
+        next.acl_bytes_in_use = 44;
+        assert!(!acl_metadata_unchanged(&initial, &next));
+        next.acl_bytes_in_use = 48;
+        next.acl_bytes_free = 12;
+        assert!(!acl_metadata_unchanged(&initial, &next));
     }
 
     #[test]
