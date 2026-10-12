@@ -621,7 +621,9 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         &descriptor_after,
         descriptor_bytes,
     ) {
-        return Err(denied("security descriptor bytes changed during observation"));
+        return Err(denied(
+            "security descriptor bytes changed during observation",
+        ));
     }
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
@@ -824,12 +826,29 @@ mod tests {
         after[3] ^= 1;
         assert!(!descriptor_snapshots_match(&header, &before, &after, 64));
 
-        assert!(!descriptor_snapshots_match(&header[..19], &before, &before, 64));
-        assert!(!descriptor_snapshots_match(&header, &before[..63], &before, 64));
-        assert!(!descriptor_snapshots_match(&header, &before, &before[..63], 64));
+        assert!(!descriptor_snapshots_match(
+            &header[..19],
+            &before,
+            &before,
+            64
+        ));
+        assert!(!descriptor_snapshots_match(
+            &header,
+            &before[..63],
+            &before,
+            64
+        ));
+        assert!(!descriptor_snapshots_match(
+            &header,
+            &before,
+            &before[..63],
+            64
+        ));
         assert!(!descriptor_snapshots_match(&header, &before, &before, 65));
         assert!(!descriptor_snapshots_match(&header, &before, &before, 19));
-        assert!(!descriptor_snapshots_match(&header, &before, &before, 262_145));
+        assert!(!descriptor_snapshots_match(
+            &header, &before, &before, 262_145
+        ));
     }
 
     #[test]
