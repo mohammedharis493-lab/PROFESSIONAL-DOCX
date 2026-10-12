@@ -21,6 +21,11 @@ unsafe extern "system" {
         descriptor: *mut WinHandle,
     ) -> u32;
     fn IsValidAcl(acl: WinHandle) -> i32;
+    fn GetSecurityDescriptorControl(
+        descriptor: WinHandle,
+        control: *mut u16,
+        revision: *mut u32,
+    ) -> i32;
     fn IsValidSid(sid: WinHandle) -> i32;
     fn GetAclInformation(
         acl: WinHandle,
@@ -90,12 +95,35 @@ pub(crate) struct WindowsDaclShape {
     pub(crate) ace_bytes: u32,
     pub(crate) basic_trustee_aces: u32,
     pub(crate) unexamined_ace_types: u32,
+    pub(crate) dacl_protected_flag: bool,
+    pub(crate) dacl_auto_inherited_flag: bool,
 }
 
 /// Reject a NULL, empty, inconsistent or oversized DACL before any ACE is
 /// dereferenced. This does NOT interpret trustee SIDs, effective group rights,
 /// deny ordering, inheritance semantics, or current-token permissions. A
 /// syntactically valid ACL may still grant Everyone full control.
+/// A present-DACL bit and supported descriptor revision are structural
+/// prerequisites only, not permission or inheritance decisions.
+fn inspect_descriptor_control(
+    control: u16,
+    revision: u32,
+) -> Result<(bool, bool), PersistenceError> {
+    const SE_DACL_PRESENT: u16 = 0x0004;
+    const SE_DACL_AUTO_INHERITED: u16 = 0x0400;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+
+    if revision != 1 || control & SE_DACL_PRESENT == 0 {
+        return Err(denied(
+            "Windows descriptor revision or DACL-presence flag invalid",
+        ));
+    }
+    Ok((
+        control & SE_DACL_PROTECTED != 0,
+        control & SE_DACL_AUTO_INHERITED != 0,
+    ))
+}
+
 fn validate_dacl_shape(
     has_dacl: bool,
     size: AclSizeInformation,
@@ -364,6 +392,20 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     if dacl.is_null() {
         return Err(denied("NULL DACL grants unrestricted access"));
     }
+    let mut descriptor_control = 0u16;
+    let mut descriptor_revision = 0u32;
+    if unsafe {
+        GetSecurityDescriptorControl(
+            descriptor.0,
+            &mut descriptor_control,
+            &mut descriptor_revision,
+        )
+    } == 0
+    {
+        return Err(denied("Windows descriptor control unavailable"));
+    }
+    let (dacl_protected_flag, dacl_auto_inherited_flag) =
+        inspect_descriptor_control(descriptor_control, descriptor_revision)?;
     if unsafe { IsValidAcl(dacl) } == 0 {
         return Err(denied("Windows reported an invalid DACL"));
     }
@@ -418,12 +460,29 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         ace_bytes,
         basic_trustee_aces,
         unexamined_ace_types,
+        dacl_protected_flag,
+        dacl_auto_inherited_flag,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn security_descriptor_control_requires_present_dacl() {
+        assert!(inspect_descriptor_control(0, 1).is_err());
+        assert!(inspect_descriptor_control(0x1400, 1).is_err());
+        assert!(inspect_descriptor_control(0x0004, 0).is_err());
+        assert_eq!(
+            inspect_descriptor_control(0x0004, 1).expect("present DACL"),
+            (false, false)
+        );
+        assert_eq!(
+            inspect_descriptor_control(0x1404, 1).expect("flags observed only"),
+            (true, true)
+        );
+    }
 
     #[test]
     fn null_empty_and_inconsistent_acl_shapes_fail_closed() {
