@@ -21,6 +21,8 @@ unsafe extern "system" {
         descriptor: *mut WinHandle,
     ) -> u32;
     fn IsValidAcl(acl: WinHandle) -> i32;
+    fn IsValidSecurityDescriptor(descriptor: WinHandle) -> i32;
+    fn GetSecurityDescriptorLength(descriptor: WinHandle) -> u32;
     fn GetSecurityDescriptorDacl(
         descriptor: WinHandle,
         dacl_present: *mut i32,
@@ -104,6 +106,7 @@ pub(crate) struct WindowsDaclShape {
     pub(crate) dacl_protected_flag: bool,
     pub(crate) dacl_auto_inherited_flag: bool,
     pub(crate) dacl_defaulted_flag: bool,
+    pub(crate) descriptor_bytes: u32,
 }
 
 /// Reject a NULL, empty, inconsistent or oversized DACL before any ACE is
@@ -112,6 +115,42 @@ pub(crate) struct WindowsDaclShape {
 /// syntactically valid ACL may still grant Everyone full control.
 /// A present-DACL bit and supported descriptor revision are structural
 /// prerequisites only, not permission or inheritance decisions.
+/// The DACL must reside fully inside the owned self-relative descriptor,
+/// outside its fixed header. This only checks layout, never effective access.
+fn validate_descriptor_dacl_extent(
+    control: u16,
+    descriptor_base: usize,
+    descriptor_bytes: u32,
+    dacl_base: usize,
+    dacl_bytes: u32,
+) -> Result<(), PersistenceError> {
+    const SE_SELF_RELATIVE: u16 = 0x8000;
+    const DESCRIPTOR_HEADER_BYTES: usize = 20;
+    const MAX_DESCRIPTOR_BYTES: u32 = 262_144;
+
+    if control & SE_SELF_RELATIVE == 0
+        || descriptor_bytes < DESCRIPTOR_HEADER_BYTES as u32
+        || descriptor_bytes > MAX_DESCRIPTOR_BYTES
+        || dacl_bytes < 8
+        || dacl_bytes > 65_535
+    {
+        return Err(denied("descriptor format or declared byte sizes invalid"));
+    }
+    let header_end = descriptor_base
+        .checked_add(DESCRIPTOR_HEADER_BYTES)
+        .ok_or_else(|| denied("descriptor header address overflow"))?;
+    let descriptor_end = descriptor_base
+        .checked_add(descriptor_bytes as usize)
+        .ok_or_else(|| denied("descriptor address overflow"))?;
+    let dacl_end = dacl_base
+        .checked_add(dacl_bytes as usize)
+        .ok_or_else(|| denied("descriptor DACL address overflow"))?;
+    if dacl_base % 4 != 0 || dacl_base < header_end || dacl_end > descriptor_end {
+        return Err(denied("DACL outside owned descriptor byte extent"));
+    }
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -459,6 +498,22 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         return Err(denied("DACL entry count and bounds could not be inspected"));
     }
     let bounds = validate_dacl_shape(true, size)?;
+    // Length is meaningful only after Windows confirms descriptor validity.
+    if unsafe { IsValidSecurityDescriptor(descriptor.0) } == 0 {
+        return Err(denied("Windows rejected security descriptor structure"));
+    }
+    let descriptor_bytes = unsafe { GetSecurityDescriptorLength(descriptor.0) };
+    let dacl_bytes = size
+        .acl_bytes_in_use
+        .checked_add(size.acl_bytes_free)
+        .ok_or_else(|| denied("DACL total size overflow"))?;
+    validate_descriptor_dacl_extent(
+        descriptor_control,
+        descriptor.0 as usize,
+        descriptor_bytes,
+        dacl as usize,
+        dacl_bytes,
+    )?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -499,12 +554,28 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         dacl_protected_flag,
         dacl_auto_inherited_flag,
         dacl_defaulted_flag,
+        descriptor_bytes,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_relative_descriptor_must_contain_entire_dacl() {
+        let good = validate_descriptor_dacl_extent(0x8004, 0x1000, 64, 0x1014, 32);
+        assert!(good.is_ok());
+        assert!(validate_descriptor_dacl_extent(0x0004, 0x1000, 64, 0x1014, 32).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 19, 0x1014, 8).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 262_145, 0x1014, 8).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 64, 0x1014, 4).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 64, 0x1010, 32).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 64, 0x1015, 32).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 64, 0x1028, 32).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, usize::MAX - 15, 64, 0x1014, 8).is_err());
+        assert!(validate_descriptor_dacl_extent(0x8004, 0x1000, 64, usize::MAX - 3, 8).is_err());
+    }
 
     #[test]
     fn descriptor_dacl_pointer_must_match_queried_dacl() {
