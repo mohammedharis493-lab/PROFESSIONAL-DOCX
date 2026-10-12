@@ -33,6 +33,14 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn LocalFree(memory: WinHandle) -> WinHandle;
+    fn GetCurrentProcess() -> WinHandle;
+    fn ReadProcessMemory(
+        process: WinHandle,
+        base_address: *const c_void,
+        buffer: WinHandle,
+        size: usize,
+        bytes_read: *mut usize,
+    ) -> i32;
 }
 
 #[repr(C)]
@@ -44,7 +52,7 @@ struct AclSizeInformation {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct AceHeader {
     _ace_type: u8,
     _ace_flags: u8,
@@ -147,6 +155,25 @@ fn validate_ace_bounds(
     Ok(next_offset)
 }
 
+fn read_ace_header(ace: WinHandle) -> Result<AceHeader, PersistenceError> {
+    let mut header = AceHeader::default();
+    let mut bytes_read = 0usize;
+    let expected = std::mem::size_of::<AceHeader>();
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            ace as *const c_void,
+            (&mut header as *mut AceHeader).cast(),
+            expected,
+            &mut bytes_read,
+        )
+    };
+    if ok == 0 || bytes_read != expected {
+        return Err(denied("DACL ACE header memory could not be copied safely"));
+    }
+    Ok(header)
+}
+
 fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<u32, PersistenceError> {
     const ACL_HEADER_BYTES: u32 = 8;
     let dacl_address = dacl as usize;
@@ -166,7 +193,7 @@ fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<u32, Persis
         {
             return Err(denied("DACL ACE pointer does not match contiguous layout"));
         }
-        let header = unsafe { ptr::read_unaligned(ace.cast::<AceHeader>()) };
+        let header = read_ace_header(ace)?;
         offset = validate_ace_bounds(
             dacl_address,
             bounds.bytes_in_use,
@@ -274,6 +301,21 @@ mod tests {
                 bytes_in_use: 24,
             }
         );
+    }
+
+    #[test]
+    fn ace_header_copy_uses_checked_process_memory_read() {
+        let source = AceHeader {
+            _ace_type: 2,
+            _ace_flags: 3,
+            ace_size: 20,
+        };
+        let copied = read_ace_header(&source as *const AceHeader as WinHandle)
+            .expect("readable local ACE header should copy exactly");
+        assert_eq!(copied._ace_type, 2);
+        assert_eq!(copied._ace_flags, 3);
+        assert_eq!(copied.ace_size, 20);
+        assert!(read_ace_header(ptr::null_mut()).is_err());
     }
 
     #[test]
