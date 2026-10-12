@@ -27,6 +27,7 @@ unsafe extern "system" {
         information_length: u32,
         information_class: u32,
     ) -> i32;
+    fn GetAce(acl: WinHandle, index: u32, ace: *mut WinHandle) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -40,6 +41,20 @@ struct AclSizeInformation {
     ace_count: u32,
     acl_bytes_in_use: u32,
     acl_bytes_free: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AceHeader {
+    _ace_type: u8,
+    _ace_flags: u8,
+    ace_size: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DaclBounds {
+    ace_count: u32,
+    bytes_in_use: u32,
 }
 
 struct SecurityDescriptor(WinHandle);
@@ -63,16 +78,17 @@ fn denied(reason: &str) -> PersistenceError {
 pub(crate) struct WindowsDaclShape {
     pub(crate) ace_count: u32,
     pub(crate) bytes_in_use: u32,
+    pub(crate) ace_bytes: u32,
 }
 
-/// Reject a NULL, empty, inconsistent or oversized DACL. This does NOT
-/// interpret any ACE/SID, effective group rights, denies, inheritance, or
-/// current-token permissions. A syntactically valid ACL may still grant
-/// Everyone full control.
+/// Reject a NULL, empty, inconsistent or oversized DACL before any ACE is
+/// dereferenced. This does NOT interpret trustee SIDs, effective group rights,
+/// deny ordering, inheritance semantics, or current-token permissions. A
+/// syntactically valid ACL may still grant Everyone full control.
 fn validate_dacl_shape(
     has_dacl: bool,
     size: AclSizeInformation,
-) -> Result<WindowsDaclShape, PersistenceError> {
+) -> Result<DaclBounds, PersistenceError> {
     const ACL_HEADER_BYTES: u32 = 8;
     const MIN_ACE_HEADER_BYTES: u32 = 4;
     const MAX_ACL_BYTES: u32 = 65535;
@@ -94,10 +110,78 @@ fn validate_dacl_shape(
     {
         return Err(denied("DACL size or entry count is inconsistent"));
     }
-    Ok(WindowsDaclShape {
+    Ok(DaclBounds {
         ace_count: size.ace_count,
         bytes_in_use: size.acl_bytes_in_use,
     })
+}
+
+fn validate_ace_bounds(
+    dacl_address: usize,
+    bytes_in_use: u32,
+    expected_offset: u32,
+    ace_address: usize,
+    header: AceHeader,
+) -> Result<u32, PersistenceError> {
+    const ACE_HEADER_BYTES: u32 = std::mem::size_of::<AceHeader>() as u32;
+
+    if expected_offset > bytes_in_use
+        || bytes_in_use - expected_offset < ACE_HEADER_BYTES
+        || dacl_address
+            .checked_add(expected_offset as usize)
+            .ok_or_else(|| denied("DACL ACE address arithmetic overflow"))?
+            != ace_address
+    {
+        return Err(denied("DACL ACE pointer does not match contiguous layout"));
+    }
+    let ace_size = u32::from(header.ace_size);
+    if ace_size < ACE_HEADER_BYTES || ace_size % 4 != 0 {
+        return Err(denied("DACL ACE size is invalid or unaligned"));
+    }
+    let next_offset = expected_offset
+        .checked_add(ace_size)
+        .ok_or_else(|| denied("DACL ACE size arithmetic overflow"))?;
+    if next_offset > bytes_in_use {
+        return Err(denied("DACL ACE extends beyond bytes in use"));
+    }
+    Ok(next_offset)
+}
+
+fn inspect_ace_layout(
+    dacl: WinHandle,
+    bounds: DaclBounds,
+) -> Result<u32, PersistenceError> {
+    const ACL_HEADER_BYTES: u32 = 8;
+    let dacl_address = dacl as usize;
+    let mut offset = ACL_HEADER_BYTES;
+
+    for index in 0..bounds.ace_count {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
+            return Err(denied("DACL ACE could not be retrieved"));
+        }
+        let expected_address = dacl_address
+            .checked_add(offset as usize)
+            .ok_or_else(|| denied("DACL ACE address arithmetic overflow"))?;
+        if expected_address != ace as usize
+            || offset > bounds.bytes_in_use
+            || bounds.bytes_in_use - offset < std::mem::size_of::<AceHeader>() as u32
+        {
+            return Err(denied("DACL ACE pointer does not match contiguous layout"));
+        }
+        let header = unsafe { ptr::read_unaligned(ace.cast::<AceHeader>()) };
+        offset = validate_ace_bounds(
+            dacl_address,
+            bounds.bytes_in_use,
+            offset,
+            ace as usize,
+            header,
+        )?;
+    }
+    if offset != bounds.bytes_in_use {
+        return Err(denied("DACL ACE sizes do not account for bytes in use"));
+    }
+    Ok(offset - ACL_HEADER_BYTES)
 }
 
 /// Inspect a directory handle already opened with READ_CONTROL and bound to
@@ -143,7 +227,13 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     if ok == 0 {
         return Err(denied("DACL entry count and bounds could not be inspected"));
     }
-    validate_dacl_shape(true, size)
+    let bounds = validate_dacl_shape(true, size)?;
+    let ace_bytes = inspect_ace_layout(dacl, bounds)?;
+    Ok(WindowsDaclShape {
+        ace_count: bounds.ace_count,
+        bytes_in_use: bounds.bytes_in_use,
+        ace_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -182,10 +272,66 @@ mod tests {
                 }
             )
             .expect("structurally plausible ACL"),
-            WindowsDaclShape {
+            DaclBounds {
                 ace_count: 1,
                 bytes_in_use: 24,
             }
         );
+    }
+
+    #[test]
+    fn ace_layout_bounds_fail_closed_on_gaps_bad_sizes_and_overrun() {
+        let base = 0x1000usize;
+        let valid = AceHeader {
+            _ace_type: 0,
+            _ace_flags: 0,
+            ace_size: 20,
+        };
+        assert_eq!(
+            validate_ace_bounds(base, 48, 8, base + 8, valid).expect("first ACE"),
+            28
+        );
+        assert_eq!(
+            validate_ace_bounds(base, 48, 28, base + 28, valid).expect("second ACE"),
+            48
+        );
+        assert!(validate_ace_bounds(base, 48, 8, base + 12, valid).is_err());
+        assert!(validate_ace_bounds(
+            base,
+            48,
+            8,
+            base + 8,
+            AceHeader {
+                _ace_type: 0,
+                _ace_flags: 0,
+                ace_size: 3,
+            }
+        )
+        .is_err());
+        assert!(validate_ace_bounds(
+            base,
+            48,
+            8,
+            base + 8,
+            AceHeader {
+                _ace_type: 0,
+                _ace_flags: 0,
+                ace_size: 6,
+            }
+        )
+        .is_err());
+        assert!(validate_ace_bounds(
+            base,
+            16,
+            8,
+            base + 8,
+            AceHeader {
+                _ace_type: 0,
+                _ace_flags: 0,
+                ace_size: 12,
+            }
+        )
+        .is_err());
+        assert!(validate_ace_bounds(usize::MAX - 4, 16, 8, usize::MAX, valid).is_err());
     }
 }

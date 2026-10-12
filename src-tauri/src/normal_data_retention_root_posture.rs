@@ -128,11 +128,12 @@ fn inspect_unix_root(root: &Path) -> Result<(), PersistenceError> {
     Ok(())
 }
 
-/// Windows path-shape inspection is a diagnostic prerequisite ONLY. It does
-/// not examine the effective token, DACLs, owner SIDs, inherited permissions,
-/// remote share controls, or crash-consistent directory persistence.
-/// It checks only the final root owner SID against the current process token
-/// user SID; it does not inspect DACLs, ACEs, groups or token impersonation.
+/// Windows path-shape inspection is a diagnostic prerequisite ONLY. It also
+/// checks the final root owner SID against the current process token user and
+/// reads a structurally valid DACL whose ACE byte layout is contiguous and
+/// bounded. It does NOT interpret trustee SIDs, access masks, deny ordering,
+/// inheritance semantics, effective groups, token impersonation, remote/share
+/// controls, or crash-consistent directory persistence.
 ///
 /// Each ancestor is opened as a directory with OPEN_REPARSE_POINT so symbolic
 /// links, junctions and mount-point reparse attributes cannot silently be
@@ -187,8 +188,9 @@ fn inspect_windows_root_path_shape(root: &Path) -> Result<(), PersistenceError> 
         return Err(denied("Windows owner handle does not match retained root"));
     }
     crate::normal_data_windows_owner_probe::observe_owner_matches_process_user(&owner_handle)?;
-    // A readable, non-null, structurally valid DACL is another *necessary*
-    // observation. The ACE grants themselves remain unevaluated.
+    // A readable, non-null DACL with a bounded contiguous ACE layout is
+    // another *necessary* observation. Trustee SIDs and access masks remain
+    // deliberately unevaluated.
     let _ = crate::normal_data_windows_dacl_probe::observe_dacl_structure(&owner_handle)?;
     Ok(())
 }
@@ -388,6 +390,7 @@ mod tests {
             .expect("test directory should expose a non-null structurally valid DACL");
         assert!(structure.ace_count > 0);
         assert!(structure.bytes_in_use >= 8);
+        assert_eq!(structure.ace_bytes, structure.bytes_in_use - 8);
         assert!(
             inspect_retention_root_posture(&scratch.0).is_err(),
             "DACL readability does not permit controlled-custody approval"
