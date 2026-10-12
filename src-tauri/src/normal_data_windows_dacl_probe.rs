@@ -147,10 +147,7 @@ fn validate_ace_bounds(
     Ok(next_offset)
 }
 
-fn inspect_ace_layout(
-    dacl: WinHandle,
-    bounds: DaclBounds,
-) -> Result<u32, PersistenceError> {
+fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<u32, PersistenceError> {
     const ACL_HEADER_BYTES: u32 = 8;
     let dacl_address = dacl as usize;
     let mut offset = ACL_HEADER_BYTES;
