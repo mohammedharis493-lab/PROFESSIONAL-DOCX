@@ -114,7 +114,9 @@ fn inspect_descriptor_control(
     const SE_DACL_PROTECTED: u16 = 0x1000;
 
     if revision != 1 || control & SE_DACL_PRESENT == 0 {
-        return Err(denied("Windows descriptor revision or DACL-presence flag invalid"));
+        return Err(denied(
+            "Windows descriptor revision or DACL-presence flag invalid",
+        ));
     }
     Ok((
         control & SE_DACL_PROTECTED != 0,
