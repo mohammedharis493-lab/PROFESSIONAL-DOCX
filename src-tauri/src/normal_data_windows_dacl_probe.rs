@@ -470,6 +470,7 @@ mod tests {
     #[test]
     fn security_descriptor_control_requires_present_dacl() {
         assert!(inspect_descriptor_control(0, 1).is_err());
+        assert!(inspect_descriptor_control(0x1400, 1).is_err());
         assert!(inspect_descriptor_control(0x0004, 0).is_err());
         assert_eq!(
             inspect_descriptor_control(0x0004, 1).expect("present DACL"),
