@@ -153,6 +153,11 @@ fn acl_header_snapshots_match(before: &[u8], after: &[u8]) -> bool {
     before.len() == 8 && after.len() == 8 && before == after
 }
 
+/// Exact bytes only: this is not a live filesystem ACL race guarantee.
+fn acl_body_snapshots_match(before: &[u8], after: &[u8], expected_size: u32) -> bool {
+    before.len() == expected_size as usize && before == after
+}
+
 fn acl_metadata_unchanged(before: &AclSizeInformation, after: &AclSizeInformation) -> bool {
     before.ace_count == after.ace_count
         && before.acl_bytes_in_use == after.acl_bytes_in_use
@@ -378,7 +383,13 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let bounds = validate_dacl_shape(true, size)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
+    // The 64 KiB ACL metadata cap was checked before these owned copies.
+    let acl_before = copy_ace_bytes(dacl, bounds.bytes_in_use as usize)?;
     let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
+    let acl_after = copy_ace_bytes(dacl, bounds.bytes_in_use as usize)?;
+    if !acl_body_snapshots_match(&acl_before, &acl_after, bounds.bytes_in_use) {
+        return Err(denied("DACL bytes changed during ACE observation"));
+    }
     // A second bounded copy must still match the earlier ACL header. This
     // detects snapshot differences, not every concurrent ACL mutation.
     let repeated_acl_header = copy_ace_bytes(dacl, 8)?;
@@ -505,6 +516,17 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn complete_acl_snapshot_must_be_exact_and_bounded() {
+        let before = [2u8, 0, 12, 0, 1, 0, 0, 0, 0, 0, 4, 0];
+        let mut after = before;
+        assert!(acl_body_snapshots_match(&before, &after, 12));
+        after[9] ^= 1;
+        assert!(!acl_body_snapshots_match(&before, &after, 12));
+        assert!(!acl_body_snapshots_match(&before, &before, 13));
+        assert!(!acl_body_snapshots_match(&before[..11], &before[..11], 12));
     }
 
     #[test]
