@@ -614,22 +614,42 @@ mod tests {
         header[0] = 1;
         header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         header[16..20].copy_from_slice(&20u32.to_le_bytes());
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1014).is_ok());
-        assert!(validate_self_relative_dacl_offset(&header[..19], 0x8004, 1, 0x1000, 64, 0x1014).is_err());
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 0, 0x1000, 64, 0x1014).is_err());
-        assert!(validate_self_relative_dacl_offset(&header, 0x8000, 1, 0x1000, 64, 0x1014).is_err());
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1018).is_err());
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, usize::MAX - 8, 64, 0).is_err());
+        let observe = |bytes: &[u8]| {
+            validate_self_relative_dacl_offset(bytes, 0x8004, 1, 0x1000, 64, 0x1014)
+        };
+        assert!(observe(&header).is_ok());
+        assert!(observe(&header[..19]).is_err());
+        assert!(validate_self_relative_dacl_offset(
+            &header, 0x8004, 0, 0x1000, 64, 0x1014
+        )
+        .is_err());
+        assert!(validate_self_relative_dacl_offset(
+            &header, 0x8000, 1, 0x1000, 64, 0x1014
+        )
+        .is_err());
+        assert!(validate_self_relative_dacl_offset(
+            &header, 0x8004, 1, 0x1000, 64, 0x1018
+        )
+        .is_err());
+        assert!(validate_self_relative_dacl_offset(
+            &header,
+            0x8004,
+            1,
+            usize::MAX - 8,
+            64,
+            0
+        )
+        .is_err());
         header[1] = 1;
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1014).is_err());
+        assert!(observe(&header).is_err());
         header[1] = 0;
         for offset in [0u32, 16, 21, 68] {
             header[16..20].copy_from_slice(&offset.to_le_bytes());
-            assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1014).is_err());
+            assert!(observe(&header).is_err());
         }
         header[16..20].copy_from_slice(&20u32.to_le_bytes());
         header[0] = 2;
-        assert!(validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1014).is_err());
+        assert!(observe(&header).is_err());
     }
 
     #[test]
