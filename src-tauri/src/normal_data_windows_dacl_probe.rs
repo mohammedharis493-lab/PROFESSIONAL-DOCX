@@ -308,13 +308,13 @@ fn inspect_ace_layout(
             ace as usize,
             header,
         )?;
+        // All ACE types must be readable and retain their bounded headers.
+        // Unknown formats are copied, never decoded as permissions.
+        let bytes = copy_ace_bytes(ace, usize::from(header.ace_size))?;
+        if !header_matches_copied_ace(header, &bytes) {
+            return Err(denied("DACL ACE header changed between checked reads"));
+        }
         if header._ace_type == 0 || header._ace_type == 1 {
-            // The ACE was already proven wholly inside the DACL allocation.
-            // Copy into owned memory before examining mask or SID fields.
-            let bytes = copy_ace_bytes(ace, usize::from(header.ace_size))?;
-            if !header_matches_copied_ace(header, &bytes) {
-                return Err(denied("DACL ACE header changed between checked reads"));
-            }
             let _observed_mask = validate_basic_ace_bytes(&bytes)?;
             basic_trustee_aces += 1;
         } else {
@@ -588,6 +588,18 @@ mod tests {
         bytes[2] = 16;
         assert!(!header_matches_copied_ace(header, &bytes));
         assert!(!header_matches_copied_ace(header, &bytes[..12]));
+    }
+
+    #[test]
+    fn opaque_ace_copies_require_consistent_headers() {
+        let header = AceHeader {
+            _ace_type: 0x11,
+            _ace_flags: 0,
+            ace_size: 4,
+        };
+        assert!(header_matches_copied_ace(header, &[0x11, 0, 4, 0]));
+        assert!(!header_matches_copied_ace(header, &[0x11, 0, 8, 0]));
+        assert!(!header_matches_copied_ace(header, &[0x11, 0, 4]));
     }
 
     #[test]
