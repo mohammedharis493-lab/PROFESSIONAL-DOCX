@@ -350,6 +350,23 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
+    // Re-query after traversal rather than silently relying on a stale ACL
+    // metadata snapshot. This is NOT a concurrent-mutation or race guarantee.
+    let mut after = AclSizeInformation::default();
+    let repeat_ok = unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut after as *mut AclSizeInformation).cast(),
+            std::mem::size_of::<AclSizeInformation>() as u32,
+            ACL_SIZE_INFORMATION_CLASS,
+        )
+    };
+    if repeat_ok == 0 || after.ace_count != size.ace_count
+        || after.acl_bytes_in_use != size.acl_bytes_in_use
+        || after.acl_bytes_free != size.acl_bytes_free
+    {
+        return Err(denied("DACL metadata changed or became unreadable during observation"));
+    }
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
         bytes_in_use: bounds.bytes_in_use,
