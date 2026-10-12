@@ -44,7 +44,7 @@ unsafe extern "system" {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct AclSizeInformation {
     ace_count: u32,
     acl_bytes_in_use: u32,
