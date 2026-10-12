@@ -280,6 +280,26 @@ fn acl_body_snapshots_match(before: &[u8], after: &[u8], expected_size: u32) -> 
     before.len() == expected_size as usize && before == after
 }
 
+/// Observe owned in-memory descriptor consistency, including bytes outside
+/// the DACL. Equality does not establish an atomic live filesystem ACL view.
+fn descriptor_snapshots_match(
+    header: &[u8],
+    before: &[u8],
+    after: &[u8],
+    expected_bytes: u32,
+) -> bool {
+    const HEADER_BYTES: usize = 20;
+    const MAX_DESCRIPTOR_BYTES: usize = 262_144;
+    let expected = expected_bytes as usize;
+    (HEADER_BYTES..=MAX_DESCRIPTOR_BYTES).contains(&expected)
+        && header.len() == HEADER_BYTES
+        && before.len() == expected
+        && after.len() == expected
+        && before.starts_with(header)
+        && after.starts_with(header)
+        && before == after
+}
+
 fn acl_metadata_unchanged(before: &AclSizeInformation, after: &AclSizeInformation) -> bool {
     before.ace_count == after.ace_count
         && before.acl_bytes_in_use == after.acl_bytes_in_use
@@ -560,6 +580,9 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         descriptor_bytes,
         dacl as usize,
     )?;
+    // A bounded full-descriptor snapshot includes its owner/group header
+    // fields and any optional native sections, without interpreting them.
+    let descriptor_before = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -589,6 +612,17 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     if repeat_ok == 0 || !acl_metadata_unchanged(&size, &after) {
         return Err(denied(
             "DACL metadata changed or became unreadable during observation",
+        ));
+    }
+    let descriptor_after = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
+    if !descriptor_snapshots_match(
+        &descriptor_header,
+        &descriptor_before,
+        &descriptor_after,
+        descriptor_bytes,
+    ) {
+        return Err(denied(
+            "security descriptor bytes changed during observation",
         ));
     }
     Ok(WindowsDaclShape {
@@ -773,6 +807,48 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn complete_descriptor_snapshot_must_be_exact_and_bounded() {
+        let mut before = vec![0u8; 64];
+        before[0] = 1;
+        before[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        before[16..20].copy_from_slice(&20u32.to_le_bytes());
+        let header = before[..20].to_vec();
+        let mut after = before.clone();
+        assert!(descriptor_snapshots_match(&header, &before, &after, 64));
+
+        // A change outside the DACL header still invalidates observation.
+        after[52] ^= 1;
+        assert!(!descriptor_snapshots_match(&header, &before, &after, 64));
+        after = before.clone();
+        after[3] ^= 1;
+        assert!(!descriptor_snapshots_match(&header, &before, &after, 64));
+
+        assert!(!descriptor_snapshots_match(
+            &header[..19],
+            &before,
+            &before,
+            64
+        ));
+        assert!(!descriptor_snapshots_match(
+            &header,
+            &before[..63],
+            &before,
+            64
+        ));
+        assert!(!descriptor_snapshots_match(
+            &header,
+            &before,
+            &before[..63],
+            64
+        ));
+        assert!(!descriptor_snapshots_match(&header, &before, &before, 65));
+        assert!(!descriptor_snapshots_match(&header, &before, &before, 19));
+        assert!(!descriptor_snapshots_match(
+            &header, &before, &before, 262_145
+        ));
     }
 
     #[test]
