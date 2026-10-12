@@ -21,6 +21,12 @@ unsafe extern "system" {
         descriptor: *mut WinHandle,
     ) -> u32;
     fn IsValidAcl(acl: WinHandle) -> i32;
+    fn GetSecurityDescriptorDacl(
+        descriptor: WinHandle,
+        dacl_present: *mut i32,
+        dacl: *mut WinHandle,
+        dacl_defaulted: *mut i32,
+    ) -> i32;
     fn GetSecurityDescriptorControl(
         descriptor: WinHandle,
         control: *mut u16,
@@ -97,6 +103,7 @@ pub(crate) struct WindowsDaclShape {
     pub(crate) unexamined_ace_types: u32,
     pub(crate) dacl_protected_flag: bool,
     pub(crate) dacl_auto_inherited_flag: bool,
+    pub(crate) dacl_defaulted_flag: bool,
 }
 
 /// Reject a NULL, empty, inconsistent or oversized DACL before any ACE is
@@ -105,6 +112,17 @@ pub(crate) struct WindowsDaclShape {
 /// syntactically valid ACL may still grant Everyone full control.
 /// A present-DACL bit and supported descriptor revision are structural
 /// prerequisites only, not permission or inheritance decisions.
+fn validate_descriptor_dacl_identity(
+    present: bool,
+    descriptor_dacl: usize,
+    queried_dacl: usize,
+) -> Result<(), PersistenceError> {
+    if !present || descriptor_dacl == 0 || descriptor_dacl != queried_dacl {
+        return Err(denied("Descriptor DACL identity differs from GetSecurityInfo"));
+    }
+    Ok(())
+}
+
 fn inspect_descriptor_control(
     control: u16,
     revision: u32,
@@ -406,6 +424,26 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     }
     let (dacl_protected_flag, dacl_auto_inherited_flag) =
         inspect_descriptor_control(descriptor_control, descriptor_revision)?;
+    let mut dacl_present = 0i32;
+    let mut descriptor_dacl = ptr::null_mut();
+    let mut dacl_defaulted = 0i32;
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor.0,
+            &mut dacl_present,
+            &mut descriptor_dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(denied("Descriptor DACL could not be inspected"));
+    }
+    validate_descriptor_dacl_identity(
+        dacl_present != 0,
+        descriptor_dacl as usize,
+        dacl as usize,
+    )?;
+    let dacl_defaulted_flag = dacl_defaulted != 0;
     if unsafe { IsValidAcl(dacl) } == 0 {
         return Err(denied("Windows reported an invalid DACL"));
     }
@@ -462,12 +500,21 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         unexamined_ace_types,
         dacl_protected_flag,
         dacl_auto_inherited_flag,
+        dacl_defaulted_flag,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn descriptor_dacl_pointer_must_match_queried_dacl() {
+        assert!(validate_descriptor_dacl_identity(true, 0x1000, 0x1000).is_ok());
+        assert!(validate_descriptor_dacl_identity(false, 0x1000, 0x1000).is_err());
+        assert!(validate_descriptor_dacl_identity(true, 0, 0).is_err());
+        assert!(validate_descriptor_dacl_identity(true, 0x1000, 0x1004).is_err());
+    }
 
     #[test]
     fn security_descriptor_control_requires_present_dacl() {
