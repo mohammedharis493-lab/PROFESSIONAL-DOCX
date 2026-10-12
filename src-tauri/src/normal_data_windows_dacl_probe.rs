@@ -105,7 +105,10 @@ pub(crate) struct WindowsDaclShape {
 /// syntactically valid ACL may still grant Everyone full control.
 /// A present-DACL bit and supported descriptor revision are structural
 /// prerequisites only, not permission or inheritance decisions.
-fn inspect_descriptor_control(control: u16, revision: u32) -> Result<(bool, bool), PersistenceError> {
+fn inspect_descriptor_control(
+    control: u16,
+    revision: u32,
+) -> Result<(bool, bool), PersistenceError> {
     const SE_DACL_PRESENT: u16 = 0x0004;
     const SE_DACL_AUTO_INHERITED: u16 = 0x0400;
     const SE_DACL_PROTECTED: u16 = 0x1000;
