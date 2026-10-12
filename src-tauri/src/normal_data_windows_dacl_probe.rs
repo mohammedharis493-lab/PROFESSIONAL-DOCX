@@ -172,16 +172,16 @@ fn validate_self_relative_dacl_offset(
         return Err(denied("self-relative descriptor header inconsistent"));
     }
     let offset = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
-    if offset < SECURITY_DESCRIPTOR_HEADER as u32 || offset % 4 != 0
-        || offset > descriptor_bytes
-    {
+    if offset < SECURITY_DESCRIPTOR_HEADER as u32 || offset % 4 != 0 || offset > descriptor_bytes {
         return Err(denied("self-relative DACL offset invalid"));
     }
     let actual_address = descriptor_base
         .checked_add(offset as usize)
         .ok_or_else(|| denied("self-relative DACL offset address overflow"))?;
     if actual_address != dacl_address {
-        return Err(denied("self-relative DACL offset disagrees with native pointer"));
+        return Err(denied(
+            "self-relative DACL offset disagrees with native pointer",
+        ));
     }
     Ok(())
 }
@@ -614,32 +614,22 @@ mod tests {
         header[0] = 1;
         header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         header[16..20].copy_from_slice(&20u32.to_le_bytes());
-        let observe = |bytes: &[u8]| {
-            validate_self_relative_dacl_offset(bytes, 0x8004, 1, 0x1000, 64, 0x1014)
-        };
+        let observe =
+            |bytes: &[u8]| validate_self_relative_dacl_offset(bytes, 0x8004, 1, 0x1000, 64, 0x1014);
         assert!(observe(&header).is_ok());
         assert!(observe(&header[..19]).is_err());
-        assert!(validate_self_relative_dacl_offset(
-            &header, 0x8004, 0, 0x1000, 64, 0x1014
-        )
-        .is_err());
-        assert!(validate_self_relative_dacl_offset(
-            &header, 0x8000, 1, 0x1000, 64, 0x1014
-        )
-        .is_err());
-        assert!(validate_self_relative_dacl_offset(
-            &header, 0x8004, 1, 0x1000, 64, 0x1018
-        )
-        .is_err());
-        assert!(validate_self_relative_dacl_offset(
-            &header,
-            0x8004,
-            1,
-            usize::MAX - 8,
-            64,
-            0
-        )
-        .is_err());
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 0, 0x1000, 64, 0x1014).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8000, 1, 0x1000, 64, 0x1014).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 1, 0x1000, 64, 0x1018).is_err()
+        );
+        assert!(
+            validate_self_relative_dacl_offset(&header, 0x8004, 1, usize::MAX - 8, 64, 0).is_err()
+        );
         header[1] = 1;
         assert!(observe(&header).is_err());
         header[1] = 0;
