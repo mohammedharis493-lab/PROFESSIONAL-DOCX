@@ -223,7 +223,10 @@ fn copy_ace_bytes(ace: WinHandle, size: usize) -> Result<Vec<u8>, PersistenceErr
     Ok(bytes)
 }
 
-fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<(u32, u32, u32), PersistenceError> {
+fn inspect_ace_layout(
+    dacl: WinHandle,
+    bounds: DaclBounds,
+) -> Result<(u32, u32, u32), PersistenceError> {
     const ACL_HEADER_BYTES: u32 = 8;
     let dacl_address = dacl as usize;
     let mut offset = ACL_HEADER_BYTES;
@@ -266,7 +269,11 @@ fn inspect_ace_layout(dacl: WinHandle, bounds: DaclBounds) -> Result<(u32, u32, 
     if offset != bounds.bytes_in_use {
         return Err(denied("DACL ACE sizes do not account for bytes in use"));
     }
-    Ok((offset - ACL_HEADER_BYTES, basic_trustee_aces, unexamined_ace_types))
+    Ok((
+        offset - ACL_HEADER_BYTES,
+        basic_trustee_aces,
+        unexamined_ace_types,
+    ))
 }
 
 /// Inspect a directory handle already opened with READ_CONTROL and bound to
@@ -391,7 +398,10 @@ mod tests {
         bytes[9] = 1; // one subauthority
         bytes[15] = 5; // NT identifier authority
         bytes[16..20].copy_from_slice(&32u32.to_le_bytes());
-        assert_eq!(validate_basic_ace_bytes(&bytes).expect("bounded allow ACE"), 0x001f_01ff);
+        assert_eq!(
+            validate_basic_ace_bytes(&bytes).expect("bounded allow ACE"),
+            0x001f_01ff
+        );
         bytes[0] = 1;
         assert!(validate_basic_ace_bytes(&bytes).is_ok());
         bytes[0] = 5;
