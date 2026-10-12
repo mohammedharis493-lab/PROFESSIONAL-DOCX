@@ -126,6 +126,31 @@ fn validate_dacl_shape(
     })
 }
 
+/// Cross-check the owned ACL header against independent Win32 size metadata.
+/// ACL_REVISION (2) and ACL_REVISION_DS (4) are recognized structurally.
+/// This does not determine whether any entry confers a protected right.
+fn validate_acl_header(
+    bytes: &[u8],
+    size: &AclSizeInformation,
+) -> Result<(), PersistenceError> {
+    if bytes.len() != 8 || (bytes[0] != 2 && bytes[0] != 4) || bytes[1] != 0 {
+        return Err(denied("ACL header revision or reserved byte invalid"));
+    }
+    let declared_size = u32::from(u16::from_le_bytes([bytes[2], bytes[3]]));
+    let declared_count = u32::from(u16::from_le_bytes([bytes[4], bytes[5]]));
+    if bytes[6] != 0 || bytes[7] != 0 {
+        return Err(denied("ACL header reserved bytes invalid"));
+    }
+    let total = size
+        .acl_bytes_in_use
+        .checked_add(size.acl_bytes_free)
+        .ok_or_else(|| denied("ACL metadata byte count overflow"))?;
+    if declared_size != total || declared_count != size.ace_count {
+        return Err(denied("ACL header disagrees with queried metadata"));
+    }
+    Ok(())
+}
+
 fn validate_ace_bounds(
     dacl_address: usize,
     bytes_in_use: u32,
@@ -325,6 +350,8 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         return Err(denied("DACL entry count and bounds could not be inspected"));
     }
     let bounds = validate_dacl_shape(true, size)?;
+    let acl_header = copy_ace_bytes(dacl, 8)?;
+    validate_acl_header(&acl_header, &size)?;
     let (ace_bytes, basic_trustee_aces, unexamined_ace_types) = inspect_ace_layout(dacl, bounds)?;
     Ok(WindowsDaclShape {
         ace_count: bounds.ace_count,
@@ -430,6 +457,34 @@ mod tests {
         bytes[2] = 16;
         assert!(validate_basic_ace_bytes(&bytes).is_err());
         assert!(validate_basic_ace_bytes(&bytes[..12]).is_err());
+    }
+
+    #[test]
+    fn acl_header_must_match_independent_size_metadata() {
+        let metadata = AclSizeInformation {
+            ace_count: 1,
+            acl_bytes_in_use: 28,
+            acl_bytes_free: 4,
+        };
+        let mut header = [2u8, 0, 32, 0, 1, 0, 0, 0];
+        assert!(validate_acl_header(&header, &metadata).is_ok());
+        header[0] = 4;
+        assert!(validate_acl_header(&header, &metadata).is_ok());
+        header[0] = 3;
+        assert!(validate_acl_header(&header, &metadata).is_err());
+        header[0] = 2;
+        header[1] = 1;
+        assert!(validate_acl_header(&header, &metadata).is_err());
+        header[1] = 0;
+        header[2] = 28;
+        assert!(validate_acl_header(&header, &metadata).is_err());
+        header[2] = 32;
+        header[4] = 2;
+        assert!(validate_acl_header(&header, &metadata).is_err());
+        header[4] = 1;
+        header[7] = 1;
+        assert!(validate_acl_header(&header, &metadata).is_err());
+        assert!(validate_acl_header(&header[..7], &metadata).is_err());
     }
 
     #[test]
