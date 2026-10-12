@@ -514,6 +514,8 @@ mod tests {
         assert!(validate_descriptor_dacl_identity(false, 0x1000, 0x1000).is_err());
         assert!(validate_descriptor_dacl_identity(true, 0, 0).is_err());
         assert!(validate_descriptor_dacl_identity(true, 0x1000, 0x1004).is_err());
+        assert!(validate_descriptor_dacl_identity(true, 0x1000, 0).is_err());
+        assert!(validate_descriptor_dacl_identity(true, 0, 0x1000).is_err());
     }
 
     #[test]
