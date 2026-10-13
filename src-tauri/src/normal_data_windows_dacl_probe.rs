@@ -275,10 +275,7 @@ fn optional_sid_byte_range(
     Ok(Some(offset..end))
 }
 
-fn validate_optional_sid_shapes(
-    header: &[u8],
-    descriptor: &[u8],
-) -> Result<(), PersistenceError> {
+fn validate_optional_sid_shapes(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
     optional_sid_byte_range(header, descriptor, 4)?;
     optional_sid_byte_range(header, descriptor, 8)?;
     Ok(())
@@ -752,8 +749,14 @@ mod tests {
         owned[20] = 1;
         owned[21] = 1;
         owned[40] = 1;
-        assert_eq!(optional_sid_byte_range(&header, &owned, 4).unwrap(), Some(20..32));
-        assert_eq!(optional_sid_byte_range(&header, &owned, 8).unwrap(), Some(40..48));
+        assert_eq!(
+            optional_sid_byte_range(&header, &owned, 4).unwrap(),
+            Some(20..32)
+        );
+        assert_eq!(
+            optional_sid_byte_range(&header, &owned, 8).unwrap(),
+            Some(40..48)
+        );
         assert!(validate_optional_sid_shapes(&header, &owned).is_ok());
 
         owned[20] = 2;
