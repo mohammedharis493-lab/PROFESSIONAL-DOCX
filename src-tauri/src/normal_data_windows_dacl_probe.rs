@@ -304,9 +304,7 @@ fn optional_sacl_byte_range(
     if header.len() != 20 {
         return Err(denied("optional SACL descriptor header truncated"));
     }
-    let offset = u32::from_le_bytes([
-        header[12], header[13], header[14], header[15],
-    ]) as usize;
+    let offset = u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as usize;
     if offset == 0 {
         return Ok(None);
     }
@@ -322,7 +320,9 @@ fn optional_sacl_byte_range(
     }
     let acl = &descriptor[offset..prefix_end];
     if (acl[0] != 2 && acl[0] != 4) || acl[1] != 0 || acl[6] != 0 || acl[7] != 0 {
-        return Err(denied("optional SACL header revision or reserved bytes invalid"));
+        return Err(denied(
+            "optional SACL header revision or reserved bytes invalid",
+        ));
     }
     let size = usize::from(u16::from_le_bytes([acl[2], acl[3]]));
     let ace_count = usize::from(u16::from_le_bytes([acl[4], acl[5]]));
@@ -803,7 +803,10 @@ mod tests {
         header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
         header[12..16].copy_from_slice(&24u32.to_le_bytes());
         owned[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
-        assert_eq!(optional_sacl_byte_range(&header, &owned).unwrap(), Some(24..32));
+        assert_eq!(
+            optional_sacl_byte_range(&header, &owned).unwrap(),
+            Some(24..32)
+        );
         owned[24] = 1;
         assert!(optional_sacl_byte_range(&header, &owned).is_err());
         owned[24] = 2;
