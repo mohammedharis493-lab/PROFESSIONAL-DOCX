@@ -456,13 +456,11 @@ fn validate_optional_sacl_native_ace_positions(
         }
         let mut native_ace = ptr::null_mut();
         if unsafe { GetAce(acl.as_ptr() as WinHandle, index, &mut native_ace) } == 0 {
-            return Err(denied("Windows could not enumerate owned optional SACL ACE"));
+            return Err(denied(
+                "Windows could not enumerate owned optional SACL ACE",
+            ));
         }
-        validate_optional_sacl_ace_pointer(
-            acl.as_ptr() as usize,
-            cursor,
-            native_ace as usize,
-        )?;
+        validate_optional_sacl_ace_pointer(acl.as_ptr() as usize, cursor, native_ace as usize)?;
         cursor = next;
     }
     if cursor != used_bytes {
