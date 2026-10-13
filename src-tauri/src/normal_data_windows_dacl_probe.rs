@@ -283,10 +283,7 @@ fn validate_optional_sid_shapes(header: &[u8], descriptor: &[u8]) -> Result<(), 
 
 /// Native Windows SID validity is checked on already bounded owned bytes;
 /// it never establishes the SID's role, ownership or effective permissions.
-fn validate_optional_sid_native(
-    header: &[u8],
-    descriptor: &[u8],
-) -> Result<(), PersistenceError> {
+fn validate_optional_sid_native(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
     for field in [4usize, 8] {
         if let Some(range) = optional_sid_byte_range(header, descriptor, field)? {
             let sid = &descriptor[range];
