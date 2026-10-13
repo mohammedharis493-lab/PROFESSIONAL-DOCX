@@ -391,8 +391,8 @@ fn validate_optional_sacl_native_metadata(
     }
     let declared_size = u32::from(u16::from_le_bytes([acl[2], acl[3]]));
     let declared_count = u32::from(u16::from_le_bytes([acl[4], acl[5]]));
-    let actual_size = u32::try_from(acl.len())
-        .map_err(|_| denied("optional SACL size exceeds native bounds"))?;
+    let actual_size =
+        u32::try_from(acl.len()).map_err(|_| denied("optional SACL size exceeds native bounds"))?;
     let actual_used = u32::try_from(used_bytes)
         .map_err(|_| denied("optional SACL used bytes exceed native bounds"))?;
     let native_total = native
@@ -405,7 +405,9 @@ fn validate_optional_sacl_native_metadata(
         || native.acl_bytes_in_use != actual_used
         || native.acl_bytes_free != actual_size - actual_used
     {
-        return Err(denied("optional SACL native metadata disagrees with owned bytes"));
+        return Err(denied(
+            "optional SACL native metadata disagrees with owned bytes",
+        ));
     }
     Ok(())
 }
@@ -431,7 +433,9 @@ fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(),
         )
     };
     if ok == 0 {
-        return Err(denied("Windows could not inspect owned optional SACL metadata"));
+        return Err(denied(
+            "Windows could not inspect owned optional SACL metadata",
+        ));
     }
     validate_optional_sacl_native_metadata(acl, used_bytes, native)
 }
