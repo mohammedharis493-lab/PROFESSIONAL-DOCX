@@ -186,6 +186,56 @@ fn validate_self_relative_dacl_offset(
     Ok(())
 }
 
+/// Validate only the bounded locations of optional owner, group and SACL
+/// sections in the copied self-relative descriptor header. Neither SID
+/// identity nor audit permissions are interpreted here.
+fn validate_optional_descriptor_offsets(
+    header: &[u8],
+    descriptor_bytes: u32,
+) -> Result<(), PersistenceError> {
+    const HEADER_BYTES: u32 = 20;
+    const MAX_DESCRIPTOR_BYTES: u32 = 262_144;
+    const MIN_SECTION_BYTES: u32 = 8;
+    const SE_SELF_RELATIVE: u16 = 0x8000;
+    const SE_SACL_PRESENT: u16 = 0x0010;
+
+    if header.len() != HEADER_BYTES as usize
+        || !(HEADER_BYTES..=MAX_DESCRIPTOR_BYTES).contains(&descriptor_bytes)
+    {
+        return Err(denied("optional descriptor section bounds unavailable"));
+    }
+
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if header[0] != 1 || header[1] != 0 || control & SE_SELF_RELATIVE == 0 {
+        return Err(denied("optional descriptor section header invalid"));
+    }
+
+    // SECURITY_DESCRIPTOR_RELATIVE stores Owner, Group and Sacl as
+    // little-endian DWORD offsets at byte positions 4, 8 and 12.
+    // Zero means absent. A present but NULL SACL is also allowed.
+    for position in [4usize, 8, 12] {
+        let offset = u32::from_le_bytes([
+            header[position],
+            header[position + 1],
+            header[position + 2],
+            header[position + 3],
+        ]);
+        if position == 12 && offset != 0 && control & SE_SACL_PRESENT == 0 {
+            return Err(denied("SACL offset without SACL-present flag"));
+        }
+        if offset == 0 {
+            continue;
+        }
+        let end = offset
+            .checked_add(MIN_SECTION_BYTES)
+            .ok_or_else(|| denied("optional descriptor section offset overflow"))?;
+        if offset < HEADER_BYTES || offset % 4 != 0 || end > descriptor_bytes {
+            return Err(denied("optional descriptor section outside descriptor"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -580,6 +630,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         descriptor_bytes,
         dacl as usize,
     )?;
+    validate_optional_descriptor_offsets(&descriptor_header, descriptor_bytes)?;
     // A bounded full-descriptor snapshot includes its owner/group header
     // fields and any optional native sections, without interpreting them.
     let descriptor_before = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
@@ -641,6 +692,58 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_descriptor_offsets_allow_absence_and_bounded_sections() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_ok());
+
+        header[4..8].copy_from_slice(&20u32.to_le_bytes());
+        header[8..12].copy_from_slice(&28u32.to_le_bytes());
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_ok());
+
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+        header[12..16].copy_from_slice(&36u32.to_le_bytes());
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_ok());
+
+        // A present-but-NULL SACL remains a valid structural possibility.
+        header[12..16].fill(0);
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_ok());
+    }
+
+    #[test]
+    fn optional_descriptor_offsets_reject_invalid_sections() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+
+        for position in [4usize, 8, 12] {
+            for offset in [4u32, 16, 21, 60, u32::MAX] {
+                header[position..position + 4].copy_from_slice(&offset.to_le_bytes());
+                assert!(validate_optional_descriptor_offsets(&header, 64).is_err());
+            }
+            header[position..position + 4].fill(0);
+        }
+
+        header[12..16].copy_from_slice(&20u32.to_le_bytes());
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_err());
+        header[12..16].fill(0);
+        assert!(validate_optional_descriptor_offsets(&header[..19], 64).is_err());
+        assert!(validate_optional_descriptor_offsets(&header, 19).is_err());
+        assert!(validate_optional_descriptor_offsets(&header, 262_145).is_err());
+
+        header[2..4].copy_from_slice(&0x0004u16.to_le_bytes());
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_err());
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        header[1] = 1;
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_err());
+        header[1] = 0;
+        header[0] = 2;
+        assert!(validate_optional_descriptor_offsets(&header, 64).is_err());
+    }
 
     #[test]
     fn self_relative_dacl_offset_must_match_native_pointer() {
