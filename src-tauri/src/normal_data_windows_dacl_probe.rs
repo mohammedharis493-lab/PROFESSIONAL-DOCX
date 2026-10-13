@@ -373,10 +373,7 @@ fn validate_optional_sacl_ace_chain(
 
 /// Native ACL structural validity is only consulted on a complete,
 /// already-bounded owned optional SACL; no audit right is authorized.
-fn validate_optional_sacl_native(
-    header: &[u8],
-    descriptor: &[u8],
-) -> Result<(), PersistenceError> {
+fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
     let Some(range) = optional_sacl_byte_range(header, descriptor)? else {
         return Ok(());
     };
