@@ -412,8 +412,65 @@ fn validate_optional_sacl_native_metadata(
     Ok(())
 }
 
-/// Native ACL validation and metadata inspection use only an already-bounded,
-/// owned optional SACL. Neither step interprets audit rights or grants access.
+/// Never dereference a GetAce pointer: only compare its integer address
+/// against the next known offset in the validated owned ACL buffer.
+fn validate_optional_sacl_ace_pointer(
+    base: usize,
+    offset: usize,
+    native_pointer: usize,
+) -> Result<(), PersistenceError> {
+    let expected = base
+        .checked_add(offset)
+        .ok_or_else(|| denied("optional SACL ACE pointer arithmetic overflow"))?;
+    if native_pointer == 0 || native_pointer != expected {
+        return Err(denied("optional SACL native ACE pointer is not contiguous"));
+    }
+    Ok(())
+}
+
+/// Re-enumerate ACEs with native GetAce on the same owned ACL copy.
+/// Bounds and IsValidAcl/GetAclInformation must have succeeded first.
+/// Audit bits, trustee identities and masks remain opaque.
+fn validate_optional_sacl_native_ace_positions(
+    acl: &[u8],
+    used_bytes: usize,
+) -> Result<(), PersistenceError> {
+    if acl.len() < 8 || used_bytes < 8 || used_bytes > acl.len() {
+        return Err(denied("optional SACL native ACE bounds unavailable"));
+    }
+    let count = u32::from(u16::from_le_bytes([acl[4], acl[5]]));
+    let mut cursor = 8usize;
+    for index in 0..count {
+        let prefix_end = cursor
+            .checked_add(4)
+            .ok_or_else(|| denied("optional SACL native ACE offset overflow"))?;
+        if prefix_end > used_bytes {
+            return Err(denied("optional SACL native ACE header outside used bytes"));
+        }
+        let ace_size = usize::from(u16::from_le_bytes([acl[cursor + 2], acl[cursor + 3]]));
+        let next = cursor
+            .checked_add(ace_size)
+            .ok_or_else(|| denied("optional SACL native ACE size overflow"))?;
+        if ace_size < 4 || ace_size % 4 != 0 || next > used_bytes {
+            return Err(denied("optional SACL native ACE exceeds used bytes"));
+        }
+        let mut native_ace = ptr::null_mut();
+        if unsafe { GetAce(acl.as_ptr() as WinHandle, index, &mut native_ace) } == 0 {
+            return Err(denied(
+                "Windows could not enumerate owned optional SACL ACE",
+            ));
+        }
+        validate_optional_sacl_ace_pointer(acl.as_ptr() as usize, cursor, native_ace as usize)?;
+        cursor = next;
+    }
+    if cursor != used_bytes {
+        return Err(denied("optional SACL native ACE chain byte count mismatch"));
+    }
+    Ok(())
+}
+
+/// Native ACL validation, metadata and ACE position inspections use only
+/// an already-bounded owned optional SACL. None grants audit or access rights.
 fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
     const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
     let Some((range, used_bytes)) = bounded_optional_sacl_ace_usage(header, descriptor)? else {
@@ -437,7 +494,8 @@ fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(),
             "Windows could not inspect owned optional SACL metadata",
         ));
     }
-    validate_optional_sacl_native_metadata(acl, used_bytes, native)
+    validate_optional_sacl_native_metadata(acl, used_bytes, native)?;
+    validate_optional_sacl_native_ace_positions(acl, used_bytes)
 }
 
 fn validate_descriptor_dacl_identity(
@@ -902,6 +960,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optional_sacl_native_ace_pointer_requires_exact_bounded_address() {
+        assert!(validate_optional_sacl_ace_pointer(100, 8, 108).is_ok());
+        assert!(validate_optional_sacl_ace_pointer(100, 8, 0).is_err());
+        assert!(validate_optional_sacl_ace_pointer(100, 8, 107).is_err());
+        assert!(validate_optional_sacl_ace_pointer(usize::MAX, 8, 7).is_err());
+    }
+
+    #[test]
+    fn optional_sacl_native_ace_positions_are_bounded_and_opaque() {
+        // One complete SYSTEM_AUDIT_ACE: header, opaque mask and a valid SID.
+        let acl: [u8; 28] = [
+            2, 0, 28, 0, 1, 0, 0, 0, // ACL
+            2, 0, 20, 0, 0, 0, 0, 0, // ACE header + opaque mask
+            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, // SID
+        ];
+        assert!(validate_optional_sacl_native_ace_positions(&acl, 28).is_ok());
+        assert!(validate_optional_sacl_native_ace_positions(&acl, 27).is_err());
+        assert!(validate_optional_sacl_native_ace_positions(&acl[..24], 24).is_err());
+        let mut bad = acl;
+        bad[4..6].copy_from_slice(&2u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_ace_positions(&bad, 28).is_err());
+        bad = acl;
+        bad[10..12].copy_from_slice(&24u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_ace_positions(&bad, 28).is_err());
+        bad = acl;
+        bad[10..12].copy_from_slice(&0u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_ace_positions(&bad, 28).is_err());
+        let empty_with_slack = [2u8, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(validate_optional_sacl_native_ace_positions(&empty_with_slack, 8).is_ok());
+        assert!(validate_optional_sacl_native_ace_positions(&empty_with_slack, 12).is_err());
+    }
+
+    #[test]
     fn optional_sacl_native_metadata_requires_exact_independent_counts() {
         // One opaque four-byte ACE followed by four legal unused ACL bytes.
         let mut acl = [2u8, 0, 16, 0, 1, 0, 0, 0, 0x11, 0, 4, 0, 0, 0, 0, 0];
@@ -939,6 +1030,22 @@ mod tests {
         };
         assert!(validate_optional_sacl_native_metadata(&acl, 8, native).is_ok());
         assert!(validate_optional_sacl_native_metadata(&[], 8, native).is_err());
+    }
+
+    #[test]
+    fn optional_sacl_native_reenumerates_nonempty_owned_ace() {
+        let mut header = [0u8; 20];
+        let mut owned = [0u8; 64];
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+        header[12..16].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..52].copy_from_slice(&[
+            2, 0, 28, 0, 1, 0, 0, 0, // ACL
+            2, 0, 20, 0, 0, 0, 0, 0, // audit ACE header + opaque mask
+            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0, // SID
+        ]);
+        assert!(validate_optional_sacl_native(&header, &owned).is_ok());
+        owned[34..36].copy_from_slice(&24u16.to_le_bytes());
+        assert!(validate_optional_sacl_native(&header, &owned).is_err());
     }
 
     #[test]
