@@ -295,6 +295,46 @@ fn validate_optional_sid_native(header: &[u8], descriptor: &[u8]) -> Result<(), 
     Ok(())
 }
 
+/// Inspect only SACL header bytes already inside an owned descriptor.
+/// Audit rules or effective rights are never interpreted.
+fn optional_sacl_byte_range(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<Option<std::ops::Range<usize>>, PersistenceError> {
+    if header.len() != 20 {
+        return Err(denied("optional SACL descriptor header truncated"));
+    }
+    let offset = u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as usize;
+    if offset == 0 {
+        return Ok(None);
+    }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if control & 0x0010 == 0 {
+        return Err(denied("SACL pointer without SACL-present control"));
+    }
+    let prefix_end = offset
+        .checked_add(8)
+        .ok_or_else(|| denied("optional SACL header offset overflow"))?;
+    if offset < 20 || offset % 4 != 0 || prefix_end > descriptor.len() {
+        return Err(denied("optional SACL header outside owned descriptor"));
+    }
+    let acl = &descriptor[offset..prefix_end];
+    if (acl[0] != 2 && acl[0] != 4) || acl[1] != 0 || acl[6] != 0 || acl[7] != 0 {
+        return Err(denied(
+            "optional SACL header revision or reserved bytes invalid",
+        ));
+    }
+    let size = usize::from(u16::from_le_bytes([acl[2], acl[3]]));
+    let ace_count = usize::from(u16::from_le_bytes([acl[4], acl[5]]));
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| denied("optional SACL declared size overflow"))?;
+    if size < 8 || size % 4 != 0 || end > descriptor.len() || ace_count > (size - 8) / 4 {
+        return Err(denied("optional SACL declared size or ACE count invalid"));
+    }
+    Ok(Some(offset..end))
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -695,6 +735,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let descriptor_before = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
     validate_optional_sid_shapes(&descriptor_header, &descriptor_before)?;
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
+    optional_sacl_byte_range(&descriptor_header, &descriptor_before)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -753,6 +794,35 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_sacl_header_is_bounded_without_audit_permission_decisions() {
+        let mut header = [0u8; 20];
+        let mut owned = [0u8; 64];
+        assert_eq!(optional_sacl_byte_range(&header, &owned).unwrap(), None);
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+        header[12..16].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            optional_sacl_byte_range(&header, &owned).unwrap(),
+            Some(24..32)
+        );
+        owned[24] = 1;
+        assert!(optional_sacl_byte_range(&header, &owned).is_err());
+        owned[24] = 2;
+        owned[25] = 1;
+        assert!(optional_sacl_byte_range(&header, &owned).is_err());
+        owned[25] = 0;
+        owned[26..28].copy_from_slice(&60u16.to_le_bytes());
+        assert!(optional_sacl_byte_range(&header, &owned).is_err());
+        owned[26..28].copy_from_slice(&8u16.to_le_bytes());
+        owned[28..30].copy_from_slice(&1u16.to_le_bytes());
+        assert!(optional_sacl_byte_range(&header, &owned).is_err());
+        owned[28..30].fill(0);
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        assert!(optional_sacl_byte_range(&header, &owned).is_err());
+        assert!(optional_sacl_byte_range(&header[..19], &owned).is_err());
+    }
 
     #[test]
     fn optional_sids_are_checked_by_windows_only_after_copy_and_bounds() {
