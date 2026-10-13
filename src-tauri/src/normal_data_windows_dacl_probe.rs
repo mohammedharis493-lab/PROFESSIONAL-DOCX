@@ -335,6 +335,42 @@ fn optional_sacl_byte_range(
     Ok(Some(offset..end))
 }
 
+/// Walk only bounded opaque SACL ACE headers from owned descriptor bytes.
+/// Never decode audit masks, trustees or effective access.
+fn validate_optional_sacl_ace_chain(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<(), PersistenceError> {
+    let Some(range) = optional_sacl_byte_range(header, descriptor)? else {
+        return Ok(());
+    };
+    let count = usize::from(u16::from_le_bytes([
+        descriptor[range.start + 4],
+        descriptor[range.start + 5],
+    ]));
+    let mut cursor = range.start + 8;
+    for _ in 0..count {
+        let prefix_end = cursor
+            .checked_add(4)
+            .ok_or_else(|| denied("optional SACL ACE address overflow"))?;
+        if prefix_end > range.end {
+            return Err(denied("optional SACL ACE header truncated"));
+        }
+        let ace_size = usize::from(u16::from_le_bytes([
+            descriptor[cursor + 2],
+            descriptor[cursor + 3],
+        ]));
+        let next = cursor
+            .checked_add(ace_size)
+            .ok_or_else(|| denied("optional SACL ACE size overflow"))?;
+        if ace_size < 4 || ace_size % 4 != 0 || next > range.end {
+            return Err(denied("optional SACL ACE outside declared ACL"));
+        }
+        cursor = next;
+    }
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -735,7 +771,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     let descriptor_before = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
     validate_optional_sid_shapes(&descriptor_header, &descriptor_before)?;
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
-    optional_sacl_byte_range(&descriptor_header, &descriptor_before)?;
+    validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -794,6 +830,27 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_sacl_ace_chain_remains_bounded_and_opaque() {
+        let mut header = [0u8; 20];
+        let mut owned = [0u8; 64];
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_ok());
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+        header[12..16].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..32].copy_from_slice(&[2, 0, 20, 0, 1, 0, 0, 0]);
+        owned[32..36].copy_from_slice(&[0x11, 0, 12, 0]);
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_ok());
+        owned[34..36].copy_from_slice(&0u16.to_le_bytes());
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_err());
+        owned[34..36].copy_from_slice(&3u16.to_le_bytes());
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_err());
+        owned[34..36].copy_from_slice(&16u16.to_le_bytes());
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_err());
+        owned[34..36].copy_from_slice(&12u16.to_le_bytes());
+        owned[28..30].copy_from_slice(&2u16.to_le_bytes());
+        assert!(validate_optional_sacl_ace_chain(&header, &owned).is_err());
+    }
 
     #[test]
     fn optional_sacl_header_is_bounded_without_audit_permission_decisions() {
