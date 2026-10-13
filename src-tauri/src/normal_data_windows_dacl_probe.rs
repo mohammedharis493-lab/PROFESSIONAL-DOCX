@@ -236,6 +236,51 @@ fn validate_optional_descriptor_offsets(
     Ok(())
 }
 
+/// Only decode SID byte boundaries in an owned descriptor snapshot.
+/// A valid shape alone does not identify or authorize any principal.
+fn optional_sid_byte_range(
+    header: &[u8],
+    descriptor: &[u8],
+    field: usize,
+) -> Result<Option<std::ops::Range<usize>>, PersistenceError> {
+    if header.len() != 20 || (field != 4 && field != 8) {
+        return Err(denied("optional SID offset field invalid"));
+    }
+    let offset = u32::from_le_bytes([
+        header[field],
+        header[field + 1],
+        header[field + 2],
+        header[field + 3],
+    ]) as usize;
+    if offset == 0 {
+        return Ok(None);
+    }
+    let prefix_end = offset
+        .checked_add(8)
+        .ok_or_else(|| denied("optional SID prefix overflow"))?;
+    if offset < 20 || offset % 4 != 0 || prefix_end > descriptor.len() {
+        return Err(denied("optional SID prefix outside descriptor"));
+    }
+    let revision = descriptor[offset];
+    let count = descriptor[offset + 1];
+    if revision != 1 || count > 15 {
+        return Err(denied("optional SID revision or count invalid"));
+    }
+    let end = prefix_end
+        .checked_add(usize::from(count) * 4)
+        .ok_or_else(|| denied("optional SID byte length overflow"))?;
+    if end > descriptor.len() {
+        return Err(denied("optional SID extends beyond descriptor"));
+    }
+    Ok(Some(offset..end))
+}
+
+fn validate_optional_sid_shapes(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
+    optional_sid_byte_range(header, descriptor, 4)?;
+    optional_sid_byte_range(header, descriptor, 8)?;
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -634,6 +679,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     // A bounded full-descriptor snapshot includes its owner/group header
     // fields and any optional native sections, without interpreting them.
     let descriptor_before = copy_ace_bytes(descriptor.0, descriptor_bytes as usize)?;
+    validate_optional_sid_shapes(&descriptor_header, &descriptor_before)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -692,6 +738,43 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_owner_group_sids_require_bounded_binary_shapes() {
+        let mut header = [0u8; 20];
+        let mut owned = [0u8; 80];
+        assert!(validate_optional_sid_shapes(&header, &owned).is_ok());
+        header[4..8].copy_from_slice(&20u32.to_le_bytes());
+        header[8..12].copy_from_slice(&40u32.to_le_bytes());
+        owned[20] = 1;
+        owned[21] = 1;
+        owned[40] = 1;
+        assert_eq!(
+            optional_sid_byte_range(&header, &owned, 4).unwrap(),
+            Some(20..32)
+        );
+        assert_eq!(
+            optional_sid_byte_range(&header, &owned, 8).unwrap(),
+            Some(40..48)
+        );
+        assert!(validate_optional_sid_shapes(&header, &owned).is_ok());
+
+        owned[20] = 2;
+        assert!(validate_optional_sid_shapes(&header, &owned).is_err());
+        owned[20] = 1;
+        owned[21] = 16;
+        assert!(validate_optional_sid_shapes(&header, &owned).is_err());
+        owned[21] = 1;
+        header[8..12].copy_from_slice(&76u32.to_le_bytes());
+        assert!(validate_optional_sid_shapes(&header, &owned).is_err());
+        header[8..12].copy_from_slice(&40u32.to_le_bytes());
+        header[4..8].copy_from_slice(&72u32.to_le_bytes());
+        owned[72] = 1;
+        owned[73] = 1;
+        assert!(validate_optional_sid_shapes(&header, &owned).is_err());
+        assert!(optional_sid_byte_range(&header[..19], &owned, 4).is_err());
+        assert!(optional_sid_byte_range(&header, &owned, 12).is_err());
+    }
 
     #[test]
     fn optional_descriptor_offsets_allow_absence_and_bounded_sections() {
