@@ -371,6 +371,20 @@ fn validate_optional_sacl_ace_chain(
     Ok(())
 }
 
+/// Native ACL structural validity is only consulted on a complete,
+/// already-bounded owned optional SACL; no audit right is authorized.
+fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
+    let Some(range) = optional_sacl_byte_range(header, descriptor)? else {
+        return Ok(());
+    };
+    validate_optional_sacl_ace_chain(header, descriptor)?;
+    let acl = &descriptor[range];
+    if unsafe { IsValidAcl(acl.as_ptr() as WinHandle) } == 0 {
+        return Err(denied("Windows rejected owned optional SACL structure"));
+    }
+    Ok(())
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -772,6 +786,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     validate_optional_sid_shapes(&descriptor_header, &descriptor_before)?;
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
+    validate_optional_sacl_native(&descriptor_header, &descriptor_before)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -830,6 +845,23 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_sacl_native_validation_uses_owned_bounded_bytes() {
+        let mut header = [0u8; 20];
+        let mut owned = vec![0u8; 64];
+        assert!(validate_optional_sacl_native(&header, &owned).is_ok());
+        header[2..4].copy_from_slice(&0x8014u16.to_le_bytes());
+        header[12..16].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
+        assert!(validate_optional_sacl_native(&header, &owned).is_ok());
+        owned[24] = 1;
+        assert!(validate_optional_sacl_native(&header, &owned).is_err());
+        owned[24] = 2;
+        owned[26..28].copy_from_slice(&12u16.to_le_bytes());
+        owned[28..30].copy_from_slice(&1u16.to_le_bytes());
+        assert!(validate_optional_sacl_native(&header, &owned).is_err());
+    }
 
     #[test]
     fn optional_sacl_ace_chain_remains_bounded_and_opaque() {
