@@ -335,14 +335,14 @@ fn optional_sacl_byte_range(
     Ok(Some(offset..end))
 }
 
-/// Walk only bounded opaque SACL ACE headers from owned descriptor bytes.
+/// Walk bounded, opaque SACL ACE headers and count the actual used bytes.
 /// Never decode audit masks, trustees or effective access.
-fn validate_optional_sacl_ace_chain(
+fn bounded_optional_sacl_ace_usage(
     header: &[u8],
     descriptor: &[u8],
-) -> Result<(), PersistenceError> {
+) -> Result<Option<(std::ops::Range<usize>, usize)>, PersistenceError> {
     let Some(range) = optional_sacl_byte_range(header, descriptor)? else {
-        return Ok(());
+        return Ok(None);
     };
     let count = usize::from(u16::from_le_bytes([
         descriptor[range.start + 4],
@@ -368,21 +368,76 @@ fn validate_optional_sacl_ace_chain(
         }
         cursor = next;
     }
+    let used = cursor - range.start;
+    Ok(Some((range, used)))
+}
+
+fn validate_optional_sacl_ace_chain(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<(), PersistenceError> {
+    bounded_optional_sacl_ace_usage(header, descriptor).map(|_| ())
+}
+
+/// Independently reconcile Win32 ACL size information with the owned ACL
+/// header and the bounded ACE chain. Unused trailing ACL space is permitted.
+fn validate_optional_sacl_native_metadata(
+    acl: &[u8],
+    used_bytes: usize,
+    native: AclSizeInformation,
+) -> Result<(), PersistenceError> {
+    if acl.len() < 8 || used_bytes < 8 || used_bytes > acl.len() {
+        return Err(denied("optional SACL used-byte bounds invalid"));
+    }
+    let declared_size = u32::from(u16::from_le_bytes([acl[2], acl[3]]));
+    let declared_count = u32::from(u16::from_le_bytes([acl[4], acl[5]]));
+    let actual_size =
+        u32::try_from(acl.len()).map_err(|_| denied("optional SACL size exceeds native bounds"))?;
+    let actual_used = u32::try_from(used_bytes)
+        .map_err(|_| denied("optional SACL used bytes exceed native bounds"))?;
+    let native_total = native
+        .acl_bytes_in_use
+        .checked_add(native.acl_bytes_free)
+        .ok_or_else(|| denied("optional SACL native byte count overflow"))?;
+    if declared_size != actual_size
+        || native_total != declared_size
+        || native.ace_count != declared_count
+        || native.acl_bytes_in_use != actual_used
+        || native.acl_bytes_free != actual_size - actual_used
+    {
+        return Err(denied(
+            "optional SACL native metadata disagrees with owned bytes",
+        ));
+    }
     Ok(())
 }
 
-/// Native ACL structural validity is only consulted on a complete,
-/// already-bounded owned optional SACL; no audit right is authorized.
+/// Native ACL validation and metadata inspection use only an already-bounded,
+/// owned optional SACL. Neither step interprets audit rights or grants access.
 fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(), PersistenceError> {
-    let Some(range) = optional_sacl_byte_range(header, descriptor)? else {
+    const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
+    let Some((range, used_bytes)) = bounded_optional_sacl_ace_usage(header, descriptor)? else {
         return Ok(());
     };
-    validate_optional_sacl_ace_chain(header, descriptor)?;
     let acl = &descriptor[range];
     if unsafe { IsValidAcl(acl.as_ptr() as WinHandle) } == 0 {
         return Err(denied("Windows rejected owned optional SACL structure"));
     }
-    Ok(())
+    let mut native = AclSizeInformation::default();
+    let ok = unsafe {
+        GetAclInformation(
+            acl.as_ptr() as WinHandle,
+            (&mut native as *mut AclSizeInformation).cast(),
+            std::mem::size_of::<AclSizeInformation>() as u32,
+            ACL_SIZE_INFORMATION_CLASS,
+        )
+    };
+    if ok == 0 {
+        return Err(denied(
+            "Windows could not inspect owned optional SACL metadata",
+        ));
+    }
+    validate_optional_sacl_native_metadata(acl, used_bytes, native)
 }
 
 fn validate_descriptor_dacl_identity(
@@ -847,6 +902,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optional_sacl_native_metadata_requires_exact_independent_counts() {
+        // One opaque four-byte ACE followed by four legal unused ACL bytes.
+        let mut acl = [2u8, 0, 16, 0, 1, 0, 0, 0, 0x11, 0, 4, 0, 0, 0, 0, 0];
+        let native = AclSizeInformation {
+            ace_count: 1,
+            acl_bytes_in_use: 12,
+            acl_bytes_free: 4,
+        };
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, native).is_ok());
+        assert!(validate_optional_sacl_native_metadata(&acl, 16, native).is_err());
+        assert!(validate_optional_sacl_native_metadata(&acl, 7, native).is_err());
+        let mut bad = native;
+        bad.ace_count = 2;
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, bad).is_err());
+        bad = native;
+        bad.acl_bytes_in_use = 11;
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, bad).is_err());
+        bad = native;
+        bad.acl_bytes_free = 3;
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, bad).is_err());
+        bad = native;
+        bad.acl_bytes_in_use = u32::MAX;
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, bad).is_err());
+        acl[2..4].copy_from_slice(&12u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_metadata(&acl, 12, native).is_err());
+    }
+
+    #[test]
+    fn optional_sacl_native_metadata_allows_empty_acl_slack() {
+        let acl = [2u8, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let native = AclSizeInformation {
+            ace_count: 0,
+            acl_bytes_in_use: 8,
+            acl_bytes_free: 4,
+        };
+        assert!(validate_optional_sacl_native_metadata(&acl, 8, native).is_ok());
+        assert!(validate_optional_sacl_native_metadata(&[], 8, native).is_err());
+    }
+
+    #[test]
     fn optional_sacl_native_validation_uses_owned_bounded_bytes() {
         let mut header = [0u8; 20];
         let mut owned = vec![0u8; 64];
@@ -855,6 +950,10 @@ mod tests {
         header[12..16].copy_from_slice(&24u32.to_le_bytes());
         owned[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
         assert!(validate_optional_sacl_native(&header, &owned).is_ok());
+        // Windows must also accept a valid empty SACL with unused capacity.
+        owned[26..28].copy_from_slice(&12u16.to_le_bytes());
+        assert!(validate_optional_sacl_native(&header, &owned).is_ok());
+        owned[26..28].copy_from_slice(&8u16.to_le_bytes());
         owned[24] = 1;
         assert!(validate_optional_sacl_native(&header, &owned).is_err());
         owned[24] = 2;
