@@ -216,15 +216,9 @@ mod deny_without_verified_authority_tests {
 
         // Each malformed field is the only invalid intent field in its case.
         // Neither the raw-material nor metadata-only path may create storage.
-        for (index, field_name) in [
-            "run",
-            "workspace",
-            "engagement",
-            "workpaper",
-            "revision",
-        ]
-        .iter()
-        .enumerate()
+        for (index, field_name) in ["run", "workspace", "engagement", "workpaper", "revision"]
+            .iter()
+            .enumerate()
         {
             let mut ids = [
                 run.as_str(),
