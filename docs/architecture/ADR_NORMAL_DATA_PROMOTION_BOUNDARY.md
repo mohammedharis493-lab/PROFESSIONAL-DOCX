@@ -23,6 +23,8 @@ The accepted [ADR-0007](ADR-0007-evidence-capture-and-signoff-binding.md) requir
 
 ## Safe implementation sequence
 
+The [D2 exit criteria and delivery roadmap](NORMAL_DATA_D2_EXIT_CRITERIA_AND_ROADMAP.md) is a **proposed planning companion**, not an amendment to this ADR's security decisions. Its PR estimates confer no authorization; the fail-closed prerequisites below remain authoritative.
+
 **D1 — native inspection only.** Add a bounded, read-only provenance/readiness query that takes only a completed run UUID. Resolve frozen recipe/dataset identities from the database, return source A/B SHA-256 and result SHA-256 together with their distinct meanings, and indicate integrity preconditions. The query must not capture, attach, mutate, or claim authorisation. A historical receipt is available even when linked source bytes have changed; any live verification status is a new, separately labelled observation.
 
 **D2A — live source-integrity preflight (implemented separately from authorization).** An explicitly invoked native command re-resolves exact dataset versions and re-reads both linked sources through the approved-root, stable-read, bounded SHA-256 verifier. Return two timestamped observations only if each matches the historical run's exact source hash. Reject changed, unavailable and invalid sources without any capture, attachment, state mutation or authorization grant. These reads are sequential and do not produce an atomic two-file snapshot or a durable preservation guarantee.
