@@ -98,6 +98,12 @@ impl PromotionPermissionPolicy for SqlitePromotionPermissions<'_> {
         if Uuid::parse_str(principal_id).is_err() || Uuid::parse_str(resource_id).is_err() {
             return false;
         }
+        // The standard SQLite opener creates an absent database. Permission
+        // evaluation must deny without doing that in the non-racing case.
+        // This path check is not a handle-bound filesystem security proof.
+        if !self.database_path.is_file() {
+            return false;
+        }
         let Ok(now) = persistence::now_unix_ms() else {
             return false;
         };
@@ -393,7 +399,7 @@ mod deny_by_default_regressions {
         for permission in permissions() {
             assert!(
                 !unavailable.is_allowed(&subject, permission, &resource),
-                "missing database must deny without attempting provisioning"
+                "a missing registry cannot grant any permission"
             );
         }
         assert!(
