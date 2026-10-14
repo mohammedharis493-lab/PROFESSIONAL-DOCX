@@ -1491,7 +1491,8 @@ mod tests {
         bad[28..30].copy_from_slice(&2u16.to_le_bytes());
         assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
         bad = owned;
-        bad[34..36].copy_from_slice(&24u16.to_le_bytes());
+        // An ACE size of 28 would extend beyond this 32-byte ACL.
+        bad[34..36].copy_from_slice(&28u16.to_le_bytes());
         assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
         bad = owned;
         bad[34..36].copy_from_slice(&0u16.to_le_bytes());
