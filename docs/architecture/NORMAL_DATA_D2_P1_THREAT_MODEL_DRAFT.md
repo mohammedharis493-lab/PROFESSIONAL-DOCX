@@ -3,7 +3,7 @@
 **Status: DRAFT — security decision required; no platform or capture mode approved.**  
 **Inspection baseline:** protected `develop` at `6cc12b7a0f90f0a1fddfc853120fdea96387adb4` (Stage AK).  
 **Authority:** [ADR — Normal Data promotion boundary](ADR_NORMAL_DATA_PROMOTION_BOUNDARY.md) (proposed implementation gates) and [accepted ADR-0007](ADR-0007-evidence-capture-and-signoff-binding.md).  
-**Related planning proposal:** [PR #127](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/pull/127), not yet merged when this draft was started. This threat model does not depend on a merge of PR #127.
+**Planning companion:** [PR #127](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/pull/127) was merged after this draft was started. Human decisions are tracked in [D2-P1 decision gate #129](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/issues/129); neither a roadmap merge nor an issue comment is security sign-off.
 
 This is the **first security-design input**, not implementation authorization, a D2 approval, a proof of custody, or a substitute for independent platform review. Findings describe observed source-code constraints at the baseline; open items remain unverified.
 
@@ -89,6 +89,23 @@ Do not resolve an OPEN cell with “CI green” or a speculative risk acceptance
 - **DEC-08:** Which D3 specialist revision types are in scope for first release? No signed/reviewed revision may be mutated, regardless of UI request.
 
 Each decision must be recorded with alternatives considered, owner/approver, date, rationale, accepted constraints and specific negative verification tests. **None is approved by this document.**
+
+## 7A. Decision-evidence register for human reviewers (all unresolved)
+
+For each **DEC-01 through DEC-08** listed above, [security decision gate #129](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/issues/129) must link an explicit decision record before anyone marks D2-P1 approved. Each decision record must name the responsible product/security owner, independent approver, date, alternatives, selected boundary, rejected alternatives, residual adversarial assumptions, negative test evidence, and governing ADR update. All eight decisions currently have **status OPEN**; neither green CI nor merging this draft changes their status. Do not invent a reviewer or assume a default platform.
+
+| Decision | Required sign-off topic | Current status |
+| --- | --- | --- |
+| DEC-01 | Supported capture OS/filesystem | **OPEN** |
+| DEC-02 | Same-user, administrator and DB-owner threat scope | **OPEN** |
+| DEC-03 | Trusted production principal/session issuer and revocation | **OPEN** |
+| DEC-04 | First trusted grant administrator bootstrap | **OPEN** |
+| DEC-05 | Handle-bound custody and platform crash-durability guarantees | **OPEN** |
+| DEC-06 | Named independent security approver and acceptance evidence | **OPEN** |
+| DEC-07 | Retention, legal hold, deletion, backup and quarantine | **OPEN** |
+| DEC-08 | Eligible unsigned specialist revision types and lifecycle | **OPEN** |
+
+The current source permits non-archived engagement records with free-form engagement status; no accepted policy yet defines which statuses are promotion-eligible. DEC-08 review must decide whether non-archived status is sufficient, or which explicit statuses bar grant issuance, preflight and linkage. Do not introduce a guessed `ACTIVE` allowlist without a recorded policy and negative tests.
 
 ## 8. D2-P1 completion gate and next-package dependency
 
