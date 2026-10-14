@@ -1431,7 +1431,8 @@ mod tests {
             validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, false,).is_err()
         );
         let stale = descriptor[..20].to_vec();
-        descriptor[16..20].copy_from_slice(&40u32.to_le_bytes());
+        // Offset 44 cannot hold the complete eight-byte ACL header.
+        descriptor[16..20].copy_from_slice(&44u32.to_le_bytes());
         assert!(validate_owned_dacl_native_descriptor(&stale, &descriptor, true,).is_err());
         assert!(
             validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, true,).is_err()
