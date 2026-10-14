@@ -687,8 +687,8 @@ fn validate_optional_owner_native_descriptor(
 }
 
 /// Compare the native group SID pointer with an already bounded group
-/// offset in the owned self-relative descriptor. Without an group, Windows
-/// leaves GroupDefaulted unset; that output must never influence a decision.
+/// offset in the owned self-relative descriptor. With no group, Windows
+/// does not define GroupDefaulted; it must never influence a decision.
 fn validate_optional_group_native_fields(
     header: &[u8],
     descriptor_base: usize,
@@ -726,7 +726,7 @@ fn validate_optional_group_native_fields(
 
 /// Query GetSecurityDescriptorGroup on the validated owned copy only.
 /// SID byte bounds and IsValidSid have already been checked; no process token,
-/// trustee role, group privilege or protected-root rights are inferred.
+/// trustee role, group membership or protected-root rights are inferred.
 fn validate_optional_group_native_descriptor(
     header: &[u8],
     descriptor: &[u8],
