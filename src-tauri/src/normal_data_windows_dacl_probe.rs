@@ -40,6 +40,11 @@ unsafe extern "system" {
         owner: *mut WinHandle,
         owner_defaulted: *mut i32,
     ) -> i32;
+    fn GetSecurityDescriptorGroup(
+        descriptor: WinHandle,
+        group: *mut WinHandle,
+        group_defaulted: *mut i32,
+    ) -> i32;
     fn GetSecurityDescriptorControl(
         descriptor: WinHandle,
         control: *mut u16,
@@ -681,6 +686,84 @@ fn validate_optional_owner_native_descriptor(
     )
 }
 
+/// Compare the native group SID pointer with an already bounded group
+/// offset in the owned self-relative descriptor. With no group, Windows
+/// does not define GroupDefaulted; it must never influence a decision.
+fn validate_optional_group_native_fields(
+    header: &[u8],
+    descriptor_base: usize,
+    group_offset: Option<usize>,
+    native_group_address: usize,
+    native_defaulted: Option<bool>,
+) -> Result<(), PersistenceError> {
+    const SE_GROUP_DEFAULTED: u16 = 0x0002;
+    if header.len() != 20 {
+        return Err(denied("native group descriptor header unavailable"));
+    }
+    let Some(offset) = group_offset else {
+        if native_group_address != 0 {
+            return Err(denied("native group unexpectedly present"));
+        }
+        return Ok(());
+    };
+    if offset < 20 || offset % 4 != 0 {
+        return Err(denied("native group offset invalid"));
+    }
+    let expected = descriptor_base
+        .checked_add(offset)
+        .ok_or_else(|| denied("native group address overflow"))?;
+    if native_group_address == 0 || native_group_address != expected {
+        return Err(denied("native group pointer differs from owned bytes"));
+    }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if native_defaulted != Some(control & SE_GROUP_DEFAULTED != 0) {
+        return Err(denied(
+            "native group defaulted flag differs from owned bytes",
+        ));
+    }
+    Ok(())
+}
+
+/// Query GetSecurityDescriptorGroup on the validated owned copy only.
+/// SID byte bounds and IsValidSid have already been checked; no process token,
+/// trustee role, group membership or protected-root rights are inferred.
+fn validate_optional_group_native_descriptor(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<(), PersistenceError> {
+    if header.len() != 20 || descriptor.len() < 20 || !descriptor.starts_with(header) {
+        return Err(denied("native group descriptor snapshot inconsistent"));
+    }
+    let total = u32::try_from(descriptor.len())
+        .map_err(|_| denied("native group descriptor length invalid"))?;
+    validate_optional_descriptor_offsets(header, total)?;
+    let group_offset = optional_sid_byte_range(header, descriptor, 8)?.map(|r| r.start);
+    let mut native_group = ptr::null_mut();
+    let mut native_defaulted = 0i32;
+    let ok = unsafe {
+        GetSecurityDescriptorGroup(
+            descriptor.as_ptr() as WinHandle,
+            &mut native_group,
+            &mut native_defaulted,
+        )
+    };
+    if ok == 0 {
+        return Err(denied("Windows could not inspect owned group SID"));
+    }
+    let defaulted = if native_group.is_null() {
+        None
+    } else {
+        Some(native_defaulted != 0)
+    };
+    validate_optional_group_native_fields(
+        header,
+        descriptor.as_ptr() as usize,
+        group_offset,
+        native_group as usize,
+        defaulted,
+    )
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -1082,6 +1165,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     validate_optional_sid_shapes(&descriptor_header, &descriptor_before)?;
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
     validate_optional_owner_native_descriptor(&descriptor_header, &descriptor_before)?;
+    validate_optional_group_native_descriptor(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native_descriptor(&descriptor_header, &descriptor_before)?;
@@ -1143,6 +1227,58 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_group_native_fields_reject_bad_pointer_and_defaulted_bit() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        // With no group, the defaulted output has no defined value.
+        assert!(validate_optional_group_native_fields(&header, 100, None, 0, None).is_ok());
+        assert!(validate_optional_group_native_fields(&header, 100, None, 0, Some(true)).is_ok());
+        assert!(validate_optional_group_native_fields(&header, 100, None, 124, None).is_err());
+        assert!(validate_optional_group_native_fields(&header, 100, Some(24), 124, None).is_err());
+        assert!(validate_optional_group_native_fields(&header, 100, Some(24), 0, None).is_err());
+        assert!(validate_optional_group_native_fields(&header, 100, Some(24), 125, None).is_err());
+        assert!(validate_optional_group_native_fields(&header, 100, Some(22), 122, None).is_err());
+        assert!(
+            validate_optional_group_native_fields(&header, usize::MAX, Some(24), 23, None).is_err()
+        );
+        assert!(validate_optional_group_native_fields(&header, 100, Some(24), 124, None).is_err());
+        assert!(
+            validate_optional_group_native_fields(&header, 100, Some(24), 124, Some(false)).is_ok()
+        );
+        assert!(
+            validate_optional_group_native_fields(&header, 100, Some(24), 124, Some(true)).is_err()
+        );
+        header[2..4].copy_from_slice(&0x8002u16.to_le_bytes());
+        assert!(
+            validate_optional_group_native_fields(&header, 100, Some(24), 124, Some(true)).is_ok()
+        );
+        assert!(
+            validate_optional_group_native_fields(&header, 100, Some(24), 124, Some(false))
+                .is_err()
+        );
+        assert!(validate_optional_group_native_fields(&header[..19], 100, None, 0, None).is_err());
+    }
+
+    #[test]
+    fn optional_group_native_descriptor_uses_owned_bounded_sid() {
+        let mut owned = [0u8; 48];
+        owned[0] = 1;
+        owned[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert!(validate_optional_group_native_descriptor(&owned[..20], &owned).is_ok());
+        owned[8..12].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..36].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]);
+        assert!(validate_optional_group_native_descriptor(&owned[..20], &owned).is_ok());
+        owned[2..4].copy_from_slice(&0x8002u16.to_le_bytes());
+        assert!(validate_optional_group_native_descriptor(&owned[..20], &owned).is_ok());
+        let stale = owned[..20].to_vec();
+        owned[8..12].copy_from_slice(&44u32.to_le_bytes());
+        assert!(validate_optional_group_native_descriptor(&stale, &owned).is_err());
+        assert!(validate_optional_group_native_descriptor(&owned[..20], &owned).is_err());
+        assert!(validate_optional_group_native_descriptor(&owned[..19], &owned).is_err());
+    }
 
     #[test]
     fn optional_owner_native_fields_reject_bad_pointer_and_defaulted_bit() {
