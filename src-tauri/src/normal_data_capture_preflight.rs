@@ -199,4 +199,96 @@ mod deny_without_verified_authority_tests {
             "invalid inputs must not create storage"
         );
     }
+
+    #[test]
+    fn malformed_scoped_capture_ids_deny_without_creating_storage() {
+        let test_root =
+            std::env::temp_dir().join(format!("pdox-invalid-scope-preflight-{}", Uuid::new_v4()));
+        std::fs::create_dir(&test_root).expect("create writable root for denial assertions");
+        let database = test_root.join("uninitialized.sqlite");
+        let retention_root = test_root.join("retention");
+        let run = Uuid::new_v4().to_string();
+        let workspace = Uuid::new_v4().to_string();
+        let engagement = Uuid::new_v4().to_string();
+        let workpaper = Uuid::new_v4().to_string();
+        let revision = Uuid::new_v4().to_string();
+        let stage = Uuid::new_v4().to_string();
+        let principal = VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
+
+        // Each malformed field is the only invalid intent field in its case.
+        // Neither the raw-material nor metadata-only path may create storage.
+        for (index, field_name) in ["run", "workspace", "engagement", "workpaper", "revision"]
+            .iter()
+            .enumerate()
+        {
+            let mut ids = [
+                run.as_str(),
+                workspace.as_str(),
+                engagement.as_str(),
+                workpaper.as_str(),
+                revision.as_str(),
+            ];
+            ids[index] = "latest";
+            let intent = PromotionIntent {
+                run_id: ids[0],
+                expected_workspace_id: ids[1],
+                target_engagement_id: ids[2],
+                target_workpaper_id: ids[3],
+                target_workpaper_revision_id: ids[4],
+            };
+            assert!(
+                read_exact_capture_material(
+                    &database,
+                    &retention_root,
+                    &stage,
+                    &intent,
+                    Some(&principal),
+                )
+                .is_err(),
+                "malformed {field_name} ID must deny material access"
+            );
+            assert!(
+                inspect_exact_capture_preflight(
+                    &database,
+                    &retention_root,
+                    &stage,
+                    &intent,
+                    Some(&principal),
+                )
+                .is_err(),
+                "malformed {field_name} ID must deny metadata preflight"
+            );
+            assert!(
+                !database.exists() && !retention_root.exists(),
+                "malformed {field_name} ID must not create SQLite or retention storage"
+            );
+        }
+
+        // Even metadata-only preflight cannot use an asserted actor string
+        // as a verified principal. Fixtures exist only in the test build.
+        let asserted_actor = VerifiedPrincipal::fixture("caller-asserted-role");
+        let valid_intent = PromotionIntent {
+            run_id: &run,
+            expected_workspace_id: &workspace,
+            target_engagement_id: &engagement,
+            target_workpaper_id: &workpaper,
+            target_workpaper_revision_id: &revision,
+        };
+        assert!(
+            inspect_exact_capture_preflight(
+                &database,
+                &retention_root,
+                &stage,
+                &valid_intent,
+                Some(&asserted_actor),
+            )
+            .is_err(),
+            "metadata-only preflight must reject a non-UUID asserted actor"
+        );
+        assert!(
+            !database.exists() && !retention_root.exists(),
+            "asserted actor must not create SQLite or retention storage"
+        );
+        std::fs::remove_dir(&test_root).expect("remove empty denial-test root");
+    }
 }
