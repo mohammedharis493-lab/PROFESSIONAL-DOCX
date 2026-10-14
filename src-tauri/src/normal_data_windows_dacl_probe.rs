@@ -530,7 +530,9 @@ fn validate_optional_sacl_native_descriptor_fields(
         return Ok(());
     }
     if native_defaulted != (control & SE_SACL_DEFAULTED != 0) {
-        return Err(denied("native SACL defaulted flag differs from owned descriptor"));
+        return Err(denied(
+            "native SACL defaulted flag differs from owned descriptor",
+        ));
     }
     let expected_pointer = if let Some(offset) = owned_sacl_offset {
         if offset < 20 || offset % 4 != 0 {
@@ -543,7 +545,9 @@ fn validate_optional_sacl_native_descriptor_fields(
         0
     };
     if native_sacl_address != expected_pointer {
-        return Err(denied("native SACL pointer differs from owned descriptor offset"));
+        return Err(denied(
+            "native SACL pointer differs from owned descriptor offset",
+        ));
     }
     Ok(())
 }
@@ -574,7 +578,9 @@ fn validate_optional_sacl_native_descriptor(
         )
     };
     if ok == 0 {
-        return Err(denied("Windows could not inspect owned descriptor SACL identity"));
+        return Err(denied(
+            "Windows could not inspect owned descriptor SACL identity",
+        ));
     }
     // In the absent case Windows leaves pointer/defaulted outputs undefined.
     let (address, defaulted) = if native_present != 0 {
@@ -1062,43 +1068,95 @@ mod tests {
         // Absent: undefined native pointer/defaulted outputs are not read.
         assert!(validate_optional_sacl_native_descriptor_fields(
             &header, 100, None, false, 999, true,
-        ).is_ok());
+        )
+        .is_ok());
         assert!(validate_optional_sacl_native_descriptor_fields(
             &header, 100, None, true, 0, false,
-        ).is_err());
+        )
+        .is_err());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(24), false, 0, false,
-        ).is_err());
+            &header,
+            100,
+            Some(24),
+            false,
+            0,
+            false,
+        )
+        .is_err());
         header[2..4].copy_from_slice(&0x8010u16.to_le_bytes());
         // Present-NULL is distinct from an absent SACL.
         assert!(validate_optional_sacl_native_descriptor_fields(
             &header, 100, None, true, 0, false,
-        ).is_ok());
+        )
+        .is_ok());
         assert!(validate_optional_sacl_native_descriptor_fields(
             &header, 100, None, true, 124, false,
-        ).is_err());
+        )
+        .is_err());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(24), true, 124, false,
-        ).is_ok());
+            &header,
+            100,
+            Some(24),
+            true,
+            124,
+            false,
+        )
+        .is_ok());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(24), true, 125, false,
-        ).is_err());
+            &header,
+            100,
+            Some(24),
+            true,
+            125,
+            false,
+        )
+        .is_err());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, usize::MAX, Some(24), true, 23, false,
-        ).is_err());
+            &header,
+            usize::MAX,
+            Some(24),
+            true,
+            23,
+            false,
+        )
+        .is_err());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(22), true, 122, false,
-        ).is_err());
+            &header,
+            100,
+            Some(22),
+            true,
+            122,
+            false,
+        )
+        .is_err());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(24), true, 124, true,
-        ).is_err());
+            &header,
+            100,
+            Some(24),
+            true,
+            124,
+            true,
+        )
+        .is_err());
         header[2..4].copy_from_slice(&0x8030u16.to_le_bytes());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header, 100, Some(24), true, 124, true,
-        ).is_ok());
+            &header,
+            100,
+            Some(24),
+            true,
+            124,
+            true,
+        )
+        .is_ok());
         assert!(validate_optional_sacl_native_descriptor_fields(
-            &header[..19], 100, None, false, 0, false,
-        ).is_err());
+            &header[..19],
+            100,
+            None,
+            false,
+            0,
+            false,
+        )
+        .is_err());
     }
 
     #[test]
