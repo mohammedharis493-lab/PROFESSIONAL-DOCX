@@ -131,8 +131,7 @@ mod deny_without_verified_authority_tests {
         let stage = Uuid::new_v4().to_string();
 
         assert!(
-            read_exact_capture_material(&database, &retention_root, &stage, &intent, None)
-                .is_err(),
+            read_exact_capture_material(&database, &retention_root, &stage, &intent, None).is_err(),
             "a caller without verified authority must not read the three artifacts"
         );
         assert!(
@@ -195,6 +194,9 @@ mod deny_without_verified_authority_tests {
             .is_err(),
             "malformed run identity must deny even for a test-verified principal"
         );
-        assert!(!absent_root.exists(), "invalid inputs must not create storage");
+        assert!(
+            !absent_root.exists(),
+            "invalid inputs must not create storage"
+        );
     }
 }
