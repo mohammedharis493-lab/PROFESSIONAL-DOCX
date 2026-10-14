@@ -572,8 +572,7 @@ mod tests {
 
     #[test]
     fn denied_admin_inputs_cannot_initialize_storage() {
-        let folder =
-            std::env::temp_dir().join(format!("pdox-denied-admin-{}", Uuid::new_v4()));
+        let folder = std::env::temp_dir().join(format!("pdox-denied-admin-{}", Uuid::new_v4()));
         fs::create_dir(&folder).expect("create writable directory for denial checks");
         let database = folder.join("uninitialized.sqlite");
         let subject = Uuid::new_v4().to_string();
