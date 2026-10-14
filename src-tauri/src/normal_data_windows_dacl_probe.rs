@@ -634,7 +634,9 @@ fn validate_optional_owner_native_fields(
     }
     let control = u16::from_le_bytes([header[2], header[3]]);
     if native_defaulted != Some(control & SE_OWNER_DEFAULTED != 0) {
-        return Err(denied("native owner defaulted flag differs from owned bytes"));
+        return Err(denied(
+            "native owner defaulted flag differs from owned bytes",
+        ));
     }
     Ok(())
 }
@@ -1155,13 +1157,24 @@ mod tests {
         assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 0, None).is_err());
         assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 125, None).is_err());
         assert!(validate_optional_owner_native_fields(&header, 100, Some(22), 122, None).is_err());
-        assert!(validate_optional_owner_native_fields(&header, usize::MAX, Some(24), 23, None).is_err());
+        assert!(
+            validate_optional_owner_native_fields(&header, usize::MAX, Some(24), 23, None).is_err()
+        );
         assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 124, None).is_err());
-        assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(false)).is_ok());
-        assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(true)).is_err());
+        assert!(
+            validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(false)).is_ok()
+        );
+        assert!(
+            validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(true)).is_err()
+        );
         header[2..4].copy_from_slice(&0x8001u16.to_le_bytes());
-        assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(true)).is_ok());
-        assert!(validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(false)).is_err());
+        assert!(
+            validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(true)).is_ok()
+        );
+        assert!(
+            validate_optional_owner_native_fields(&header, 100, Some(24), 124, Some(false))
+                .is_err()
+        );
         assert!(validate_optional_owner_native_fields(&header[..19], 100, None, 0, None).is_err());
     }
 
@@ -1172,9 +1185,7 @@ mod tests {
         owned[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
         assert!(validate_optional_owner_native_descriptor(&owned[..20], &owned).is_ok());
         owned[4..8].copy_from_slice(&24u32.to_le_bytes());
-        owned[24..36].copy_from_slice(&[
-            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
-        ]);
+        owned[24..36].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]);
         assert!(validate_optional_owner_native_descriptor(&owned[..20], &owned).is_ok());
         owned[2..4].copy_from_slice(&0x8001u16.to_le_bytes());
         assert!(validate_optional_owner_native_descriptor(&owned[..20], &owned).is_ok());
