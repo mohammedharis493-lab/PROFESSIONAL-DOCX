@@ -346,3 +346,106 @@ where
     tx.commit()?;
     Ok(value)
 }
+
+#[cfg(test)]
+mod deny_by_default_regressions {
+    use super::*;
+    use std::fs;
+
+    fn permissions() -> [PromotionPermission; 3] {
+        [
+            PromotionPermission::ReadNormalDataWorkspace,
+            PromotionPermission::AttachEvidenceToEngagement,
+            PromotionPermission::ModifyWorkpaperRevision,
+        ]
+    }
+
+    #[test]
+    fn default_promotion_policy_rejects_all_scopes_and_asserted_ids() {
+        let deny = DenyAllPromotionPermissions;
+        let subject = Uuid::new_v4().to_string();
+        let resource = Uuid::new_v4().to_string();
+        for permission in permissions() {
+            assert!(
+                !deny.is_allowed(&subject, permission, &resource),
+                "even well-formed UUIDs do not establish production identity"
+            );
+            assert!(
+                !deny.is_allowed("admin", permission, "untrusted-resource"),
+                "asserted actors and roles never grant authority"
+            );
+        }
+    }
+
+    #[test]
+    fn unprovisioned_registry_and_missing_database_deny_every_scope() {
+        let folder = std::env::temp_dir().join(format!(
+            "pdox-promotion-deny-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir(&folder).expect("isolated permission-registry test folder");
+        let database = folder.join("normal-data.sqlite");
+        let missing_database = folder.join("absent.sqlite");
+        let subject = Uuid::new_v4().to_string();
+        let resource = Uuid::new_v4().to_string();
+
+        let unavailable = SqlitePromotionPermissions::new(&missing_database);
+        for permission in permissions() {
+            assert!(
+                !unavailable.is_allowed(&subject, permission, &resource),
+                "missing database must deny without attempting provisioning"
+            );
+        }
+        assert!(
+            !missing_database.exists(),
+            "read-only permission lookup must not create an absent database"
+        );
+
+        persistence::initialize_database(&database)
+            .expect("initialize empty versioned permission registry");
+        let empty = SqlitePromotionPermissions::new(&database);
+        for permission in permissions() {
+            assert!(
+                !empty.is_allowed(&subject, permission, &resource),
+                "an unenrolled UUID cannot acquire a permission"
+            );
+            assert!(
+                !empty.is_allowed("admin", permission, &resource),
+                "asserted administrator strings cannot create a principal"
+            );
+            assert!(
+                !empty.is_allowed(&subject, permission, "not-a-resource-uuid"),
+                "invalid resource IDs must be denied"
+            );
+        }
+
+        let conn = persistence::open_configured_connection(&database)
+            .expect("inspect unchanged registry");
+        let subjects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_subjects",
+                [],
+                |row| row.get(0),
+            )
+            .expect("subject count");
+        let grants: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_grants",
+                [],
+                |row| row.get(0),
+            )
+            .expect("grant count");
+        let links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workpaper_evidence_links",
+                [],
+                |row| row.get(0),
+            )
+            .expect("evidence link count");
+        assert_eq!(subjects, 0);
+        assert_eq!(grants, 0);
+        assert_eq!(links, 0);
+        drop(conn);
+        let _ = fs::remove_dir_all(folder);
+    }
+}
