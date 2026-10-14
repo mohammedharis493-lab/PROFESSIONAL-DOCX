@@ -107,6 +107,19 @@ For each **DEC-01 through DEC-08** listed above, [security decision gate #129](h
 
 The current source permits non-archived engagement records with free-form engagement status; no accepted policy yet defines which statuses are promotion-eligible. DEC-08 review must decide whether non-archived status is sufficient, or which explicit statuses bar grant issuance, preflight and linkage. Do not introduce a guessed `ACTIVE` allowlist without a recorded policy and negative tests.
 
+## 7B. Reconciled implementation evidence versus unproven claims
+
+**Verified against protected `develop` commit `170e2e498d472a3780f308772a5910f6e56686f3` (2026-10-14).** The earlier inspection baseline near the top of this document is preserved as its historical source-review baseline; this paragraph records **additional later checks**, not an amended security decision.
+
+| Evidence | Specific observed result | Must **not** be interpreted as |
+| --- | --- | --- |
+| [PR #130](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/pull/130), merged | The internal permission resolver now denies an ordinary missing/non-file registry path before attempting a SQLite open; tests cover default-deny grant scopes. | A hostile-race-free filesystem verifier, a trusted identity issuer, or an authenticated grant. |
+| [PR #131](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/pull/131), merged | Test-only capture-preflight cases reject absent or malformed principal/run identities before touching nonexistent database or candidate storage paths. | Formal capture authorization, retained evidence, durable custody, or a production `VerifiedPrincipal` constructor. |
+| `normal_data_retention_root_posture.rs` at this `develop` | Windows `inspect_retention_root_posture` still unconditionally returns `Windows DACL permissions and durable protected storage are not verified`. | Windows DACL/effective-rights, race, isolation, or power-loss certification. |
+| [D2-P1 security decision gate #129](https://github.com/mohammedharis493-lab/PROFESSIONAL-DOCX/issues/129) | All eight DEC-01…DEC-08 decisions remain **OPEN** pending named human product and independent security reviewers. | Security sign-off, platform selection, legal retention policy, or permission to start D2-P2/P3/P4 release activation. |
+
+Passing CI verifies the listed code and documentation tests, **not** the absence of local hostile writers or storage-level crash faults. The negative regression work is **outside** the D2-P1 human decision completion gate. No platform is formally approved for controlled capture on these observations.
+
 ## 8. D2-P1 completion gate and next-package dependency
 
 - [x] Draft an explicit baseline inventory with links to the live module/ADR paths above.

@@ -104,3 +104,99 @@ pub(crate) fn inspect_exact_capture_preflight(
             .preflight,
     )
 }
+
+#[cfg(test)]
+mod deny_without_verified_authority_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn unauthenticated_capture_preflight_never_opens_or_creates_storage() {
+        let absent_root =
+            std::env::temp_dir().join(format!("pdox-denied-preflight-{}", Uuid::new_v4()));
+        let database = absent_root.join("uninitialized.sqlite");
+        let retention_root = absent_root.join("retention");
+        let run = Uuid::new_v4().to_string();
+        let workspace = Uuid::new_v4().to_string();
+        let engagement = Uuid::new_v4().to_string();
+        let workpaper = Uuid::new_v4().to_string();
+        let revision = Uuid::new_v4().to_string();
+        let intent = PromotionIntent {
+            run_id: &run,
+            expected_workspace_id: &workspace,
+            target_engagement_id: &engagement,
+            target_workpaper_id: &workpaper,
+            target_workpaper_revision_id: &revision,
+        };
+        let stage = Uuid::new_v4().to_string();
+
+        assert!(
+            read_exact_capture_material(&database, &retention_root, &stage, &intent, None).is_err(),
+            "a caller without verified authority must not read the three artifacts"
+        );
+        assert!(
+            inspect_exact_capture_preflight(&database, &retention_root, &stage, &intent, None)
+                .is_err(),
+            "metadata-only inspection must not bypass the same identity boundary"
+        );
+        assert!(
+            !absent_root.exists(),
+            "denial before SQLite or storage access must not create any files"
+        );
+    }
+
+    #[test]
+    fn invalid_test_principal_or_requested_identity_denies_before_file_access() {
+        let absent_root =
+            std::env::temp_dir().join(format!("pdox-invalid-preflight-{}", Uuid::new_v4()));
+        let database = absent_root.join("uninitialized.sqlite");
+        let retention_root = absent_root.join("retention");
+        let run = Uuid::new_v4().to_string();
+        let workspace = Uuid::new_v4().to_string();
+        let engagement = Uuid::new_v4().to_string();
+        let workpaper = Uuid::new_v4().to_string();
+        let revision = Uuid::new_v4().to_string();
+        let intent = PromotionIntent {
+            run_id: &run,
+            expected_workspace_id: &workspace,
+            target_engagement_id: &engagement,
+            target_workpaper_id: &workpaper,
+            target_workpaper_revision_id: &revision,
+        };
+        // Test-only fixtures do NOT install a production identity issuer.
+        let untrusted = VerifiedPrincipal::fixture("asserted-actor-name");
+        let stage = Uuid::new_v4().to_string();
+        assert!(
+            read_exact_capture_material(
+                &database,
+                &retention_root,
+                &stage,
+                &intent,
+                Some(&untrusted)
+            )
+            .is_err(),
+            "invalid principal identity must deny before attempting capture"
+        );
+
+        let valid_test_fixture = VerifiedPrincipal::fixture(&Uuid::new_v4().to_string());
+        let invalid_intent = PromotionIntent {
+            run_id: "latest",
+            ..intent
+        };
+        assert!(
+            inspect_exact_capture_preflight(
+                &database,
+                &retention_root,
+                &stage,
+                &invalid_intent,
+                Some(&valid_test_fixture)
+            )
+            .is_err(),
+            "malformed run identity must deny even for a test-verified principal"
+        );
+        assert!(
+            !absent_root.exists(),
+            "invalid inputs must not create storage"
+        );
+    }
+}
