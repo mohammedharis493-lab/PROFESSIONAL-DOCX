@@ -569,4 +569,95 @@ mod tests {
             .expect("revoke rollback");
         assert_eq!(revoked, None, "revocation must roll back with its audit");
     }
+
+    #[test]
+    fn denied_admin_inputs_cannot_initialize_storage() {
+        let folder =
+            std::env::temp_dir().join(format!("pdox-denied-admin-{}", Uuid::new_v4()));
+        fs::create_dir(&folder).expect("create writable directory for denial checks");
+        let database = folder.join("uninitialized.sqlite");
+        let subject = Uuid::new_v4().to_string();
+        let resource = Uuid::new_v4().to_string();
+        let grant = Uuid::new_v4().to_string();
+
+        // A caller-asserted role is never an administrator identity.
+        // Every entry point must deny before the SQLite opener can create
+        // an empty database or initialize an administration ledger.
+        let unverified = VerifiedGrantAdministrator::fixture("workspace-owner");
+        assert!(
+            enroll_subject(&database, &unverified, &subject).is_err(),
+            "unverified administrator cannot enroll a subject"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &unverified,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                &resource,
+                None,
+            )
+            .is_err(),
+            "unverified administrator cannot issue a workspace grant"
+        );
+        assert!(
+            revoke_grant(&database, &unverified, &grant).is_err(),
+            "unverified administrator cannot revoke a grant"
+        );
+        assert!(
+            disable_subject(&database, &unverified, &subject).is_err(),
+            "unverified administrator cannot disable a subject"
+        );
+        assert!(
+            !database.exists(),
+            "unverified administrator calls must not create a database"
+        );
+
+        // The well-formed administrator UUID below is a TEST-ONLY fixture,
+        // not a production issuer or actual administrator bootstrap.
+        // Even this fixture must reject malformed requested identifiers
+        // before touching a nonexistent registry.
+        let test_admin = VerifiedGrantAdministrator::fixture(&Uuid::new_v4().to_string());
+        assert!(
+            enroll_subject(&database, &test_admin, "asserted-member").is_err(),
+            "subject enrollment requires an exact UUID"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &test_admin,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                "latest",
+                None,
+            )
+            .is_err(),
+            "grant request cannot use an asserted resource alias"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &test_admin,
+                "asserted-member",
+                PromotionPermission::ReadNormalDataWorkspace,
+                &resource,
+                None,
+            )
+            .is_err(),
+            "grant request cannot use an asserted user identity"
+        );
+        assert!(
+            revoke_grant(&database, &test_admin, "latest").is_err(),
+            "revocation requires an exact grant ID"
+        );
+        assert!(
+            disable_subject(&database, &test_admin, "asserted-member").is_err(),
+            "disabling a subject requires an exact ID"
+        );
+        assert!(
+            !database.exists(),
+            "malformed requests must not create SQLite or any admin ledger"
+        );
+        fs::remove_dir(&folder).expect("remove empty denial-test directory");
+    }
 }
