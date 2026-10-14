@@ -820,7 +820,9 @@ fn validate_owned_dacl_native_fields(
         .checked_add(offset)
         .ok_or_else(|| denied("owned DACL pointer arithmetic overflow"))?;
     if native_dacl_address == 0 || native_dacl_address != expected {
-        return Err(denied("native owned DACL pointer differs from copied offset"));
+        return Err(denied(
+            "native owned DACL pointer differs from copied offset",
+        ));
     }
     let control = u16::from_le_bytes([header[2], header[3]]);
     if native_defaulted != (control & SE_DACL_DEFAULTED != 0)
@@ -856,7 +858,9 @@ fn validate_owned_dacl_native_descriptor(
         )
     };
     if ok == 0 {
-        return Err(denied("Windows could not query owned descriptor DACL identity"));
+        return Err(denied(
+            "Windows could not query owned descriptor DACL identity",
+        ));
     }
     // With DACL absent, native pointer/defaulted outputs are undefined.
     let (pointer, defaulted) = if native_present != 0 {
@@ -1351,59 +1355,61 @@ mod tests {
         header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         header[16..20].copy_from_slice(&24u32.to_le_bytes());
 
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 124, false, false,
-        ).is_ok());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, false, 0, false, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 0, false, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 125, false, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, usize::MAX, 48, true, 23, false, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 124, true, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 124, false, true,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 124, false, false,).is_ok()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, false, 0, false, false,).is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 0, false, false,).is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 125, false, false,).is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, usize::MAX, 48, true, 23, false, false,)
+                .is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 124, true, false,).is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 124, false, true,).is_err()
+        );
         header[2..4].copy_from_slice(&0x800cu16.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 124, true, true,
-        ).is_ok());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 124, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 124, true, true,).is_ok()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 124, false, false,).is_err()
+        );
         header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
 
         header[16..20].copy_from_slice(&0u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 100, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 100, false, false,).is_err()
+        );
         header[16..20].copy_from_slice(&22u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 122, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 122, false, false,).is_err()
+        );
         header[16..20].copy_from_slice(&44u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, true, 144, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, true, 144, false, false,).is_err()
+        );
         header[16..20].copy_from_slice(&24u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header[..19], 100, 48, true, 124, false, false,
-        ).is_err());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 27, true, 124, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header[..19], 100, 48, true, 124, false, false,)
+                .is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 27, true, 124, false, false,).is_err()
+        );
         header[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
-        assert!(validate_owned_dacl_native_fields(
-            &header, 100, 48, false, 0, false, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_fields(&header, 100, 48, false, 0, false, false,).is_err()
+        );
     }
 
     #[test]
@@ -1414,35 +1420,33 @@ mod tests {
         descriptor[16..20].copy_from_slice(&24u32.to_le_bytes());
         descriptor[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
 
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, false,
-        ).is_ok());
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, false,).is_ok()
+        );
         descriptor[2..4].copy_from_slice(&0x800cu16.to_le_bytes());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, true,
-        ).is_ok());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, true,).is_ok()
+        );
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, false,).is_err()
+        );
         let stale = descriptor[..20].to_vec();
         descriptor[16..20].copy_from_slice(&40u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_descriptor(
-            &stale, &descriptor, true,
-        ).is_err());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, true,
-        ).is_err());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..19], &descriptor, true,
-        ).is_err());
+        assert!(validate_owned_dacl_native_descriptor(&stale, &descriptor, true,).is_err());
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, true,).is_err()
+        );
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..19], &descriptor, true,).is_err()
+        );
         descriptor[16..20].copy_from_slice(&0u32.to_le_bytes());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, true,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, true,).is_err()
+        );
         descriptor[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
-        assert!(validate_owned_dacl_native_descriptor(
-            &descriptor[..20], &descriptor, false,
-        ).is_err());
+        assert!(
+            validate_owned_dacl_native_descriptor(&descriptor[..20], &descriptor, false,).is_err()
+        );
     }
 
     #[test]
