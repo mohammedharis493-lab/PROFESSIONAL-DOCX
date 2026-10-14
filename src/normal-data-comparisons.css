@@ -1,0 +1,132 @@
+.normal-data-comparisons {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid #dce3ed;
+}
+
+.normal-data-comparison-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+  align-items: start;
+}
+
+.normal-data-comparison-form {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.normal-data-comparison-amounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.normal-data-comparison-amounts legend {
+  padding: 0 4px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.normal-data-comparison-amounts label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-comparison-details {
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.normal-data-comparison-details p {
+  margin: 9px 0;
+}
+
+.normal-data-run-history {
+  background: #fff;
+}
+
+.normal-data-comparison-digests {
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.normal-data-comparison-digests code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-comparison-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.normal-data-comparison-summary div {
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.normal-data-comparison-summary dt {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.normal-data-comparison-summary dd {
+  margin: 5px 0 0;
+  color: #172033;
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.normal-data-run-table-wrap {
+  overflow-x: auto;
+  max-height: 470px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.normal-data-run-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+
+.normal-data-run-table th,
+.normal-data-run-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  overflow-wrap: anywhere;
+  min-width: 100px;
+}
+
+.normal-data-run-table th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  color: #475569;
+}
+
+@media (max-width: 900px) {
+  .normal-data-comparison-grid { grid-template-columns: 1fr; }
+}

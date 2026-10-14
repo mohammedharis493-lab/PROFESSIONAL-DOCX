@@ -1,0 +1,3 @@
+run_id,date,commit,windows_version,machine,storage_type,network_state,indexed_file_count,corpus_size_gb,warm_or_cold,task_id,tool,query_or_method,search_response_ms,end_to_end_ms,keystrokes,clicks,wrong_file_opens,success,notes
+example-001,YYYY-MM-DD,<commit>,<windows>,<machine>,LOCAL|SERVER|NAS,<network>,0,0,WARM,T01,Professional DocX,<query>,0,0,0,0,0,TRUE,<anonymized notes>
+example-001,YYYY-MM-DD,<commit>,<windows>,<machine>,LOCAL|SERVER|NAS,<network>,0,0,WARM,T01,File Explorer,<method>,,0,0,0,0,TRUE,<anonymized notes>

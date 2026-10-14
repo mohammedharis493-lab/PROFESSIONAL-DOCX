@@ -5,6 +5,31 @@
 
 ---
 
+## Current product direction — Normal Data Mode (2026-10-09)
+
+Professional DocX is a common professional document **and data** platform. Statutory audit, internal audit, due diligence, compliance and reconciliation are specialist workflows layered on shared search, document, storage and deterministic-data capabilities. **Normal Data Mode is a first-class capability**, not an audit engagement with controls hidden.
+
+A normal data workspace must function without a client, engagement, workpaper, reviewer, PBC request, audit sign-off or controlled-evidence capture. Linked files remain linked by default. Dataset selection uses existing stable application identities and Rust-resolved approved storage boundaries; arbitrary frontend filesystem paths are forbidden. Working-data outputs are not automatically controlled evidence.
+
+### Delivery sequence
+
+1. **Architecture (ADR):** Adopt `docs/architecture/ADR_NORMAL_DATA_MODE.md` as the initial design boundary; further implementation decisions require focused review.
+2. **Backend foundation:** Introduce a minimal engagement-independent workspace/dataset/source-version model, explicit semantic column roles, immutable deterministic recipe versions and append-only execution/run history. Persist sufficient exact-source provenance to prevent a changed linked file from rewriting historical meaning. Avoid premature rewriting of specialist tables.
+3. **First deterministic comparison:** Compare two explicitly selected datasets using confirmed keys, numeric fields and **period basis**. A filing-period comparison groups by filing period even when invoice date differs; preserve invoice month as distinct metadata. Classify A-only, B-only, both, changed amounts, duplicates and period movements deterministically.
+4. **Frontend:** Provide Normal Data entry, workspace creation, source selection, column-role confirmation, comparison configuration, differences, and exact historical run reopening.
+5. **Optional promotion:** Explicitly bind exact dataset/run versions to later engagement/workpaper workflows and capture controlled evidence only where required by policy.
+
+### Acceptance and security gates
+
+- No audit vocabulary or engagement is required for ordinary data analysis.
+- The selected business period determines comparison grouping; invoice date must not silently override a filing period.
+- Immutable recipe/run history binds exact inputs, version/fingerprint, parameters and result digest/counts.
+- Same inputs plus the same deterministic recipe produce the same result; AI may suggest or explain, but cannot silently change official calculations or exceptions.
+- No arbitrary paths cross the frontend/native boundary; existing canonical-path, managed-store, controlled-evidence, provenance and hash-verification invariants remain intact.
+- Each logical unit uses the protected `develop` PR workflow, with exact-head CI + Security, review-thread and base-change revalidation. No branch-protection bypasses.
+
+---
+
 ## 1. Product Principles
 
 These principles are architectural constraints and should not be weakened silently in later phases.
@@ -99,17 +124,47 @@ Create the secure application shell and reliable persistence layer on which all 
 
 ## Deliverables
 
-### Backend
-- Modular-monolith backend.
-- PostgreSQL metadata database.
-- Object/file storage abstraction supporting both external linked paths and Professional DocX-managed storage.
-- File-reference registry storing canonical source path/URI, filename, size, timestamps, hash/fingerprint where appropriate, storage state, and availability status.
-- Linked-file health detection for missing, moved, renamed, or changed files.
-- Authentication.
-- Role-based access control foundation.
-- Client and engagement CRUD.
-- Configurable service type / area / sub-area tree.
-- API boundaries for documents, search, workpapers, review, and audit events.
+### Level-A Desktop Core
+
+The immediate Phase 1 implementation is the **desktop-first local architecture defined by ADR-0004**:
+
+- Tauri 2 desktop shell.
+- Rust native application core.
+- SQLite as the authoritative local metadata database.
+- Tantivy as a derived/rebuildable local search index.
+- React + TypeScript user interface.
+- Object/file storage abstraction supporting external linked paths, managed files, and later controlled-evidence storage.
+- Approved-storage-root model rather than arbitrary frontend filesystem paths.
+- File-reference registry with stable application identity separate from path identity.
+- Linked-file health detection for missing, moved, renamed, replaced, or changed files.
+- Configurable client / engagement / service type / area hierarchy.
+- Application/service boundaries for documents, search, workpapers, review, and audit events.
+
+### Later Shared/Firm Deployment
+
+PostgreSQL, shared authentication/RBAC, and a firm service/API are **future shared-deployment components**, not the immediate Level-A persistence architecture.
+
+The intended evolution is:
+
+```text
+Level A / single-PC or local desktop
+  Tauri + Rust
+  SQLite authoritative metadata
+  Tantivy derived search
+  linked local/network storage roots
+
+Later shared firm deployment
+  Desktop clients / indexing agents
+        |
+        v
+  Professional DocX firm service/API
+        |
+        +-> PostgreSQL
+        +-> shared search
+        +-> centralized auth/RBAC
+```
+
+Shared deployment must not be implemented by placing SQLite on a NAS for concurrent multi-host access.
 
 ### Frontend
 - Application shell.
@@ -940,19 +995,26 @@ These tests should remain active through the life of the project.
 
 ---
 
-# Suggested Initial Technical Direction
+# Authoritative Initial Technical Direction
 
-This section is provisional and may be changed through explicit ADRs.
+The immediate Level-A implementation is governed by the accepted architecture ADRs, especially ADR-0002 and ADR-0004.
 
 ```text
+Desktop:
+  Tauri 2
+
 Frontend:
-  React / Next.js or equivalent modern web framework
+  React + TypeScript
 
-Backend:
-  Python FastAPI / Django-family modular monolith
+Native core:
+  Rust
 
-Database:
-  PostgreSQL
+Local authoritative metadata:
+  SQLite
+
+Local search:
+  Tantivy
+  (derived and fully rebuildable from authoritative metadata)
 
 File Storage:
   Hybrid storage abstraction:
@@ -961,19 +1023,19 @@ File Storage:
   - immutable controlled-evidence store for captured audit evidence
   - separate rebuildable preview/OCR/index cache
 
-Search:
-  Dedicated search service with typo tolerance,
-  partial/prefix matching, field weighting, and filters
+Indexing:
+  background jobs with progress, cancellation,
+  scan generations and reconciliation
 
-Workers:
-  Background task queue for indexing, OCR, previews,
-  document parsing, and large imports
-
-Document Processing:
-  Format-specific parsers + OCR where needed
+Future shared deployment:
+  Desktop clients / indexing agents
+        -> Professional DocX service/API
+        -> PostgreSQL + shared search + centralized auth/RBAC
 ```
 
-The application should expose its own search abstraction so that the underlying search engine can be changed later without rewriting the audit domain.
+The application must expose its own persistence and search abstractions so SQLite/Tantivy implementation details do not leak into the UI or core domain.
+
+PostgreSQL and a shared service are deliberately deferred until multi-user/shared deployment is required.
 
 ---
 

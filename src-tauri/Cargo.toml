@@ -1,0 +1,27 @@
+[package]
+name = "professional-docx"
+version = "0.1.0"
+description = "Professional DocX desktop application"
+authors = ["Professional DocX"]
+edition = "2021"
+
+[lib]
+name = "professional_docx_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+calamine = "0.36.1"
+quick-xml = "0.41.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11.0"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tantivy = "0.26.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+zip = "8.6.0"

@@ -1,0 +1,210 @@
+.normal-data-panel {
+  max-width: 1500px;
+  margin: 0 52px 40px;
+  padding: 26px;
+  border: 1px solid #dce3ed;
+  border-radius: 16px;
+  background: #fff;
+  color: #1e293b;
+}
+
+.normal-data-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.normal-data-heading h2 {
+  margin: 0;
+  font-size: 27px;
+  letter-spacing: -0.035em;
+}
+
+.normal-data-heading p:not(.eyebrow) {
+  max-width: 680px;
+  margin: 10px 0 0;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.normal-data-heading .eyebrow { margin-bottom: 9px; }
+
+.normal-data-count {
+  padding: 7px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  font-size: 12px;
+  color: #475569;
+}
+
+.normal-data-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.normal-data-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fbfcfe;
+}
+
+.normal-data-card h3 {
+  margin: 0 0 16px;
+  font-size: 16px;
+  color: #1e293b;
+}
+
+.normal-data-card h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #334155;
+}
+
+.normal-data-meta,
+.normal-data-footnote {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-footnote { margin: 20px 0 0; }
+
+.normal-data-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.normal-data-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.normal-data-field input,
+.normal-data-field select,
+.normal-data-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.normal-data-field textarea { resize: vertical; }
+
+.normal-data-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.normal-data-card .primary-button,
+.normal-data-card .secondary-button { width: fit-content; max-width: 100%; }
+
+.normal-data-error,
+.normal-data-success {
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-error {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.normal-data-success {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1e40af;
+}
+
+.normal-data-source-detail {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #eff6ff;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-source-detail span,
+.normal-data-source-detail small {
+  color: #475569;
+  font-size: 12px;
+}
+
+.normal-data-search-results,
+.normal-data-declarations { display: grid; gap: 8px; margin-top: 14px; }
+
+.normal-data-source-match {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.normal-data-source-match div { display: grid; min-width: 0; gap: 4px; }
+
+.normal-data-source-match strong,
+.normal-data-source-match span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.normal-data-source-match strong { font-size: 13px; }
+.normal-data-source-match span { font-size: 12px; color: #64748b; }
+.normal-data-source-match .secondary-button { flex-shrink: 0; font-size: 12px; }
+
+.normal-data-declaration {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px 12px;
+  padding: 9px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.normal-data-declaration span { color: #64748b; }
+
+@media (max-width: 1360px) {
+  .normal-data-grid { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
+}
+
+@media (max-width: 850px) {
+  .normal-data-panel { margin: 0 20px 30px; padding: 18px; }
+  .normal-data-grid { grid-template-columns: 1fr; }
+  .normal-data-pair { grid-template-columns: 1fr; }
+}
