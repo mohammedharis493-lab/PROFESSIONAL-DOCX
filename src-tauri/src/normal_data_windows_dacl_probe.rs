@@ -903,12 +903,7 @@ fn bounded_owned_dacl_ace_usage(
     let end = offset
         .checked_add(size)
         .ok_or_else(|| denied("owned DACL metadata extent overflow"))?;
-    if size < 8
-        || size % 4 != 0
-        || end > descriptor.len()
-        || count == 0
-        || count > (size - 8) / 4
-    {
+    if size < 8 || size % 4 != 0 || end > descriptor.len() || count == 0 || count > (size - 8) / 4 {
         return Err(denied("owned DACL metadata size or count invalid"));
     }
     let mut cursor = offset + 8;
@@ -919,8 +914,10 @@ fn bounded_owned_dacl_ace_usage(
         if prefix_end > end {
             return Err(denied("owned DACL ACE header outside copied ACL"));
         }
-        let ace_bytes =
-            usize::from(u16::from_le_bytes([descriptor[cursor + 2], descriptor[cursor + 3]]));
+        let ace_bytes = usize::from(u16::from_le_bytes([
+            descriptor[cursor + 2],
+            descriptor[cursor + 3],
+        ]));
         let next = cursor
             .checked_add(ace_bytes)
             .ok_or_else(|| denied("owned DACL ACE extent overflow"))?;
@@ -969,7 +966,9 @@ fn validate_owned_dacl_native_metadata(
         || original.acl_bytes_free != total - used
         || native.acl_bytes_free != total - used
     {
-        return Err(denied("owned DACL native metadata differs from checked bytes"));
+        return Err(denied(
+            "owned DACL native metadata differs from checked bytes",
+        ));
     }
     Ok(())
 }
@@ -1480,13 +1479,11 @@ mod tests {
         owned[16..20].copy_from_slice(&24u32.to_le_bytes());
         // One opaque 20-byte ACE, followed by four unused ACL bytes.
         owned[24..56].copy_from_slice(&[
-            2, 0, 32, 0, 1, 0, 0, 0,
-            0x11, 0, 20, 0, 0, 0, 0, 0,
-            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
-            0, 0, 0, 0,
+            2, 0, 32, 0, 1, 0, 0, 0, 0x11, 0, 20, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0,
+            0, 0, 0, 0, 0,
         ]);
-        let (range, used) = bounded_owned_dacl_ace_usage(&owned[..20], &owned)
-            .expect("bounded opaque ACE walk");
+        let (range, used) =
+            bounded_owned_dacl_ace_usage(&owned[..20], &owned).expect("bounded opaque ACE walk");
         assert_eq!(range, 24..56);
         assert_eq!(used, 28);
 
@@ -1518,10 +1515,8 @@ mod tests {
     #[test]
     fn owned_dacl_native_metadata_rejects_mismatched_counts_and_slack() {
         let acl = [
-            2, 0, 32, 0, 1, 0, 0, 0,
-            0x11, 0, 20, 0, 0, 0, 0, 0,
-            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
-            0, 0, 0, 0,
+            2, 0, 32, 0, 1, 0, 0, 0, 0x11, 0, 20, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0,
+            0, 0, 0, 0, 0,
         ];
         let correct = AclSizeInformation {
             ace_count: 1,
@@ -1556,9 +1551,7 @@ mod tests {
         owned[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         owned[16..20].copy_from_slice(&24u32.to_le_bytes());
         owned[24..56].copy_from_slice(&[
-            2, 0, 32, 0, 1, 0, 0, 0,
-            0, 0, 20, 0, 0, 0, 0, 0,
-            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
+            2, 0, 32, 0, 1, 0, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
             0, 0, 0, 0,
         ]);
         let earlier = AclSizeInformation {
