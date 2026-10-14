@@ -569,4 +569,130 @@ mod tests {
             .expect("revoke rollback");
         assert_eq!(revoked, None, "revocation must roll back with its audit");
     }
+
+    #[test]
+    fn separate_enrolled_subjects_do_not_inherit_shared_resource_grants() {
+        let fixture = Fixture::new();
+        let administrator = VerifiedGrantAdministrator::fixture(&Uuid::new_v4().to_string());
+        let subject_a = Uuid::new_v4().to_string();
+        let subject_b = Uuid::new_v4().to_string();
+        let permissions = SqlitePromotionPermissions::new(&fixture.path);
+
+        // Enrollment represents a registry row, NOT a verified login or
+        // workspace membership. Distinct UUIDs must retain distinct grants.
+        enroll_subject(&fixture.path, &administrator, &subject_a).expect("subject A");
+        enroll_subject(&fixture.path, &administrator, &subject_b).expect("subject B");
+
+        let grant_a = issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace,
+            None,
+        )
+        .expect("subject A workspace read grant");
+        issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_a,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement,
+            None,
+        )
+        .expect("subject A engagement attachment grant");
+
+        assert!(permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+
+        issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace,
+            None,
+        )
+        .expect("subject B independently granted read of the same resource");
+
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.revision
+        ));
+
+        revoke_grant(&fixture.path, &administrator, &grant_a).expect("revoke A's read grant");
+        assert!(!permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+
+        disable_subject(&fixture.path, &administrator, &subject_a).expect("disable A");
+        assert!(!permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+
+        let conn = persistence::open_configured_connection(&fixture.path).expect("audit view");
+        let events_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
+                 WHERE subject_id = ?1",
+                [&subject_a],
+                |row| row.get(0),
+            )
+            .expect("subject A audit events");
+        let events_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
+                 WHERE subject_id = ?1",
+                [&subject_b],
+                |row| row.get(0),
+            )
+            .expect("subject B audit events");
+        assert_eq!(events_a, 5, "enroll, two grants, revoke, disable");
+        assert_eq!(events_b, 2, "enroll and independent workspace grant");
+
+        let evidence_links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("no formal evidence links");
+        assert_eq!(evidence_links, 0);
+    }
 }
