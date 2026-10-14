@@ -879,6 +879,129 @@ fn validate_owned_dacl_native_descriptor(
     )
 }
 
+/// Walk the opaque ACE headers entirely within the owned self-relative
+/// descriptor's mandatory DACL. This is byte-bound validation only; the
+/// copied ACE masks, trustees and types are never treated as permissions.
+fn bounded_owned_dacl_ace_usage(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<(std::ops::Range<usize>, usize), PersistenceError> {
+    if header.len() != 20 || !descriptor.starts_with(header) {
+        return Err(denied("owned DACL metadata snapshot mismatch"));
+    }
+    let offset = owned_dacl_header_offset(header, descriptor.len())?;
+    let acl_header = &descriptor[offset..offset + 8];
+    if (acl_header[0] != 2 && acl_header[0] != 4)
+        || acl_header[1] != 0
+        || acl_header[6] != 0
+        || acl_header[7] != 0
+    {
+        return Err(denied("owned DACL metadata header invalid"));
+    }
+    let size = usize::from(u16::from_le_bytes([acl_header[2], acl_header[3]]));
+    let count = usize::from(u16::from_le_bytes([acl_header[4], acl_header[5]]));
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| denied("owned DACL metadata extent overflow"))?;
+    if size < 8
+        || size % 4 != 0
+        || end > descriptor.len()
+        || count == 0
+        || count > (size - 8) / 4
+    {
+        return Err(denied("owned DACL metadata size or count invalid"));
+    }
+    let mut cursor = offset + 8;
+    for _ in 0..count {
+        let prefix_end = cursor
+            .checked_add(4)
+            .ok_or_else(|| denied("owned DACL ACE header overflow"))?;
+        if prefix_end > end {
+            return Err(denied("owned DACL ACE header outside copied ACL"));
+        }
+        let ace_bytes =
+            usize::from(u16::from_le_bytes([descriptor[cursor + 2], descriptor[cursor + 3]]));
+        let next = cursor
+            .checked_add(ace_bytes)
+            .ok_or_else(|| denied("owned DACL ACE extent overflow"))?;
+        if ace_bytes < 4 || ace_bytes % 4 != 0 || next > end {
+            return Err(denied("owned DACL ACE size outside copied ACL"));
+        }
+        cursor = next;
+    }
+    Ok((offset..end, cursor - offset))
+}
+
+/// Reconcile native ACL size/count metadata for the owned DACL with an
+/// independent opaque ACE-chain walk and the earlier live descriptor query.
+/// Valid trailing unallocated ACL bytes are allowed, never interpreted.
+fn validate_owned_dacl_native_metadata(
+    acl: &[u8],
+    walked_used_bytes: usize,
+    original: &AclSizeInformation,
+    native: &AclSizeInformation,
+) -> Result<(), PersistenceError> {
+    if acl.len() < 8 || walked_used_bytes < 8 || walked_used_bytes > acl.len() {
+        return Err(denied("owned DACL metadata used bytes invalid"));
+    }
+    let declared_size = u32::from(u16::from_le_bytes([acl[2], acl[3]]));
+    let declared_count = u32::from(u16::from_le_bytes([acl[4], acl[5]]));
+    let total = u32::try_from(acl.len())
+        .map_err(|_| denied("owned DACL metadata length exceeds native bounds"))?;
+    let used = u32::try_from(walked_used_bytes)
+        .map_err(|_| denied("owned DACL metadata used bytes exceed native bounds"))?;
+    let original_total = original
+        .acl_bytes_in_use
+        .checked_add(original.acl_bytes_free)
+        .ok_or_else(|| denied("original DACL metadata byte count overflow"))?;
+    let native_total = native
+        .acl_bytes_in_use
+        .checked_add(native.acl_bytes_free)
+        .ok_or_else(|| denied("owned native DACL metadata byte count overflow"))?;
+    if declared_size != total
+        || declared_count == 0
+        || declared_count != original.ace_count
+        || declared_count != native.ace_count
+        || original_total != total
+        || native_total != total
+        || original.acl_bytes_in_use != used
+        || native.acl_bytes_in_use != used
+        || original.acl_bytes_free != total - used
+        || native.acl_bytes_free != total - used
+    {
+        return Err(denied("owned DACL native metadata differs from checked bytes"));
+    }
+    Ok(())
+}
+
+/// Native shape and AclSizeInformation are queried on the copied DACL only;
+/// never retrieve a second live descriptor or infer effective ACL rights.
+fn validate_owned_dacl_native_acl(
+    header: &[u8],
+    descriptor: &[u8],
+    original: &AclSizeInformation,
+) -> Result<(), PersistenceError> {
+    const ACL_SIZE_INFORMATION_CLASS: u32 = 2;
+    let (range, used) = bounded_owned_dacl_ace_usage(header, descriptor)?;
+    let acl = &descriptor[range];
+    if unsafe { IsValidAcl(acl.as_ptr() as WinHandle) } == 0 {
+        return Err(denied("Windows rejected copied DACL structure"));
+    }
+    let mut native = AclSizeInformation::default();
+    let ok = unsafe {
+        GetAclInformation(
+            acl.as_ptr() as WinHandle,
+            (&mut native as *mut AclSizeInformation).cast(),
+            std::mem::size_of::<AclSizeInformation>() as u32,
+            ACL_SIZE_INFORMATION_CLASS,
+        )
+    };
+    if ok == 0 {
+        return Err(denied("Windows could not inspect copied DACL metadata"));
+    }
+    validate_owned_dacl_native_metadata(acl, used, original, &native)
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -1286,6 +1409,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
         &descriptor_before,
         dacl_defaulted_flag,
     )?;
+    validate_owned_dacl_native_acl(&descriptor_header, &descriptor_before, &size)?;
     validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native_descriptor(&descriptor_header, &descriptor_before)?;
@@ -1347,6 +1471,107 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_dacl_ace_walk_accounts_for_used_bytes_and_valid_slack() {
+        let mut owned = [0u8; 64];
+        owned[0] = 1;
+        owned[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        owned[16..20].copy_from_slice(&24u32.to_le_bytes());
+        // One opaque 20-byte ACE, followed by four unused ACL bytes.
+        owned[24..56].copy_from_slice(&[
+            2, 0, 32, 0, 1, 0, 0, 0,
+            0x11, 0, 20, 0, 0, 0, 0, 0,
+            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
+            0, 0, 0, 0,
+        ]);
+        let (range, used) = bounded_owned_dacl_ace_usage(&owned[..20], &owned)
+            .expect("bounded opaque ACE walk");
+        assert_eq!(range, 24..56);
+        assert_eq!(used, 28);
+
+        let mut bad = owned;
+        bad[28..30].copy_from_slice(&2u16.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        bad = owned;
+        bad[34..36].copy_from_slice(&24u16.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        bad = owned;
+        bad[34..36].copy_from_slice(&0u16.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        bad = owned;
+        bad[26..28].copy_from_slice(&60u16.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        bad = owned;
+        bad[30] = 1;
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        bad = owned;
+        bad[16..20].copy_from_slice(&60u32.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&bad[..20], &bad).is_err());
+        assert!(bounded_owned_dacl_ace_usage(&owned[..19], &owned).is_err());
+        let stale = owned[..20].to_vec();
+        bad = owned;
+        bad[16..20].copy_from_slice(&28u32.to_le_bytes());
+        assert!(bounded_owned_dacl_ace_usage(&stale, &bad).is_err());
+    }
+
+    #[test]
+    fn owned_dacl_native_metadata_rejects_mismatched_counts_and_slack() {
+        let acl = [
+            2, 0, 32, 0, 1, 0, 0, 0,
+            0x11, 0, 20, 0, 0, 0, 0, 0,
+            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
+            0, 0, 0, 0,
+        ];
+        let correct = AclSizeInformation {
+            ace_count: 1,
+            acl_bytes_in_use: 28,
+            acl_bytes_free: 4,
+        };
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &correct, &correct).is_ok());
+        assert!(validate_owned_dacl_native_metadata(&acl, 32, &correct, &correct).is_err());
+        assert!(validate_owned_dacl_native_metadata(&acl, 7, &correct, &correct).is_err());
+        let mut wrong = correct;
+        wrong.ace_count = 2;
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &correct, &wrong).is_err());
+        wrong = correct;
+        wrong.acl_bytes_in_use = 32;
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &correct, &wrong).is_err());
+        wrong = correct;
+        wrong.acl_bytes_free = 0;
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &correct, &wrong).is_err());
+        wrong = correct;
+        wrong.acl_bytes_in_use = u32::MAX;
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &correct, &wrong).is_err());
+        assert!(validate_owned_dacl_native_metadata(&acl, 28, &wrong, &correct).is_err());
+        let mut invalid_acl = acl;
+        invalid_acl[2..4].copy_from_slice(&28u16.to_le_bytes());
+        assert!(validate_owned_dacl_native_metadata(&invalid_acl, 28, &correct, &correct).is_err());
+    }
+
+    #[test]
+    fn owned_dacl_native_acl_rechecks_nonempty_bounded_copy() {
+        let mut owned = [0u8; 64];
+        owned[0] = 1;
+        owned[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        owned[16..20].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..56].copy_from_slice(&[
+            2, 0, 32, 0, 1, 0, 0, 0,
+            0, 0, 20, 0, 0, 0, 0, 0,
+            1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
+            0, 0, 0, 0,
+        ]);
+        let earlier = AclSizeInformation {
+            ace_count: 1,
+            acl_bytes_in_use: 28,
+            acl_bytes_free: 4,
+        };
+        assert!(validate_owned_dacl_native_acl(&owned[..20], &owned, &earlier).is_ok());
+        let stale = owned[..20].to_vec();
+        owned[16..20].copy_from_slice(&60u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_acl(&stale, &owned, &earlier).is_err());
+        assert!(validate_owned_dacl_native_acl(&owned[..20], &owned, &earlier).is_err());
+    }
 
     #[test]
     fn owned_dacl_native_fields_reject_missing_or_mismatched_identity() {
