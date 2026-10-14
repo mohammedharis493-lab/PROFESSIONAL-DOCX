@@ -385,10 +385,7 @@ mod deny_by_default_regressions {
 
     #[test]
     fn unprovisioned_registry_and_missing_database_deny_every_scope() {
-        let folder = std::env::temp_dir().join(format!(
-            "pdox-promotion-deny-{}",
-            Uuid::new_v4()
-        ));
+        let folder = std::env::temp_dir().join(format!("pdox-promotion-deny-{}", Uuid::new_v4()));
         fs::create_dir(&folder).expect("isolated permission-registry test folder");
         let database = folder.join("normal-data.sqlite");
         let missing_database = folder.join("absent.sqlite");
@@ -425,8 +422,8 @@ mod deny_by_default_regressions {
             );
         }
 
-        let conn = persistence::open_configured_connection(&database)
-            .expect("inspect unchanged registry");
+        let conn =
+            persistence::open_configured_connection(&database).expect("inspect unchanged registry");
         let subjects: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM normal_data_permission_subjects",
@@ -442,11 +439,9 @@ mod deny_by_default_regressions {
             )
             .expect("grant count");
         let links: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM workpaper_evidence_links",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
             .expect("evidence link count");
         assert_eq!(subjects, 0);
         assert_eq!(grants, 0);
