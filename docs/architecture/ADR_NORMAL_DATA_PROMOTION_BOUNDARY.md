@@ -21,6 +21,8 @@ The accepted [ADR-0007](ADR-0007-evidence-capture-and-signoff-binding.md) requir
 7. **No authenticated role authorization is currently established by the Normal Data feature.** Never infer it from `actor_id`, role strings, client association, button visibility or an asserted Tauri argument. A formal cross-domain promotion command must fail closed until its caller identity, permission to read the source workspace, permission to modify the exact specialist target, and review-state policy are actually enforced and tested.
 8. Do not expose arbitrary file paths, source bytes, or uncontrolled document identifiers to the frontend. No new filesystem grants, external upload service, or auto-promotion facility is warranted.
 
+**D2 unauthenticated capture preflight regression (negative test only; no custody).** The internal three-artifact material and metadata-only capture preflight are exercised with no principal, an invalid test-only principal UUID, and a malformed requested run ID. Tests require denial **before** opening or creating any SQLite database, retention root or staged artifact, including for metadata-only projection. A passing test does not install a production principal provider, authorize identity, prove controlled storage or permit formal capture. The unconditional Windows protected-root refusal and deferred D2/D3/D4 decisions are unchanged.
+
 ## Safe implementation sequence
 
 The [D2 exit criteria and delivery roadmap](NORMAL_DATA_D2_EXIT_CRITERIA_AND_ROADMAP.md) is a **proposed planning companion**, not an amendment to this ADR's security decisions. Its PR estimates confer no authorization; the fail-closed prerequisites below remain authoritative.
