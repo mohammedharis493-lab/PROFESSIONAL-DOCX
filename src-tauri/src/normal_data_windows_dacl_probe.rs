@@ -764,6 +764,117 @@ fn validate_optional_group_native_descriptor(
     )
 }
 
+/// Decode the mandatory DACL offset entirely from a copied, bounded
+/// self-relative descriptor header. A present-but-NULL DACL is never accepted.
+fn owned_dacl_header_offset(
+    header: &[u8],
+    descriptor_bytes: usize,
+) -> Result<usize, PersistenceError> {
+    const HEADER_BYTES: usize = 20;
+    const ACL_HEADER_BYTES: usize = 8;
+    const MAX_DESCRIPTOR_BYTES: usize = 262_144;
+    const SE_SELF_RELATIVE: u16 = 0x8000;
+    const SE_DACL_PRESENT: u16 = 0x0004;
+
+    if header.len() != HEADER_BYTES
+        || !(HEADER_BYTES..=MAX_DESCRIPTOR_BYTES).contains(&descriptor_bytes)
+        || header[0] != 1
+        || header[1] != 0
+    {
+        return Err(denied("owned DACL descriptor header invalid"));
+    }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if control & SE_SELF_RELATIVE == 0 || control & SE_DACL_PRESENT == 0 {
+        return Err(denied("owned descriptor lacks mandatory DACL"));
+    }
+    let offset = u32::from_le_bytes([header[16], header[17], header[18], header[19]]) as usize;
+    let end = offset
+        .checked_add(ACL_HEADER_BYTES)
+        .ok_or_else(|| denied("owned DACL offset arithmetic overflow"))?;
+    if offset < HEADER_BYTES || offset % 4 != 0 || end > descriptor_bytes {
+        return Err(denied("owned descriptor DACL offset outside copied bytes"));
+    }
+    Ok(offset)
+}
+
+/// Match native DACL presence, pointer and defaulted flag to the bounded
+/// owned header, and to the earlier read-only native descriptor query.
+/// No effective rights, trustee or permission ordering is inferred.
+fn validate_owned_dacl_native_fields(
+    header: &[u8],
+    descriptor_base: usize,
+    descriptor_bytes: usize,
+    native_present: bool,
+    native_dacl_address: usize,
+    native_defaulted: bool,
+    original_defaulted: bool,
+) -> Result<(), PersistenceError> {
+    const SE_DACL_DEFAULTED: u16 = 0x0008;
+    let offset = owned_dacl_header_offset(header, descriptor_bytes)?;
+    if !native_present {
+        // GetSecurityDescriptorDacl does not define the pointer/defaulted
+        // outputs when DACL-present is false. Reject without consulting them.
+        return Err(denied("native owned descriptor lacks mandatory DACL"));
+    }
+    let expected = descriptor_base
+        .checked_add(offset)
+        .ok_or_else(|| denied("owned DACL pointer arithmetic overflow"))?;
+    if native_dacl_address == 0 || native_dacl_address != expected {
+        return Err(denied("native owned DACL pointer differs from copied offset"));
+    }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    if native_defaulted != (control & SE_DACL_DEFAULTED != 0)
+        || native_defaulted != original_defaulted
+    {
+        return Err(denied("native owned DACL defaulted flag inconsistent"));
+    }
+    Ok(())
+}
+
+/// Requery DACL identity using only the previously bounded, copied
+/// self-relative descriptor, not another live filesystem security query.
+/// The original DACL was already non-NULL and independently validated.
+fn validate_owned_dacl_native_descriptor(
+    header: &[u8],
+    descriptor: &[u8],
+    original_defaulted: bool,
+) -> Result<(), PersistenceError> {
+    if header.len() != 20 || descriptor.len() < 20 || !descriptor.starts_with(header) {
+        return Err(denied("owned DACL descriptor snapshot mismatch"));
+    }
+    // Validate the pointer's complete ACL header extent before native access.
+    let _offset = owned_dacl_header_offset(header, descriptor.len())?;
+    let mut native_present = 0i32;
+    let mut native_dacl = ptr::null_mut();
+    let mut native_defaulted = 0i32;
+    let ok = unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor.as_ptr() as WinHandle,
+            &mut native_present,
+            &mut native_dacl,
+            &mut native_defaulted,
+        )
+    };
+    if ok == 0 {
+        return Err(denied("Windows could not query owned descriptor DACL identity"));
+    }
+    // With DACL absent, native pointer/defaulted outputs are undefined.
+    let (pointer, defaulted) = if native_present != 0 {
+        (native_dacl as usize, native_defaulted != 0)
+    } else {
+        (0, false)
+    };
+    validate_owned_dacl_native_fields(
+        header,
+        descriptor.as_ptr() as usize,
+        descriptor.len(),
+        native_present != 0,
+        pointer,
+        defaulted,
+        original_defaulted,
+    )
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -1166,6 +1277,11 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
     validate_optional_owner_native_descriptor(&descriptor_header, &descriptor_before)?;
     validate_optional_group_native_descriptor(&descriptor_header, &descriptor_before)?;
+    validate_owned_dacl_native_descriptor(
+        &descriptor_header,
+        &descriptor_before,
+        dacl_defaulted_flag,
+    )?;
     validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native_descriptor(&descriptor_header, &descriptor_before)?;
@@ -1227,6 +1343,107 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_dacl_native_fields_reject_missing_or_mismatched_identity() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        header[16..20].copy_from_slice(&24u32.to_le_bytes());
+
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 124, false, false,
+        ).is_ok());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, false, 0, false, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 0, false, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 125, false, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, usize::MAX, 48, true, 23, false, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 124, true, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 124, false, true,
+        ).is_err());
+        header[2..4].copy_from_slice(&0x800cu16.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 124, true, true,
+        ).is_ok());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 124, false, false,
+        ).is_err());
+        header[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+
+        header[16..20].copy_from_slice(&0u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 100, false, false,
+        ).is_err());
+        header[16..20].copy_from_slice(&22u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 122, false, false,
+        ).is_err());
+        header[16..20].copy_from_slice(&44u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, true, 144, false, false,
+        ).is_err());
+        header[16..20].copy_from_slice(&24u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header[..19], 100, 48, true, 124, false, false,
+        ).is_err());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 27, true, 124, false, false,
+        ).is_err());
+        header[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert!(validate_owned_dacl_native_fields(
+            &header, 100, 48, false, 0, false, false,
+        ).is_err());
+    }
+
+    #[test]
+    fn owned_dacl_native_descriptor_uses_only_bounded_copy() {
+        let mut descriptor = [0u8; 48];
+        descriptor[0] = 1;
+        descriptor[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        descriptor[16..20].copy_from_slice(&24u32.to_le_bytes());
+        descriptor[24..32].copy_from_slice(&[2, 0, 8, 0, 0, 0, 0, 0]);
+
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, false,
+        ).is_ok());
+        descriptor[2..4].copy_from_slice(&0x800cu16.to_le_bytes());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, true,
+        ).is_ok());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, false,
+        ).is_err());
+        let stale = descriptor[..20].to_vec();
+        descriptor[16..20].copy_from_slice(&40u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_descriptor(
+            &stale, &descriptor, true,
+        ).is_err());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, true,
+        ).is_err());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..19], &descriptor, true,
+        ).is_err());
+        descriptor[16..20].copy_from_slice(&0u32.to_le_bytes());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, true,
+        ).is_err());
+        descriptor[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert!(validate_owned_dacl_native_descriptor(
+            &descriptor[..20], &descriptor, false,
+        ).is_err());
+    }
 
     #[test]
     fn optional_group_native_fields_reject_bad_pointer_and_defaulted_bit() {
