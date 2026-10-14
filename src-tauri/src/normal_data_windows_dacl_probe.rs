@@ -29,6 +29,12 @@ unsafe extern "system" {
         dacl: *mut WinHandle,
         dacl_defaulted: *mut i32,
     ) -> i32;
+    fn GetSecurityDescriptorSacl(
+        descriptor: WinHandle,
+        sacl_present: *mut i32,
+        sacl: *mut WinHandle,
+        sacl_defaulted: *mut i32,
+    ) -> i32;
     fn GetSecurityDescriptorControl(
         descriptor: WinHandle,
         control: *mut u16,
@@ -498,6 +504,94 @@ fn validate_optional_sacl_native(header: &[u8], descriptor: &[u8]) -> Result<(),
     validate_optional_sacl_native_ace_positions(acl, used_bytes)
 }
 
+/// Check native SACL presence, defaulted bit and pointer against the
+/// header of the owned self-relative security descriptor. Never inspect the
+/// native pointer when SACL-present is false (those outputs are undefined).
+fn validate_optional_sacl_native_descriptor_fields(
+    header: &[u8],
+    descriptor_base: usize,
+    owned_sacl_offset: Option<usize>,
+    native_present: bool,
+    native_sacl_address: usize,
+    native_defaulted: bool,
+) -> Result<(), PersistenceError> {
+    const SE_SACL_PRESENT: u16 = 0x0010;
+    const SE_SACL_DEFAULTED: u16 = 0x0020;
+    if header.len() != 20 {
+        return Err(denied("optional SACL native descriptor header unavailable"));
+    }
+    let control = u16::from_le_bytes([header[2], header[3]]);
+    let expected_present = control & SE_SACL_PRESENT != 0;
+    if native_present != expected_present || (!expected_present && owned_sacl_offset.is_some()) {
+        return Err(denied("native SACL presence differs from owned descriptor"));
+    }
+    if !native_present {
+        // Windows does not define the other GetSecurityDescriptorSacl outputs.
+        return Ok(());
+    }
+    if native_defaulted != (control & SE_SACL_DEFAULTED != 0) {
+        return Err(denied("native SACL defaulted flag differs from owned descriptor"));
+    }
+    let expected_pointer = if let Some(offset) = owned_sacl_offset {
+        if offset < 20 || offset % 4 != 0 {
+            return Err(denied("optional SACL native descriptor offset invalid"));
+        }
+        descriptor_base
+            .checked_add(offset)
+            .ok_or_else(|| denied("optional SACL native descriptor address overflow"))?
+    } else {
+        0
+    };
+    if native_sacl_address != expected_pointer {
+        return Err(denied("native SACL pointer differs from owned descriptor offset"));
+    }
+    Ok(())
+}
+
+/// Native GetSecurityDescriptorSacl is queried only on a bounded owned
+/// self-relative descriptor snapshot. This does not read the live SACL,
+/// interpret audit policy, authorize any principal or grant custody.
+fn validate_optional_sacl_native_descriptor(
+    header: &[u8],
+    descriptor: &[u8],
+) -> Result<(), PersistenceError> {
+    if header.len() != 20 || descriptor.len() < 20 || !descriptor.starts_with(header) {
+        return Err(denied("optional SACL owned descriptor header mismatch"));
+    }
+    let descriptor_bytes = u32::try_from(descriptor.len())
+        .map_err(|_| denied("optional SACL owned descriptor length invalid"))?;
+    validate_optional_descriptor_offsets(header, descriptor_bytes)?;
+    let owned_sacl_offset = optional_sacl_byte_range(header, descriptor)?.map(|range| range.start);
+    let mut native_present = 0i32;
+    let mut native_sacl = ptr::null_mut();
+    let mut native_defaulted = 0i32;
+    let ok = unsafe {
+        GetSecurityDescriptorSacl(
+            descriptor.as_ptr() as WinHandle,
+            &mut native_present,
+            &mut native_sacl,
+            &mut native_defaulted,
+        )
+    };
+    if ok == 0 {
+        return Err(denied("Windows could not inspect owned descriptor SACL identity"));
+    }
+    // In the absent case Windows leaves pointer/defaulted outputs undefined.
+    let (address, defaulted) = if native_present != 0 {
+        (native_sacl as usize, native_defaulted != 0)
+    } else {
+        (0, false)
+    };
+    validate_optional_sacl_native_descriptor_fields(
+        header,
+        descriptor.as_ptr() as usize,
+        owned_sacl_offset,
+        native_present != 0,
+        address,
+        defaulted,
+    )
+}
+
 fn validate_descriptor_dacl_identity(
     present: bool,
     descriptor_dacl: usize,
@@ -900,6 +994,7 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
     validate_optional_sid_native(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_ace_chain(&descriptor_header, &descriptor_before)?;
     validate_optional_sacl_native(&descriptor_header, &descriptor_before)?;
+    validate_optional_sacl_native_descriptor(&descriptor_header, &descriptor_before)?;
     let acl_header = copy_ace_bytes(dacl, 8)?;
     validate_acl_header(&acl_header, &size)?;
     // The 64 KiB ACL metadata cap was checked before these owned copies.
@@ -958,6 +1053,74 @@ pub(crate) fn observe_dacl_structure(handle: &File) -> Result<WindowsDaclShape, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_sacl_native_descriptor_fields_fail_closed_on_mismatch() {
+        let mut header = [0u8; 20];
+        header[0] = 1;
+        header[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        // Absent: undefined native pointer/defaulted outputs are not read.
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, None, false, 999, true,
+        ).is_ok());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, None, true, 0, false,
+        ).is_err());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(24), false, 0, false,
+        ).is_err());
+        header[2..4].copy_from_slice(&0x8010u16.to_le_bytes());
+        // Present-NULL is distinct from an absent SACL.
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, None, true, 0, false,
+        ).is_ok());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, None, true, 124, false,
+        ).is_err());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(24), true, 124, false,
+        ).is_ok());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(24), true, 125, false,
+        ).is_err());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, usize::MAX, Some(24), true, 23, false,
+        ).is_err());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(22), true, 122, false,
+        ).is_err());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(24), true, 124, true,
+        ).is_err());
+        header[2..4].copy_from_slice(&0x8030u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header, 100, Some(24), true, 124, true,
+        ).is_ok());
+        assert!(validate_optional_sacl_native_descriptor_fields(
+            &header[..19], 100, None, false, 0, false,
+        ).is_err());
+    }
+
+    #[test]
+    fn optional_sacl_native_descriptor_uses_only_owned_bounded_bytes() {
+        let mut owned = [0u8; 48];
+        owned[0] = 1;
+        owned[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_descriptor(&owned[..20], &owned).is_ok());
+        owned[2..4].copy_from_slice(&0x8010u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_descriptor(&owned[..20], &owned).is_ok());
+        owned[12..16].copy_from_slice(&24u32.to_le_bytes());
+        owned[24..36].copy_from_slice(&[2, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(validate_optional_sacl_native_descriptor(&owned[..20], &owned).is_ok());
+        // Native defaulted output must match the SACL_DEFAULTED control bit.
+        owned[2..4].copy_from_slice(&0x8030u16.to_le_bytes());
+        assert!(validate_optional_sacl_native_descriptor(&owned[..20], &owned).is_ok());
+        let stale = owned[..20].to_vec();
+        owned[12..16].copy_from_slice(&40u32.to_le_bytes());
+        assert!(validate_optional_sacl_native_descriptor(&stale, &owned).is_err());
+        assert!(validate_optional_sacl_native_descriptor(&owned[..20], &owned).is_err());
+        assert!(validate_optional_sacl_native_descriptor(&owned[..19], &owned).is_err());
+    }
 
     #[test]
     fn optional_sacl_native_ace_pointer_requires_exact_bounded_address() {
