@@ -19,7 +19,7 @@ Do not use an arbitrary client-provided `actor_id`, `actor_role`, subject UUID, 
 | Capability (proposed semantic name) | Scope | Allows | Does NOT confer |
 | --- | --- | --- | --- |
 | `ViewWorkpaper` | workspace/workpaper according to read policy | View permitted work and revision history | Revision or sign-off |
-| `ReviseWorkpaper` | **workpaper identity** + engagement/workspace context | Append a successor workpaper revision | Evidence custody, evidence linkage, independent review, sign-off, admin |
+| `ReviseWorkpaper` | **workpaper identity** + engagement/workspace context | Append a successor workpaper revision when workpaper content is separately readable | Read access by itself, discretionary evidence attachment, independent review, sign-off, admin |
 | `AttachEvidenceToRevision` | **exact revision** and eligible engagement | Attach permitted exact controlled evidence versions | Revision-writing or sign-off automatically |
 | `ReviewWorkpaper` | eligible engagement/revision | Raise/clear notes and inspect exact revisions under policy | Sign-off unless separately granted |
 | `ApproveWorkpaperRevision` | eligible exact revision and sign-off type | Record independently authorized review/final sign-off | Rewrite old sign-offs, revise or administer grants |
@@ -27,6 +27,8 @@ Do not use an arbitrary client-provided `actor_id`, `actor_role`, subject UUID, 
 | `ManagePermissions` | controlled administrator scope | Enroll/revoke subject grants after trusted bootstrap | Automatically revise/review/sign work |
 
 These are **proposed policy concepts**, not current production APIs or grants. The existing Normal Data test-only `ModifyWorkpaperRevision` boundary is scoped to an **exact existing revision** for D3 operations; it cannot simply be reused as a broad, persistent workpaper editing permission. In particular, granting revision creation must not silently grant evidence-attachment rights on new revisions.
+
+To keep permission assignment simple for real users, the administrative UI may offer an **Editor access profile** that issues separately recorded `ViewWorkpaper` + `ReviseWorkpaper` grants after trusted administrator authorization. A backend must still check read authority before returning workpaper content and check revision authority in the final append transaction. **Revise alone must not be a hidden read-data bypass**; bundling grants for UX is not permission inheritance.
 
 Before every revision append, trusted native code must:
 1. Bind the verified person/session to the exact workpaper and engagement.
@@ -49,7 +51,7 @@ Before implementing workpaper-wide editing, separately review a **versioned migr
 2. No implicit grants for existing users, workspace owners, engagement members, reviewers, or administrators. Both new and existing accounts default to denial until a genuinely trusted issuer has enrolled and granted each person under DEC-03/04.
 3. Define how administrators validate that an exact workpaper belongs to the expected engagement and workspace before issuing the new grant; do not accept a bare resource UUID as proof of scope.
 4. At the final write transaction, read both the authenticated person's current grant state and the workpaper's latest revision. Refuse expired/revoked grants and stale `expected_latest_revision_id` values **before** creating an immutable successor or audit event. Return an explicit conflict for a user-friendly compare/retry rather than silently overwriting.
-5. A new revision must have its **own exact evidence-link set** and content identity. It cannot inherit approval or independently authorize an evidence attachment by virtue of its author's workpaper-wide edit grant. Any reuse of a previous version's evidence links must satisfy separately reviewed exact-evidence and authorization policy.
+5. A new revision must have its **own exact evidence-link set** and content identity. It cannot inherit approval or independently authorize a discretionary evidence attachment by virtue of its author's workpaper-wide edit grant. Subject to the separately signed carry-forward policy below, the trusted backend may mechanically copy **unchanged exact version references** from the authorized predecessor into **new revision-owned immutable link records** without asking the editor to reattach every item. Additions, replacements, removals and changed version IDs are different operations subject to separately scoped evidence permissions and review.
 6. Preserve existing revision rows and sign-offs exactly; derive or recompute the **current revision's** effective review status without rewriting historical approvals. Ensure a new successor cannot be shown as final merely because the workpaper row carries a previous state.
 7. Make actor attribution and trusted revocation checks mandatory at the authoritative native/backend boundary; do not rely on a frontend form's identity, role, label, or description of a correction.
 
@@ -60,6 +62,21 @@ These are **future design requirements only**; do not write a permissive migrati
 The workpaper should offer ordinary **Edit → Save** for authorized revisers, including after review. No special "unlock signed workpaper" or mandatory preapproval step. Autosaved in-progress editor buffers may be used for usability, but they must be labeled *working/unapproved* and must not rewrite or masquerade as the immutable signed revision; checkpoint/Save creates a new immutable revision. Avoid one formal revision per keystroke.
 
 On save, show a concise diff and a suggested **editorial** versus **material** classification. The author can provide a correction reason and propose "minor," but that classification is advisory: it cannot itself transfer sign-off, bypass mandatory review, or change custody state. Allow the work to remain saved and visible as an unapproved successor if no reviewer is immediately available.
+
+### Low-friction carry-forward of unchanged evidence (proposed; not implemented)
+
+**Do not make a typo correction require reattaching twenty unchanged files.** A simple Save should propose carrying forward the predecessor's **exact** evidence set if no evidence change was requested. Because `workpaper_evidence_links.evidence_link_id` belongs to a specific revision, the backend must create **new link IDs for the successor revision**, each referencing the **same exact controlled evidence-version/content-version ID, document ID, relationship type and description** as the predecessor. Never repoint the previous link or modify signed history. Preserve provenance from each new link to its predecessor link, and record the carry-forward in an append-oriented audit event.
+
+This copying is a **narrow, system-mediated continuation of already-authorized exact references**, not a user-visible power to choose arbitrary evidence. Its legitimacy and circumstances are an open **DEC-08/DEC-05** policy question. If approved, the backend should:
+1. Confirm trusted workpaper read + revise permissions, the predecessor is the expected latest revision, and both identities belong to the same eligible workpaper/engagement.
+2. Load the predecessor's complete evidence-link set **inside the final transaction**; copy server-resolved exact version identities, never caller-submitted "unchanged" IDs, filenames, paths, or mutable `latest` pointers.
+3. Create the immutable successor revision and its own frozen link records in that transaction, with a recorded source-link mapping, evidence-set digest, and auditable `UNCHANGED_EVIDENCE_CARRIED_FORWARD` reason.
+4. Refuse any carry-forward presented as **formally review-eligible** if a source item lacks the required controlled version, is quarantined, not retained, inaccessible, or otherwise fails the independently defined proof; a draft-only carry-forward policy, if needed, must never imply formal evidence reliance.
+5. Check for any difference between source and target evidence identities. If items are added, removed or changed, **do not silently use the carry-forward-only privilege**; require separately approved attachment/removal permissions, custody verification and the material-review path.
+6. Preserve prior sign-offs and exact predecessor evidence as historical facts; the successor stays **unapproved** until an authorized current-revision acknowledgment or sign-off.
+7. Fail the entire protected database append/audit operation atomically on missing links, grant revocation, concurrent base change, or an audit failure. No partial successor with misleading "approved" status.
+
+Neither an editor's `ReviseWorkpaper` grant nor a frontend checkbox may independently grant broad evidence-attachment authority. Do not implement automated copying until accountable reviewers decide whether it is permitted, including the special case of a later-discovered invalid/quarantined evidence version. This proposal should save users repetitive manual steps **without loosening professional evidence custody**.
 
 ### Candidate classification (DEC-08 to decide)
 
@@ -123,6 +140,11 @@ Security-sensitive findings about current actor attribution, review state, and c
 12. Audit append failure rolls back protected revision/acknowledgment mutations; no partial current approval.
 13. Verification/custody failure of linked evidence fails closed at formal sign-off even when a stored earlier status indicated success, according to DEC-05/08 verification policy.
 14. No activation of Normal Data D2/D3/D4 through these editorial features or through seeded permissions.
+15. With unchanged, eligible evidence, a trusted workpaper editor with a separately checked read grant may save a typo successor without manual reattachment; new revision-owned link IDs preserve the **identical exact version-ID set** and a predecessor mapping, with no inherited sign-off.
+16. Editing-only privileges cannot read otherwise inaccessible workpapers. An administrator's explicit Editor access profile issues separately auditable read and revise grants; revoking either blocks the corresponding operation.
+17. A caller changes, removes, invents or replaces even one evidence-version ID while requesting carry-forward: the operation cannot be authorized as unchanged evidence and cannot inherit approval.
+18. If the predecessor's required evidence has been quarantined or becomes ineligible, the backend must not carry it into an approved/review-eligible successor on the strength of its old verification flag; simulate denial and audit rollback.
+19. A stale-base or concurrent editor's save cannot use a newly changed predecessor evidence set without an explicit retry and new review of the resulting diff.
 
 All tests must use synthetic data and exact intended platform scope; separate a passing test fixture from an authenticated two-human integration test.
 
