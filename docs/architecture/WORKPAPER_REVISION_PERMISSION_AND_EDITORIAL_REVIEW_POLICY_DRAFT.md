@@ -63,6 +63,25 @@ The workpaper should offer ordinary **Edit → Save** for authorized revisers, i
 
 On save, show a concise diff and a suggested **editorial** versus **material** classification. The author can provide a correction reason and propose "minor," but that classification is advisory: it cannot itself transfer sign-off, bypass mandatory review, or change custody state. Allow the work to remain saved and visible as an unapproved successor if no reviewer is immediately available.
 
+### Field-preserving edit and save (proposed; not implemented)
+
+**A revision should feel like ordinary document editing, not like creating a blank replacement form.** An eligible `ReviseWorkpaper` user opens the current workpaper, clicks **Edit**, and sees the **entire latest canonical workpaper content prefilled** in an editable working draft. The working draft is independent of—and must never overwrite—the immutable signed revision.
+
+The current canonical revision includes at least the following seven fields: **objective, procedure performed, population, sample, exceptions, management explanation, and conclusion**. Only the fields the user intentionally changes should differ in the successor. Retain exact untouched field values, including meaningful whitespace where it affects the canonical signed content. Do not translate absent or hidden form fields into empty strings; preserve them from the verified predecessor. Emptying a field must be an explicit, visible user edit, not a by-product of an incomplete form.
+
+Required interaction and persistence contract:
+
+1. On entering Edit, load the complete latest revision, its **exact ID, content hash, all canonical fields and exact evidence-link set**, under separately checked read permission. Prefill the full form; advanced fields may be collapsed but must remain preserved.
+2. Keep a local unsaved buffer keyed by **workpaper ID + base revision ID**. Show **Unsaved changes** and allow Cancel/revert without mutating persistent history. Switching workpapers, closing the editor or losing a session must never silently save draft content to a different workpaper.
+3. Save is the ordinary path; no sign-off unlock or reviewer preauthorization prompt. A Save carries **the complete canonical seven-field successor snapshot** (not just the three visible fields), base revision ID and authored reason. A narrow field-patch alternative is acceptable only if the trusted backend performs an **atomic read/merge** against the expected latest predecessor with equivalent preservation guarantees.
+4. The trusted backend checks the verified user's current read and revise grants and the **expected latest revision ID within the final transaction**. If another user already saved a successor, do **not** silently overwrite or rebase: retain the unsaved draft, show both versions/diff and offer an explicit reviewed retry.
+5. No-op Save (identical canonical seven-field values and unchanged evidence) should not create a misleading new immutable revision or supersede a valid historical sign-off. Changes to signed canonical content, including minor typos, create a new immutable successor, even when professional re-review can later take a lightweight path.
+6. Before saving show a concise diff of all fields and any evidence-set changes, especially if an advanced or normally collapsed field would change. Do not mislabel a material field erasure as a cosmetic change.
+7. If unchanged-evidence carry-forward is later approved, perform successor revision creation, exact reference copying, audit and current-review-status derivation as one consistent authorized transaction; preserve prior evidence/history and do not transfer the sign-off.
+8. Failed validation, interrupted saving, audit append failure or stale-grant rejection leaves the original revision, review state and approval intact and retains the editor's local draft where safe. Never show a success notification before the new revision is committed.
+
+This is not permission to edit the historical row in place. **Ease of revision comes from prefilled editor UX and safe successor creation**, with a separate review path.
+
 ### Low-friction carry-forward of unchanged evidence (proposed; not implemented)
 
 **Do not make a typo correction require reattaching twenty unchanged files.** A simple Save should propose carrying forward the predecessor's **exact** evidence set if no evidence change was requested. Because `workpaper_evidence_links.evidence_link_id` belongs to a specific revision, the backend must create **new link IDs for the successor revision**, each referencing the **same exact controlled evidence-version/content-version ID, document ID, relationship type and description** as the predecessor. Never repoint the previous link or modify signed history. Preserve provenance from each new link to its predecessor link, and record the carry-forward in an append-oriented audit event.
@@ -145,6 +164,13 @@ Security-sensitive findings about current actor attribution, review state, and c
 17. A caller changes, removes, invents or replaces even one evidence-version ID while requesting carry-forward: the operation cannot be authorized as unchanged evidence and cannot inherit approval.
 18. If the predecessor's required evidence has been quarantined or becomes ineligible, the backend must not carry it into an approved/review-eligible successor on the strength of its old verification flag; simulate denial and audit rollback.
 19. A stale-base or concurrent editor's save cannot use a newly changed predecessor evidence set without an explicit retry and new review of the resulting diff.
+20. Entering Edit on a populated latest revision preloads **all seven canonical fields** and the exact predecessor ID; changing one word preserves every other field byte-for-byte in the new immutable revision.
+21. A collapsed or unrendered field with nonempty population/sample/exception/management-explanation content does not become empty on Save; intentionally clearing it must be explicit and visible in the diff.
+22. Save with no canonical or evidence changes produces no successor/sign-off supersession; a small typo does produce a new revision while preserving previous history and carrying forward only separately authorized unchanged evidence.
+23. Two editors start on the same base. The second writer receives a conflict, their unsaved edits survive, and the first successor's unchanged fields/evidence and approval state are not overwritten.
+24. Switching workpapers during an edit cannot submit the prior workpaper's field buffer or IDs to the newly selected workpaper; cancel/revert leaves immutable records unmodified.
+25. Transaction or audit failure cannot create a half-formed successor, partial evidence-link copy, or misleading approved state. A user-friendly retry must not duplicate a committed revision.
+26. A no-op or editorial revision never silently removes review notes, sign-offs, or exact version references from the prior revision; review-methodology rules for notes applicable to the successor are applied explicitly, not inferred.
 
 All tests must use synthetic data and exact intended platform scope; separate a passing test fixture from an authenticated two-human integration test.
 
