@@ -39,6 +39,22 @@ Before every revision append, trusted native code must:
 
 If valid revise permission is absent, reject the mutation **without creating the revision**. The ability to revise is not an implicit right to export, delete, modify controlled evidence, or change authorization records.
 
+## Implementation boundary: do not repurpose the existing exact-revision grant
+
+This proposal requires a **separate, reviewed schema and authorization-adapter change**, not a new interpretation of an existing permission string. At the current baseline, the internal Normal Data permission registry (`src-tauri/migrations/0028_normal_data_permission_scopes.sql`) allowlists only `READ_NORMAL_DATA_WORKSPACE`, `ATTACH_EVIDENCE_TO_ENGAGEMENT`, and `MODIFY_WORKPAPER_REVISION`. The last applies to an **exact revision ID**, not a durable workpaper-level authoring privilege. Its existing purpose and default-deny behavior must remain unchanged.
+
+Before implementing workpaper-wide editing, separately review a **versioned migration and grant policy** with these invariants:
+
+1. Introduce a distinct workpaper-scoped revision-authoring capability, with a reviewed database key (for example `REVISE_WORKPAPER`), bound to the **workpaper UUID**, and do not reinterpret existing exact-revision grants.
+2. No implicit grants for existing users, workspace owners, engagement members, reviewers, or administrators. Both new and existing accounts default to denial until a genuinely trusted issuer has enrolled and granted each person under DEC-03/04.
+3. Define how administrators validate that an exact workpaper belongs to the expected engagement and workspace before issuing the new grant; do not accept a bare resource UUID as proof of scope.
+4. At the final write transaction, read both the authenticated person's current grant state and the workpaper's latest revision. Refuse expired/revoked grants and stale `expected_latest_revision_id` values **before** creating an immutable successor or audit event. Return an explicit conflict for a user-friendly compare/retry rather than silently overwriting.
+5. A new revision must have its **own exact evidence-link set** and content identity. It cannot inherit approval or independently authorize an evidence attachment by virtue of its author's workpaper-wide edit grant. Any reuse of a previous version's evidence links must satisfy separately reviewed exact-evidence and authorization policy.
+6. Preserve existing revision rows and sign-offs exactly; derive or recompute the **current revision's** effective review status without rewriting historical approvals. Ensure a new successor cannot be shown as final merely because the workpaper row carries a previous state.
+7. Make actor attribution and trusted revocation checks mandatory at the authoritative native/backend boundary; do not rely on a frontend form's identity, role, label, or description of a correction.
+
+These are **future design requirements only**; do not write a permissive migration, provision any grants, or expose a production edit/review endpoint until the relevant human decisions and separate code reviews are complete.
+
 ## Easy everyday editing
 
 The workpaper should offer ordinary **Edit → Save** for authorized revisers, including after review. No special "unlock signed workpaper" or mandatory preapproval step. Autosaved in-progress editor buffers may be used for usability, but they must be labeled *working/unapproved* and must not rewrite or masquerade as the immutable signed revision; checkpoint/Save creates a new immutable revision. Avoid one formal revision per keystroke.
@@ -83,18 +99,13 @@ An unsigned successor must not be displayed as `REVIEWED`, `FINAL`, `FINALISED`,
 
 For material review notes opened/reopened **after** sign-off, preserve sign-off history but do not leave a misleading active approval indicator if DEC-08 requires suspension/re-review. Decide the revalidation behavior explicitly, and distinguish a note on a historical revision from one affecting current reliance.
 
-## Current implementation gap (context only; no production modifications in this proposal)
+## Existing implementation compatibility (non-authorizing)
 
-At baseline `develop` `170e2e498d472a3780f308772a5910f6e56686f3`:
+The current application has an established legacy workpaper/revision workflow and a **separate**, deliberately fail-closed Normal Data authorization boundary. This draft does not certify the current sign-off, identity, review-note, or lifecycle implementation for authenticated multi-user professional approval.
 
-- `src-tauri/src/persistence.rs::create_workpaper_revision` (~14278-14408) appends an immutable revision and supersedes prior revision sign-offs, but does **not** update `workpapers.workflow_state`.
-- `src/App.tsx` (~13478-13490) pairs the stored workpaper-level workflow status with the latest revision number, potentially showing stale reviewed/finalized status after a new revision.
-- `create_workpaper_revision` and its Tauri command currently have no verified per-person authorization; their existing single-user/legacy behavior must not be represented as the trusted multi-user grant model.
-- `create_workpaper_signoff` presently accepts caller-supplied `actor_id`/`actor_role` and does not provide an authenticated signer.
-- `create_review_note`/`reopen_review_note` do not change active sign-off supersession or derived review status.
-- ADR-0007 already specifies signed exact revisions and explicitly reserves cosmetic-change treatment for future policy. This draft is a **proposal** within that unresolved policy space, not a replacement for ADR-0007.
+Implementation reviewers must reconcile this proposal with current revision creation, stored workpaper-level workflow labels, revision-bound sign-off history, and the exact scope of Normal Data grants. Existing behavior must not be treated as proof that the proposed trusted editor or reviewer capability exists.
 
-The correct product target is **easy saving, strict approval attribution**, not "freeze document after sign-off."
+Security-sensitive findings about current actor attribution, review state, and custody should be handled through the repository's **private reporting procedure** under `SECURITY.md`, not detailed in a public design PR. Preserve accepted ADR-0007's requirement that only exact immutable revisions and evidence-version sets are signed, with later changes requiring appropriate current-revision review validity.
 
 ## Acceptance-test plan (proposed, not executed)
 
