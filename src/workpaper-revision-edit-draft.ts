@@ -33,11 +33,20 @@ export type WorkpaperRevisionEditDraft = {
   content: WorkpaperRevisionContent;
 };
 
-/** Pure UI proposal, NOT an authorized or persisted mutation request. */
-export type WorkpaperRevisionSavePreview =
-  | Readonly<{ kind: "no-change"; changedFields: readonly [] }>
+/**
+ * Content-only comparison. It CANNOT detect changes to linked evidence,
+ * review notes, workflow or approval state. It must never authorize a no-op
+ * persistence decision, revision creation, or sign-off transfer by itself.
+ */
+export type WorkpaperRevisionContentPreview =
   | Readonly<{
-      kind: "changed";
+      scope: "canonical-content-only";
+      kind: "content-unchanged";
+      changedFields: readonly [];
+    }>
+  | Readonly<{
+      scope: "canonical-content-only";
+      kind: "content-changed";
       changedFields: readonly WorkpaperRevisionContentField[];
       proposedWrite: Readonly<{
         workpaperId: string;
@@ -49,13 +58,26 @@ export type WorkpaperRevisionSavePreview =
 function copyCanonicalContent(
   content: Readonly<WorkpaperRevisionContent>,
 ): WorkpaperRevisionContent {
+  if (content === null || typeof content !== "object" || Array.isArray(content)) {
+    throw new TypeError("Canonical workpaper content must be a field object");
+  }
   const copy = {} as WorkpaperRevisionContent;
   for (const field of WORKPAPER_REVISION_CONTENT_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(content, field)) {
+      throw new TypeError(`Missing canonical content field: ${field}`);
+    }
     const value = content[field];
     if (typeof value !== "string") {
-      throw new TypeError(`Missing or invalid canonical content field: ${field}`);
+      throw new TypeError(`Invalid canonical content field: ${field}`);
     }
     copy[field] = value;
+  }
+  // Fail closed on newly introduced canonical fields until the lossless
+  // editor is intentionally updated, instead of silently dropping their data.
+  for (const field of Object.keys(content)) {
+    if (!(WORKPAPER_REVISION_CONTENT_FIELDS as readonly string[]).includes(field)) {
+      throw new TypeError(`Unexpected canonical content field: ${field}`);
+    }
   }
   return copy;
 }
@@ -75,15 +97,17 @@ export function openWorkpaperRevisionEditDraft(
 }
 
 /**
- * Pure content-only Save preview. This client-side base identity check is UX
- * validation, NOT concurrency control: only the trusted backend can recheck
+ * Pure canonical-content comparison, NOT a complete Save/no-op decision.
+ * Evidence links and review state are intentionally outside this function.
+ * This client-side base identity check is UX validation, NOT concurrency
+ * control: only the trusted backend can recheck
  * expectedLatestRevisionId against the database under a write reservation.
  * Actor/role, evidence IDs and authorization claims intentionally do not enter.
  */
-export function previewWorkpaperRevisionSave(
+export function previewWorkpaperRevisionContentChange(
   base: WorkpaperRevisionEditBase,
   draft: WorkpaperRevisionEditDraft,
-): WorkpaperRevisionSavePreview {
+): WorkpaperRevisionContentPreview {
   if (
     !base.workpaperId ||
     !base.workpaperRevisionId ||
@@ -100,10 +124,11 @@ export function previewWorkpaperRevisionSave(
   );
 
   if (changedFields.length === 0) {
-    return { kind: "no-change", changedFields: [] };
+    return { scope: "canonical-content-only", kind: "content-unchanged", changedFields: [] };
   }
   return {
-    kind: "changed",
+    scope: "canonical-content-only",
+    kind: "content-changed",
     changedFields,
     proposedWrite: {
       workpaperId: base.workpaperId,
