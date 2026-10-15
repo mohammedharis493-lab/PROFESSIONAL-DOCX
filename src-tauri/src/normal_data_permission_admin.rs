@@ -569,4 +569,220 @@ mod tests {
             .expect("revoke rollback");
         assert_eq!(revoked, None, "revocation must roll back with its audit");
     }
+
+    #[test]
+    fn separate_enrolled_subjects_do_not_inherit_shared_resource_grants() {
+        let fixture = Fixture::new();
+        let administrator = VerifiedGrantAdministrator::fixture(&Uuid::new_v4().to_string());
+        let subject_a = Uuid::new_v4().to_string();
+        let subject_b = Uuid::new_v4().to_string();
+        let permissions = SqlitePromotionPermissions::new(&fixture.path);
+
+        // Enrollment represents a registry row, NOT a verified login or
+        // workspace membership. Distinct UUIDs must retain distinct grants.
+        enroll_subject(&fixture.path, &administrator, &subject_a).expect("subject A");
+        enroll_subject(&fixture.path, &administrator, &subject_b).expect("subject B");
+
+        let grant_a = issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace,
+            None,
+        )
+        .expect("subject A workspace read grant");
+        issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_a,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement,
+            None,
+        )
+        .expect("subject A engagement attachment grant");
+
+        assert!(permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+
+        issue_grant(
+            &fixture.path,
+            &administrator,
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace,
+            None,
+        )
+        .expect("subject B independently granted read of the same resource");
+
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+        assert!(!permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ModifyWorkpaperRevision,
+            &fixture.revision
+        ));
+
+        revoke_grant(&fixture.path, &administrator, &grant_a).expect("revoke A's read grant");
+        assert!(!permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+
+        disable_subject(&fixture.path, &administrator, &subject_a).expect("disable A");
+        assert!(!permissions.is_allowed(
+            &subject_a,
+            PromotionPermission::AttachEvidenceToEngagement,
+            &fixture.engagement
+        ));
+        assert!(permissions.is_allowed(
+            &subject_b,
+            PromotionPermission::ReadNormalDataWorkspace,
+            &fixture.workspace
+        ));
+
+        let conn = persistence::open_configured_connection(&fixture.path).expect("audit view");
+        let events_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
+                 WHERE subject_id = ?1",
+                [&subject_a],
+                |row| row.get(0),
+            )
+            .expect("subject A audit events");
+        let events_b: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM normal_data_permission_admin_events
+                 WHERE subject_id = ?1",
+                [&subject_b],
+                |row| row.get(0),
+            )
+            .expect("subject B audit events");
+        assert_eq!(events_a, 5, "enroll, two grants, revoke, disable");
+        assert_eq!(events_b, 2, "enroll and independent workspace grant");
+
+        let evidence_links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+                row.get(0)
+            })
+            .expect("no formal evidence links");
+        assert_eq!(evidence_links, 0);
+    }
+
+    #[test]
+    fn denied_admin_inputs_cannot_initialize_storage() {
+        let folder = std::env::temp_dir().join(format!("pdox-denied-admin-{}", Uuid::new_v4()));
+        fs::create_dir(&folder).expect("create writable directory for denial checks");
+        let database = folder.join("uninitialized.sqlite");
+        let subject = Uuid::new_v4().to_string();
+        let resource = Uuid::new_v4().to_string();
+        let grant = Uuid::new_v4().to_string();
+
+        // A caller-asserted role is never an administrator identity.
+        // Every entry point must deny before the SQLite opener can create
+        // an empty database or initialize an administration ledger.
+        let unverified = VerifiedGrantAdministrator::fixture("workspace-owner");
+        assert!(
+            enroll_subject(&database, &unverified, &subject).is_err(),
+            "unverified administrator cannot enroll a subject"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &unverified,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                &resource,
+                None,
+            )
+            .is_err(),
+            "unverified administrator cannot issue a workspace grant"
+        );
+        assert!(
+            revoke_grant(&database, &unverified, &grant).is_err(),
+            "unverified administrator cannot revoke a grant"
+        );
+        assert!(
+            disable_subject(&database, &unverified, &subject).is_err(),
+            "unverified administrator cannot disable a subject"
+        );
+        assert!(
+            !database.exists(),
+            "unverified administrator calls must not create a database"
+        );
+
+        // The well-formed administrator UUID below is a TEST-ONLY fixture,
+        // not a production issuer or actual administrator bootstrap.
+        // Even this fixture must reject malformed requested identifiers
+        // before touching a nonexistent registry.
+        let test_admin = VerifiedGrantAdministrator::fixture(&Uuid::new_v4().to_string());
+        assert!(
+            enroll_subject(&database, &test_admin, "asserted-member").is_err(),
+            "subject enrollment requires an exact UUID"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &test_admin,
+                &subject,
+                PromotionPermission::ReadNormalDataWorkspace,
+                "latest",
+                None,
+            )
+            .is_err(),
+            "grant request cannot use an asserted resource alias"
+        );
+        assert!(
+            issue_grant(
+                &database,
+                &test_admin,
+                "asserted-member",
+                PromotionPermission::ReadNormalDataWorkspace,
+                &resource,
+                None,
+            )
+            .is_err(),
+            "grant request cannot use an asserted user identity"
+        );
+        assert!(
+            revoke_grant(&database, &test_admin, "latest").is_err(),
+            "revocation requires an exact grant ID"
+        );
+        assert!(
+            disable_subject(&database, &test_admin, "asserted-member").is_err(),
+            "disabling a subject requires an exact ID"
+        );
+        assert!(
+            !database.exists(),
+            "malformed requests must not create SQLite or any admin ledger"
+        );
+        fs::remove_dir(&folder).expect("remove empty denial-test directory");
+    }
 }
