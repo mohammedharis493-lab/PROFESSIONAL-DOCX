@@ -178,6 +178,19 @@ test("rejects invalid revision numbering and malformed canonical stored content"
   })), /managementExplanation/);
 });
 
+test("unknown future persisted content or metadata cannot silently disappear", () => {
+  assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+    revisions: [revision({ newCanonicalField: "Keep this text!" })],
+  })), /Unrecognized stored revision field: newCanonicalField/);
+  const currentDto = revision({
+    createdAtMs: 17, revisionReason: null, supersedesRevisionId: "rev-6",
+    contentHashHex: "a1",
+  });
+  assert.equal(openStoredWorkpaperRevisionReadSnapshot(input({
+    revisions: [currentDto],
+  })).session.base.workpaperRevisionId, "rev-7");
+});
+
 test("a source evidence record cannot belong to another revision", () => {
   assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
     evidenceLinks: [contentLink({ workpaperRevisionId: "rev-3" })],

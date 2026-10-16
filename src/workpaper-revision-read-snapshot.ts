@@ -6,7 +6,10 @@
  * link IDs belong to their SOURCE revision and must never be reused as new
  * link IDs. No production UI, Tauri command or persistence call imports this.
  */
-import { openWorkpaperRevisionEditorSession } from "./workpaper-revision-edit-draft.ts";
+import {
+  WORKPAPER_REVISION_CONTENT_FIELDS,
+  openWorkpaperRevisionEditorSession,
+} from "./workpaper-revision-edit-draft.ts";
 import type {
   WorkpaperRevisionContent,
   WorkpaperRevisionEditorSession,
@@ -51,6 +54,15 @@ export type WorkpaperRevisionReadInput = Readonly<{
   /** Result of list_workpaper_signoffs for this workpaper, including history. */
   signoffs: readonly StoredWorkpaperSignoffForDraft[];
 }>;
+
+// Do not silently omit a newly introduced persisted canonical field.
+// The accepted DTO currently has these seven text fields and seven metadata
+// fields. An updated backend shape must be consciously reviewed and mapped.
+const KNOWN_REVISION_DTO_FIELDS = new Set<string>([
+  ...WORKPAPER_REVISION_CONTENT_FIELDS,
+  "workpaperId", "workpaperRevisionId", "revisionNumber", "createdAtMs",
+  "revisionReason", "supersedesRevisionId", "contentHashHex",
+]);
 
 function nonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -100,6 +112,11 @@ export function openStoredWorkpaperRevisionReadSnapshot(
       revisionNumbers.has(revision.revisionNumber)
     ) {
       throw new TypeError("Ambiguous duplicate workpaper revision in read result");
+    }
+    for (const field of Object.keys(revision)) {
+      if (!KNOWN_REVISION_DTO_FIELDS.has(field)) {
+        throw new TypeError("Unrecognized stored revision field: " + field);
+      }
     }
     revisionIds.add(revision.workpaperRevisionId);
     revisionNumbers.add(revision.revisionNumber);
