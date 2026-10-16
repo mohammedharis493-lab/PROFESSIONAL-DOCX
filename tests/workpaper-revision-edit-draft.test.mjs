@@ -166,3 +166,179 @@ test("Unicode and whitespace edits are faithfully represented without classifica
     base.content.managementExplanation + "🔎 é\u0301\u00a0");
   assert.equal("classification" in comparison, false);
 });
+
+
+import {
+  openWorkpaperRevisionEditorSession,
+  editWorkpaperRevisionSessionField,
+  previewWorkpaperRevisionEditorSession,
+  inspectWorkpaperRevisionEditorFreshness,
+} from "../src/workpaper-revision-edit-draft.ts";
+
+test("immutable editor session snapshots all seven fields and the exact base identity", () => {
+  const base = baseline();
+  const session = openWorkpaperRevisionEditorSession(base);
+  assert.deepEqual(session.draft.content, base.content);
+  assert.deepEqual(Object.keys(session.draft.content), [...WORKPAPER_REVISION_CONTENT_FIELDS]);
+  assert.equal(session.base.workpaperRevisionId, "revision-7");
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
+  assert.ok(Object.isFrozen(session));
+  assert.ok(Object.isFrozen(session.base));
+  assert.ok(Object.isFrozen(session.base.content));
+  assert.ok(Object.isFrozen(session.draft));
+  assert.ok(Object.isFrozen(session.draft.content));
+  base.content.population = "external change after opening";
+  assert.equal(session.draft.content.population, "All vendor setup records.");
+  assert.equal(session.base.content.population, "All vendor setup records.");
+});
+
+test("one-field edit returns another detached, frozen session without dropping any field", () => {
+  const original = openWorkpaperRevisionEditorSession(baseline());
+  const updated = editWorkpaperRevisionSessionField(original, "objective", "Corrected typo");
+  assert.notEqual(updated, original);
+  assert.notEqual(updated.draft.content, original.draft.content);
+  assert.equal(original.draft.content.objective, "Check control design.");
+  assert.equal(updated.draft.content.objective, "Corrected typo");
+  assert.equal(updated.draft.content.population, original.draft.content.population);
+  assert.equal(updated.draft.content.managementExplanation, original.draft.content.managementExplanation);
+  assert.deepEqual(previewWorkpaperRevisionEditorSession(updated).changedFields, ["objective"]);
+  assert.ok(Object.isFrozen(updated.draft.content));
+});
+
+test("successive edits of all seven fields preserve intermediate edits", () => {
+  const original = openWorkpaperRevisionEditorSession(baseline());
+  let session = original;
+  for (const [index, field] of WORKPAPER_REVISION_CONTENT_FIELDS.entries()) {
+    session = editWorkpaperRevisionSessionField(session, field, "edited field " + index);
+  }
+  const preview = previewWorkpaperRevisionEditorSession(session);
+  assert.equal(preview.kind, "content-changed");
+  assert.deepEqual(preview.changedFields, [...WORKPAPER_REVISION_CONTENT_FIELDS]);
+  for (const [index, field] of WORKPAPER_REVISION_CONTENT_FIELDS.entries()) {
+    assert.equal(preview.proposedWrite.content[field], "edited field " + index);
+  }
+  assert.deepEqual(original.draft.content, baseline().content);
+  assert.equal(preview.proposedWrite.expectedLatestRevisionId, "revision-7");
+});
+
+test("unchanged snapshot is content-only, not a permission or full no-op decision", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  const comparison = previewWorkpaperRevisionEditorSession(session);
+  assert.deepEqual(comparison, {
+    scope: "canonical-content-only",
+    kind: "content-unchanged",
+    changedFields: [],
+  });
+  assert.equal("proposedWrite" in comparison, false);
+  assert.equal("approval" in comparison, false);
+  assert.equal("evidence" in comparison, false);
+});
+
+test("clearing a field and whitespace/Unicode are preserved verbatim", () => {
+  const original = openWorkpaperRevisionEditorSession(baseline());
+  const cleared = editWorkpaperRevisionSessionField(original, "exceptions", "");
+  const next = editWorkpaperRevisionSessionField(
+    cleared, "managementExplanation", "  \r\n🔎 e\u0301\u00a0 ",
+  );
+  const comparison = previewWorkpaperRevisionEditorSession(next);
+  assert.deepEqual(comparison.changedFields, ["exceptions", "managementExplanation"]);
+  assert.equal(comparison.proposedWrite.content.exceptions, "");
+  assert.equal(comparison.proposedWrite.content.managementExplanation, "  \r\n🔎 e\u0301\u00a0 ");
+  assert.equal(comparison.proposedWrite.content.population, "All vendor setup records.");
+});
+
+test("editing and then restoring the exact value remains a content-only unchanged preview", () => {
+  const original = openWorkpaperRevisionEditorSession(baseline());
+  const changed = editWorkpaperRevisionSessionField(original, "objective", "Temporary");
+  const restored = editWorkpaperRevisionSessionField(
+    changed, "objective", original.base.content.objective,
+  );
+  assert.equal(previewWorkpaperRevisionEditorSession(restored).kind, "content-unchanged");
+  assert.equal(restored.draft.expectedLatestRevisionId, "revision-7");
+});
+
+test("signed historical revision is editable in draft without approval inheritance", () => {
+  const signed = {
+    ...baseline(),
+    workflowState: "FINALISED",
+    signoffs: [{ signoffId: "historical-signoff", workpaperRevisionId: "revision-7" }],
+  };
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(signed), "conclusion", "Editorial correction",
+  );
+  assert.equal(previewWorkpaperRevisionEditorSession(session).kind, "content-changed");
+  assert.equal("workflowState" in session, false);
+  assert.equal("signoffs" in session, false);
+  assert.deepEqual(Object.keys(previewWorkpaperRevisionEditorSession(session).proposedWrite).sort(),
+    ["content", "expectedLatestRevisionId", "workpaperId"]);
+});
+
+test("freshness preview detects a newer revision but leaves the draft unchanged", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(baseline()), "sample", "Updated sample",
+  );
+  const current = inspectWorkpaperRevisionEditorFreshness(
+    session, { workpaperId: "workpaper-a", workpaperRevisionId: "revision-7" },
+  );
+  assert.deepEqual(current, {
+    scope: "client-preview-only",
+    state: "base-current",
+    expectedLatestRevisionId: "revision-7",
+    observedLatestRevisionId: "revision-7",
+  });
+  const stale = inspectWorkpaperRevisionEditorFreshness(
+    session, { workpaperId: "workpaper-a", workpaperRevisionId: "revision-8" },
+  );
+  assert.deepEqual(stale, {
+    scope: "client-preview-only",
+    state: "base-stale",
+    expectedLatestRevisionId: "revision-7",
+    observedLatestRevisionId: "revision-8",
+  });
+  assert.equal(session.draft.content.sample, "Updated sample");
+  assert.equal(previewWorkpaperRevisionEditorSession(session).proposedWrite.expectedLatestRevisionId,
+    "revision-7");
+});
+
+test("freshness cannot use a different workpaper or absent latest revision", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  assert.throws(() => inspectWorkpaperRevisionEditorFreshness(
+    session, { workpaperId: "workpaper-b", workpaperRevisionId: "revision-7" },
+  ), /must match/);
+  assert.throws(() => inspectWorkpaperRevisionEditorFreshness(
+    session, { workpaperId: "workpaper-a", workpaperRevisionId: "" },
+  ), /must match/);
+  assert.throws(() => inspectWorkpaperRevisionEditorFreshness(session, null), /must match/);
+});
+
+test("unrecognized field and non-text runtime values are rejected", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  assert.throws(() =>
+    editWorkpaperRevisionSessionField(session, "newField", "would otherwise lose data"),
+    /Unrecognized/,
+  );
+  assert.throws(() => editWorkpaperRevisionSessionField(session, "objective", null), /must be text/);
+  assert.equal(session.draft.content.objective, "Check control design.");
+});
+
+test("invalid or future-schema content cannot be opened as a lossy session", () => {
+  const broken = baseline();
+  delete broken.content.sample;
+  assert.throws(() => openWorkpaperRevisionEditorSession(broken), /sample/);
+  const evolved = baseline();
+  evolved.content.followUpAction = "must not be discarded";
+  assert.throws(() => openWorkpaperRevisionEditorSession(evolved), /Unexpected canonical/);
+});
+
+test("proposed text content is snapshotted, never an alias of an input object", () => {
+  const external = baseline();
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(external), "conclusion", "Revised",
+  );
+  const proposal = previewWorkpaperRevisionEditorSession(session);
+  assert.equal(proposal.kind, "content-changed");
+  external.content.conclusion = "Late input mutation";
+  assert.equal(proposal.proposedWrite.content.conclusion, "Revised");
+  assert.equal(session.draft.content.conclusion, "Revised");
+  assert.equal("actorId" in proposal.proposedWrite, false);
+});
