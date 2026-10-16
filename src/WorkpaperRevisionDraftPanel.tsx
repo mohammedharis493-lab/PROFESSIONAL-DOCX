@@ -13,8 +13,10 @@ import {
   inspectWorkpaperRevisionEditorFreshness,
   previewWorkpaperRevisionEditorSession,
 } from "./workpaper-revision-edit-draft";
+import { inspectWorkpaperRevisionObservedText } from "./workpaper-revision-conflict-inspection";
 import type {
   WorkpaperRevisionContentField,
+  WorkpaperRevisionEditBase,
   WorkpaperRevisionEditorSession,
 } from "./workpaper-revision-edit-draft";
 
@@ -37,6 +39,11 @@ export type WorkpaperRevisionDraftPanelProps = Readonly<{
    */
   observedLatestRevisionId?: string | null;
   /**
+   * Optional complete text-only observation for explaining overlapping edits.
+   * It never supplies authority or evidence completeness and cannot rebase.
+   */
+  observedLatestRevision?: WorkpaperRevisionEditBase;
+  /**
    * Display-only hint from historical records, not an authorization flag
    * or proof of sign-off validity for the current exact revision.
    */
@@ -47,17 +54,29 @@ export default function WorkpaperRevisionDraftPanel({
   session,
   onSessionChange,
   observedLatestRevisionId,
+  observedLatestRevision,
   hasHistoricalSignoff = false,
 }: WorkpaperRevisionDraftPanelProps) {
   const prefix = useId();
+  if (
+    observedLatestRevision &&
+    observedLatestRevisionId != null &&
+    observedLatestRevision.workpaperRevisionId !== observedLatestRevisionId
+  ) {
+    throw new TypeError("Conflicting latest revision observations must be reconciled by the caller");
+  }
+  const comparedText = observedLatestRevision
+    ? inspectWorkpaperRevisionObservedText(session, observedLatestRevision)
+    : null;
+  const latestId = observedLatestRevision?.workpaperRevisionId ?? observedLatestRevisionId;
   const preview = previewWorkpaperRevisionEditorSession(session);
   const changed = new Set<string>(preview.changedFields);
   const freshness =
-    observedLatestRevisionId === undefined || observedLatestRevisionId === null
+    latestId === undefined || latestId === null
       ? null
       : inspectWorkpaperRevisionEditorFreshness(session, {
           workpaperId: session.base.workpaperId,
-          workpaperRevisionId: observedLatestRevisionId,
+          workpaperRevisionId: latestId,
         });
 
   return (
@@ -95,6 +114,28 @@ export default function WorkpaperRevisionDraftPanel({
           permission to save and does not replace backend conflict checking.
         </p>
       )}
+      {comparedText && comparedText.differentRevisionObserved ? (
+        <div className="evidence-integrity-note" aria-label="Observed revision text comparison">
+          <p>
+            Client-only comparison against the observed revision. These field
+            indicators do not compare evidence or approval, and cannot rebase
+            or authorize a Save. Review the full revision before deciding how
+            to continue; your draft and its original base are unchanged.
+          </p>
+          <ul>
+            {comparedText.fields.filter((entry) => entry.status !== "unchanged").map((entry) => (
+              <li key={entry.field}>
+                {FIELD_LABELS[entry.field]}: {
+                  entry.status === "local-only" ? "Edited in this draft only"
+                    : entry.status === "observed-only" ? "Changed in observed revision only"
+                    : entry.status === "converged-text" ? "Same text entered in both revisions"
+                    : "Different edits in both revisions — manual review needed"
+                }
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <div className="workspace-grid workspace-grid-two">
         {WORKPAPER_REVISION_CONTENT_FIELDS.map((field) => (
           <label key={field} htmlFor={`${prefix}-${field}`}>
