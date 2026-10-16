@@ -640,6 +640,25 @@ function readFixtureIntoEditor(db, workpaperId = "wp-1") {
   const sqlRevisions = db.prepare(
     "SELECT * FROM workpaper_revisions WHERE workpaper_id=? ORDER BY revision_number"
   ).all(workpaperId);
+  // Node 22's experimental node:sqlite TEXT accessor truncates at embedded
+  // NUL, even when SQLite's underlying bytes still contain the full text.
+  // This test-only guard compares the stored UTF-8 bytes (via SQL HEX) with
+  // the decoded client value BEFORE populating the editor; never silently
+  // open a lossy draft. Production needs separate Rust/Tauri acceptance tests.
+  const textHexForRevision = db.prepare(
+    "SELECT " + canonicalSqlFields.map(([, sql]) =>
+      "hex(" + sql + ") AS " + sql).join(",") +
+    " FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  );
+  for (const row of sqlRevisions) {
+    const storedHex = textHexForRevision.get(row.workpaper_revision_id);
+    for (const [, sql] of canonicalSqlFields) {
+      if (typeof row[sql] !== "string" ||
+          storedHex[sql] !== Buffer.from(row[sql], "utf8").toString("hex").toUpperCase()) {
+        throw new Error("LOSSY_TEST_SQLITE_SOURCE_READ");
+      }
+    }
+  }
   const revisions = sqlRevisions.map(row => ({
     workpaperId: row.workpaper_id,
     workpaperRevisionId: row.workpaper_revision_id,
@@ -798,6 +817,27 @@ test("Node experimental SQLite NUL truncation is rejected rather than called a l
   }
   assert.equal(count(db, "workpaper_revisions"), 1);
   assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+  assert.equal(count(db, "audit_events"), 0);
+});
+
+
+test("test-only draft opening rejects pre-existing embedded-NUL text before losing source bytes", t => {
+  const db = fixture(t);
+  const payload = { ...original(), objective: "Start\u0000still here" };
+  db.prepare(
+    "INSERT INTO workpaper_revisions " +
+    "(workpaper_revision_id,workpaper_id,revision_number,created_at_ms," +
+    "objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion) " +
+    "VALUES ('nul-existing','wp-1',2,3,?,?,?,?,?,?,?)"
+  ).run(...fields.map(k => payload[k]));
+  assert.throws(() => readFixtureIntoEditor(db), /LOSSY_TEST_SQLITE_SOURCE_READ/);
+  // NUL byte is present in SQLite, though node:sqlite's TEXT getter truncates.
+  const rawHex = db.prepare(
+    "SELECT hex(objective) AS hex_text FROM workpaper_revisions " +
+    "WHERE workpaper_revision_id='nul-existing'"
+  ).get().hex_text;
+  assert.ok(rawHex.includes("00"));
+  assert.equal(count(db, "workpaper_revisions"), 2);
   assert.equal(count(db, "audit_events"), 0);
 });
 
