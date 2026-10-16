@@ -137,3 +137,126 @@ export function previewWorkpaperRevisionContentChange(
     },
   };
 }
+
+
+/**
+ * Detached, immutable snapshot for a future seven-field editor.
+ *
+ * This is only UI draft state, never a permission, Save authorization, or
+ * persistence API. All snapshots are separate from live query results;
+ * a signed historical revision can be opened for drafting without implying
+ * the ability to write, carry evidence, or inherit any approval.
+ */
+export type WorkpaperRevisionEditorSession = Readonly<{
+  base: WorkpaperRevisionEditBase;
+  draft: Readonly<{
+    workpaperId: string;
+    expectedLatestRevisionId: string;
+    content: Readonly<WorkpaperRevisionContent>;
+  }>;
+}>;
+
+export type WorkpaperRevisionEditorFreshness = Readonly<{
+  scope: "client-preview-only";
+  state: "base-current" | "base-stale";
+  expectedLatestRevisionId: string;
+  observedLatestRevisionId: string;
+}>;
+
+function snapshotWorkpaperRevisionEditorSession(
+  base: WorkpaperRevisionEditBase,
+  draft: WorkpaperRevisionEditDraft,
+): WorkpaperRevisionEditorSession {
+  // Both calls validate every canonical field and the exact two identities.
+  const baseCopy = openWorkpaperRevisionEditDraft(base);
+  const comparison = previewWorkpaperRevisionContentChange(base, draft);
+  const editedContent =
+    comparison.kind === "content-changed" ? comparison.proposedWrite.content : baseCopy.content;
+
+  return Object.freeze({
+    base: Object.freeze({
+      workpaperId: baseCopy.workpaperId,
+      workpaperRevisionId: baseCopy.expectedLatestRevisionId,
+      content: Object.freeze({ ...baseCopy.content }),
+    }),
+    draft: Object.freeze({
+      workpaperId: baseCopy.workpaperId,
+      expectedLatestRevisionId: baseCopy.expectedLatestRevisionId,
+      content: Object.freeze({ ...editedContent }),
+    }),
+  });
+}
+
+/** Open existing text verbatim, including all four less-visible fields. */
+export function openWorkpaperRevisionEditorSession(
+  base: WorkpaperRevisionEditBase,
+): WorkpaperRevisionEditorSession {
+  return snapshotWorkpaperRevisionEditorSession(base, openWorkpaperRevisionEditDraft(base));
+}
+
+/**
+ * A pure per-field edit: no in-place mutation, normalization or trimming.
+ * UI code can use the returned session for controlled inputs, including
+ * deliberate blank strings. The trusted backend must still authorize Save.
+ */
+export function editWorkpaperRevisionSessionField(
+  session: WorkpaperRevisionEditorSession,
+  field: WorkpaperRevisionContentField,
+  value: string,
+): WorkpaperRevisionEditorSession {
+  if (!(WORKPAPER_REVISION_CONTENT_FIELDS as readonly string[]).includes(field)) {
+    throw new TypeError("Unrecognized workpaper revision content field");
+  }
+  if (typeof value !== "string") {
+    throw new TypeError("Edited workpaper content must be text");
+  }
+  // Validate the incoming session before editing it; this rejects malformed
+  // or future-schema drafts rather than accidentally dropping other fields.
+  previewWorkpaperRevisionEditorSession(session);
+  return snapshotWorkpaperRevisionEditorSession(session.base, {
+    workpaperId: session.draft.workpaperId,
+    expectedLatestRevisionId: session.draft.expectedLatestRevisionId,
+    content: { ...session.draft.content, [field]: value },
+  });
+}
+
+/** Compare text only; unchanged content does NOT mean no Save is necessary. */
+export function previewWorkpaperRevisionEditorSession(
+  session: WorkpaperRevisionEditorSession,
+): WorkpaperRevisionContentPreview {
+  return previewWorkpaperRevisionContentChange(session.base, {
+    workpaperId: session.draft.workpaperId,
+    expectedLatestRevisionId: session.draft.expectedLatestRevisionId,
+    content: { ...session.draft.content },
+  });
+}
+
+/**
+ * Visual warning for concurrent revisions without silently discarding edits.
+ * A backend transactional latest-revision check is mandatory even when this
+ * preview says "base-current". No client-reported state can authorize a Save.
+ */
+export function inspectWorkpaperRevisionEditorFreshness(
+  session: WorkpaperRevisionEditorSession,
+  observedLatest: Readonly<{ workpaperId: string; workpaperRevisionId: string }>,
+): WorkpaperRevisionEditorFreshness {
+  previewWorkpaperRevisionEditorSession(session);
+  if (
+    !observedLatest ||
+    typeof observedLatest.workpaperId !== "string" ||
+    typeof observedLatest.workpaperRevisionId !== "string" ||
+    !observedLatest.workpaperRevisionId ||
+    observedLatest.workpaperId !== session.base.workpaperId
+  ) {
+    throw new TypeError("Latest revision observation must match the edited workpaper");
+  }
+  return {
+    scope: "client-preview-only",
+    state:
+      observedLatest.workpaperRevisionId === session.base.workpaperRevisionId
+        ? "base-current"
+        : "base-stale",
+    expectedLatestRevisionId: session.base.workpaperRevisionId,
+    observedLatestRevisionId: observedLatest.workpaperRevisionId,
+  };
+}
