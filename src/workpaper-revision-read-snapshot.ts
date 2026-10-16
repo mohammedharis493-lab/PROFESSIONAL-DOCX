@@ -6,11 +6,11 @@
  * link IDs belong to their SOURCE revision and must never be reused as new
  * link IDs. No production UI, Tauri command or persistence call imports this.
  */
-import { openWorkpaperRevisionEditorSession } from "./workpaper-revision-edit-draft";
+import { openWorkpaperRevisionEditorSession } from "./workpaper-revision-edit-draft.ts";
 import type {
   WorkpaperRevisionContent,
   WorkpaperRevisionEditorSession,
-} from "./workpaper-revision-edit-draft";
+} from "./workpaper-revision-edit-draft.ts";
 
 export type StoredWorkpaperRevisionForDraft = Readonly<{
   workpaperId: string;
