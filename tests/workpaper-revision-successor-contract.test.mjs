@@ -6,7 +6,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
@@ -29,11 +31,20 @@ const rows = (db, rev = "rev-1") => db.prepare(
 const observed = (db, rev = "rev-1") => JSON.stringify(rows(db, rev));
 // Expected evidence is frozen at synthetic draft opening, never refreshed by Save.
 const openedEvidence = new WeakMap();
+// Only the test harness knows these temporary SQLite file paths.
+const fixtureFiles = new WeakMap();
 const count = (db, name) => db.prepare("SELECT count(*) n FROM " + name).get().n;
 
-function fixture(t) {
-  const db = new DatabaseSync(":memory:");
-  t.after(() => db.close());
+function fixture(t, { fileBacked = false } = {}) {
+  const directory = fileBacked ? mkdtempSync(join(tmpdir(), "docx-revision-fixture-")) : null;
+  const path = directory ? join(directory, "workpapers.sqlite") : ":memory:";
+  const db = new DatabaseSync(path);
+  // Close the database before removing its storage, including on Windows.
+  t.after(() => {
+    db.close();
+    if (directory) rmSync(directory, { recursive: true, force: true });
+  });
+  if (directory) fixtureFiles.set(db, path);
   db.exec("PRAGMA foreign_keys=ON");
   for (const file of ["0001_initial.sql", "0004_controlled_evidence.sql",
     "0006_engagement_workpapers.sql", "0009_workpaper_signoffs.sql"]) {
@@ -59,6 +70,20 @@ function fixture(t) {
   ].join("\n"));
   openedEvidence.set(db, observed(db));
   return db;
+}
+
+/**
+ * Independent connection to a real, file-backed fixture database.
+ * The connecting party cannot import the in-memory observation captured by
+ * fixture(); each test must explicitly pass its frozen at-open evidence set.
+ */
+function secondConnection(t, sourceDb) {
+  const file = fixtureFiles.get(sourceDb);
+  if (!file) throw new Error("FILE_BACKED_FIXTURE_REQUIRED");
+  const connection = new DatabaseSync(file);
+  t.after(() => connection.close());
+  connection.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=20");
+  return connection;
 }
 
 /** Test oracle. The mock grant registry is not production authentication. */
@@ -473,6 +498,95 @@ for (const stage of ["revision", "evidence", "signoff"]) {
     assert.equal(count(db, "audit_events"), 0);
   });
 }
+
+
+test("two independent SQLite connections cannot accept the same expected base twice", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const atOpen = observed(second);
+  const firstResult = successor(first);
+  assert.throws(() => successor(second, {
+    expectedRevisionId: "rev-1",
+    expectedEvidence: atOpen,
+    content: { ...original(), conclusion: "Second stale user's edit" },
+  }), /STALE_REVISION/);
+  assert.equal(count(second, "workpaper_revisions"), 2);
+  assert.equal(count(first, "workpaper_revisions"), 2);
+  assert.equal(count(second, "workpaper_signoff_supersessions"), 1);
+  assert.equal(second.prepare("SELECT superseded_by_revision_id id FROM workpaper_signoff_supersessions WHERE signoff_id='sign-1'").get().id, firstResult);
+});
+
+test("file-backed BEGIN IMMEDIATE reservation prevents another connection's concurrent Save", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const atOpen = observed(second);
+  first.exec("BEGIN IMMEDIATE");
+  try {
+    assert.throws(() => successor(second, { expectedEvidence: atOpen }), /SQLITE_BUSY|database is locked/i);
+    assert.equal(count(first, "workpaper_revisions"), 1);
+  } finally {
+    first.exec("ROLLBACK");
+  }
+  const next = successor(second, { expectedEvidence: atOpen });
+  assert.equal(second.prepare("SELECT revision_number n FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next).n, 2);
+  assert.equal(count(first, "workpaper_revisions"), 2);
+});
+
+test("another SQLite connection revoking a mock grant before Save causes denial", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const atOpen = observed(second);
+  first.exec("UPDATE __fixture_grants SET revoked=1 WHERE subject_id='author-1'");
+  assert.throws(() => successor(second, { expectedEvidence: atOpen }), /DENIED_NO_REVISION_GRANT/);
+  assert.equal(count(first, "workpaper_revisions"), 1);
+  assert.equal(count(first, "audit_events"), 0);
+});
+
+test("another connection appending evidence after editor open triggers stale-evidence rejection", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const atOpen = observed(second);
+  first.exec("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,relationship_type,created_at_ms) VALUES ('later-link','rev-1','doc-a','va','ADDED_AFTER_OPEN',2)");
+  assert.throws(() => successor(second, {
+    expectedEvidence: atOpen, content: original(),
+  }), /STALE_EVIDENCE/);
+  assert.equal(count(first, "workpaper_revisions"), 1);
+  assert.equal(count(first, "workpaper_signoff_supersessions"), 0);
+});
+
+test("failed file-backed Save rolls back for a different SQLite connection", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const atOpen = observed(second);
+  assert.throws(() => successor(first, { failAt: "signoff" }), /INJECTED_ROLLBACK/);
+  assert.equal(count(second, "workpaper_revisions"), 1);
+  assert.equal(count(second, "workpaper_evidence_links"), 2);
+  assert.equal(count(second, "workpaper_signoff_supersessions"), 0);
+  assert.equal(count(second, "audit_events"), 0);
+  const next = successor(second, { expectedEvidence: atOpen });
+  assert.equal(second.prepare("SELECT revision_number n FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next).n, 2);
+  assert.equal(count(first, "workpaper_revisions"), 2);
+});
+
+test("a committed successor is visible to a new independent SQLite connection", t => {
+  const first = fixture(t, { fileBacked: true });
+  const second = secondConnection(t, first);
+  const next = successor(first);
+  const third = secondConnection(t, first);
+  assert.equal(third.prepare("SELECT supersedes_revision_id base FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next).base, "rev-1");
+  assert.deepEqual(
+    rows(third, next).map(x => JSON.stringify([
+      x.document_id, x.content_version_id, x.controlled_evidence_version_id,
+      x.relationship_type, x.description,
+    ])).sort(),
+    rows(second).map(x => JSON.stringify([
+      x.document_id, x.content_version_id, x.controlled_evidence_version_id,
+      x.relationship_type, x.description,
+    ])).sort(),
+  );
+  assert.equal(third.prepare("SELECT superseded_by_revision_id id FROM workpaper_signoff_supersessions WHERE signoff_id='sign-1'").get().id, next);
+  assert.equal(third.prepare("SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?").get(next).n, 0);
+});
 
 test("fixture audit records claimed synthetic actor; this is NOT real human identity proof", t => {
   const db = fixture(t);
