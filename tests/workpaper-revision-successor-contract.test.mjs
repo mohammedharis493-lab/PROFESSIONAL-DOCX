@@ -683,6 +683,10 @@ function readFixtureIntoEditor(db, workpaperId = "wp-1") {
     signoffId: row.signoff_id,
     workpaperId: row.workpaper_id,
     workpaperRevisionId: row.workpaper_revision_id,
+    evidenceLinkIds: db.prepare(
+      "SELECT evidence_link_id id FROM workpaper_signoff_evidence " +
+      "WHERE signoff_id=? ORDER BY evidence_link_id"
+    ).all(row.signoff_id).map(link => link.id),
   }));
   const read = openStoredWorkpaperRevisionReadSnapshot({
     workpaperId, revisions, evidenceLinks, signoffs,
@@ -986,3 +990,17 @@ test("cross-layer second open after successor targets latest and retains exact e
   assert.equal(count(db, "workpaper_signoffs"), 1);
 });
 
+
+test("cross-layer read rejects incomplete historical signoff evidence before opening a draft", t => {
+  const db = fixture(t);
+  db.exec(
+    "INSERT INTO workpaper_signoffs " +
+    "(signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) " +
+    "VALUES ('bad-signed','wp-1','rev-1','PREPARED','fixture','PREPARER',3)"
+  );
+  db.exec("INSERT INTO workpaper_signoff_evidence VALUES ('bad-snapshot','bad-signed','link-a',3)");
+  assert.throws(() => readFixtureIntoEditor(db),
+    /Observed base sign-off evidence snapshot disagrees with exact source links/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "audit_events"), 0);
+});

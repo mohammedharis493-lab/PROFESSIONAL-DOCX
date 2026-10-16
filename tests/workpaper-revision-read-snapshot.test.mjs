@@ -273,3 +273,159 @@ test("persisted DTO projection keeps signed history and exact evidence only as r
   assert.equal("evidenceLinkIds" in projected, false);
   assert.equal("signoffs" in projected, false);
 });
+
+
+function completeEvidenceLink(overrides = {}) {
+  return contentLink({
+    documentName: "Source document",
+    contentObservedAtMs: 13,
+    controlledVersionNumber: null,
+    controlledCapturedAtMs: null,
+    createdAtMs: 15,
+    ...overrides,
+  });
+}
+function completeSignoff(overrides = {}) {
+  return {
+    signoffId: "sign-1", workpaperId: "wp-1", workpaperRevisionId: "rev-7",
+    revisionNumber: 7, signoffType: "PREPARED", actorId: "fixture",
+    actorRole: "PREPARER", signedAtMs: 17, comment: null,
+    evidenceLinkIds: ["link-1"], supersededAtMs: null,
+    supersededReason: null, supersededByRevisionId: null,
+    ...overrides,
+  };
+}
+
+test("complete current App.tsx evidence and signoff DTOs are observed without authorizing Save", () => {
+  const read = openStoredWorkpaperRevisionReadSnapshot(input({
+    evidenceLinks: [completeEvidenceLink()],
+    signoffs: [completeSignoff()],
+  }));
+  assert.equal(read.observedBaseSignoffCount, 1);
+  assert.deepEqual(read.observedSourceEvidence, [contentLink()]);
+  assert.equal("documentName" in read.observedSourceEvidence[0], false);
+  assert.equal("evidenceLinkIds" in read.session, false);
+  assert.equal("actorId" in read.session, false);
+});
+
+test("future evidence DTO field fails closed instead of silently dropping custody metadata", () => {
+  assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+    evidenceLinks: [completeEvidenceLink({
+      custodyReclassification: "requires conscious schema update",
+    })],
+  })), /Unrecognized stored evidence field: custodyReclassification/);
+});
+
+test("future signoff DTO field fails closed instead of silently dropping approval metadata", () => {
+  assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+    signoffs: [completeSignoff({ futureApprovalScope: "new semantics" })],
+  })), /Unrecognized stored sign-off field: futureApprovalScope/);
+});
+
+test("optional evidence DTO metadata rejects malformed timestamps and version numbers", () => {
+  for (const overrides of [
+    { documentName: 5 },
+    { contentObservedAtMs: "now" },
+    { contentObservedAtMs: -1 },
+    { controlledVersionNumber: -2 },
+    { controlledVersionNumber: 1.5 },
+    { controlledCapturedAtMs: Infinity },
+    { createdAtMs: null },
+  ]) {
+    assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+      evidenceLinks: [completeEvidenceLink(overrides)],
+    })), /Invalid stored source evidence metadata/);
+  }
+});
+
+test("optional signoff DTO metadata rejects invalid actor, timestamps and types", () => {
+  for (const overrides of [
+    { revisionNumber: 0 }, { revisionNumber: 3.2 },
+    { signoffType: "" }, { actorId: " " }, { actorRole: null },
+    { signedAtMs: -1 }, { signedAtMs: "today" },
+    { comment: 5 }, { supersededAtMs: Infinity },
+    { supersededReason: 3 }, { supersededByRevisionId: " " },
+  ]) {
+    assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+      signoffs: [completeSignoff(overrides)],
+    })), /Invalid stored sign-off metadata/);
+  }
+});
+
+test("signoff DTO revision number must match its immutable referenced revision", () => {
+  assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+    signoffs: [completeSignoff({ revisionNumber: 8 })],
+  })), /revision-number observation disagrees/);
+});
+
+test("base signoff missing a signed link is not presented as an exact source snapshot", () => {
+  assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+    evidenceLinks: [contentLink(), contentLink({
+      evidenceLinkId: "link-2", contentVersionId: "content-two",
+    })],
+    signoffs: [completeSignoff({ evidenceLinkIds: ["link-1"] })],
+  })), /Observed base sign-off evidence snapshot disagrees/);
+});
+
+test("base signoff with foreign or extra link ID is rejected", () => {
+  for (const evidenceLinkIds of [
+    ["foreign-link"],
+    ["link-1", "foreign-link"],
+  ]) {
+    assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+      signoffs: [completeSignoff({ evidenceLinkIds })],
+    })), /Observed base sign-off evidence snapshot disagrees/);
+  }
+});
+
+test("signoff evidence-link IDs must be a unique nonblank array when present", () => {
+  for (const evidenceLinkIds of [
+    ["link-1", "link-1"], [" "], [5], "link-1", null,
+  ]) {
+    assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
+      signoffs: [completeSignoff({ evidenceLinkIds })],
+    })), /Invalid stored sign-off evidence-link snapshot/);
+  }
+});
+
+test("exact signoff links compare as sets, not by incidental DTO ordering", () => {
+  const read = openStoredWorkpaperRevisionReadSnapshot(input({
+    evidenceLinks: [contentLink(), contentLink({
+      evidenceLinkId: "link-2", contentVersionId: "content-two",
+    })],
+    signoffs: [completeSignoff({ evidenceLinkIds: ["link-2", "link-1"] })],
+  }));
+  assert.equal(read.observedSourceEvidence.length, 2);
+  assert.equal(read.observedBaseSignoffCount, 1);
+});
+
+test("signoffs on older observed revisions do not need latest revision's evidence IDs", () => {
+  const read = openStoredWorkpaperRevisionReadSnapshot(input({
+    revisions: [revision({
+      revisionNumber: 7, workpaperRevisionId: "rev-7",
+    }), revision({
+      revisionNumber: 6, workpaperRevisionId: "rev-6",
+    })],
+    signoffs: [completeSignoff({
+      signoffId: "sign-old", workpaperRevisionId: "rev-6",
+      revisionNumber: 6, evidenceLinkIds: ["historical-link"],
+      supersededAtMs: 19, supersededByRevisionId: "rev-7",
+      supersededReason: "revision replaced",
+    })],
+  }));
+  assert.equal(read.observedBaseSignoffCount, 0);
+  assert.equal(read.session.base.workpaperRevisionId, "rev-7");
+});
+
+test("metadata validation does not mutate complete source DTOs or change editable content", () => {
+  const source = input({
+    evidenceLinks: [completeEvidenceLink()],
+    signoffs: [completeSignoff()],
+  });
+  const unchanged = JSON.stringify(source);
+  const read = openStoredWorkpaperRevisionReadSnapshot(source);
+  assert.equal(JSON.stringify(source), unchanged);
+  assert.equal(read.session.draft.content.objective, "Old objective  ");
+  assert.equal(read.session.draft.expectedLatestRevisionId, "rev-7");
+});
+

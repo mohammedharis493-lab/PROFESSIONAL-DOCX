@@ -29,12 +29,31 @@ export type StoredWorkpaperEvidenceLinkForDraft = Readonly<{
   controlledEvidenceVersionId: string | null;
   relationshipType: string;
   description: string | null;
+  // Other fields in the current App.tsx/Tauri DTO may be present but are
+  // observation-only: they never become new successor evidence links.
+  documentName?: string;
+  contentObservedAtMs?: number | null;
+  controlledVersionNumber?: number | null;
+  controlledCapturedAtMs?: number | null;
+  createdAtMs?: number;
 }>;
 
 export type StoredWorkpaperSignoffForDraft = Readonly<{
   signoffId: string;
   workpaperId: string;
   workpaperRevisionId: string;
+  // Current App.tsx/Tauri metadata is read for shape validation only; none
+  // grants approval to a new revision or changes the historical row.
+  revisionNumber?: number;
+  signoffType?: string;
+  actorId?: string;
+  actorRole?: string;
+  signedAtMs?: number;
+  comment?: string | null;
+  evidenceLinkIds?: readonly string[];
+  supersededAtMs?: number | null;
+  supersededReason?: string | null;
+  supersededByRevisionId?: string | null;
 }>;
 
 export type ObservedSourceEvidenceReference = Readonly<StoredWorkpaperEvidenceLinkForDraft>;
@@ -66,6 +85,80 @@ const KNOWN_REVISION_DTO_FIELDS = new Set<string>([
 
 function nonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+
+// Explicitly based on the existing App.tsx WorkpaperEvidenceLink and
+// WorkpaperSignoff DTOs. Unknown fields may represent future custody or
+// sign-off semantics; silently dropping them is not acceptable for a
+// proposed lossless editor. Metadata below is never Save authorization.
+const KNOWN_EVIDENCE_DTO_FIELDS = new Set([
+  "evidenceLinkId", "workpaperRevisionId", "documentId", "documentName",
+  "contentVersionId", "contentObservedAtMs", "controlledEvidenceVersionId",
+  "controlledVersionNumber", "controlledCapturedAtMs", "relationshipType",
+  "description", "createdAtMs",
+]);
+const KNOWN_SIGNOFF_DTO_FIELDS = new Set([
+  "signoffId", "workpaperId", "workpaperRevisionId", "revisionNumber",
+  "signoffType", "actorId", "actorRole", "signedAtMs", "comment",
+  "evidenceLinkIds", "supersededAtMs", "supersededReason",
+  "supersededByRevisionId",
+]);
+function checkKnownFields(row: object, allowed: ReadonlySet<string>, label: string): void {
+  for (const key of Object.keys(row)) {
+    if (!allowed.has(key)) {
+      throw new TypeError("Unrecognized stored " + label + " field: " + key);
+    }
+  }
+}
+function validOptionalEpoch(value: number | null | undefined): boolean {
+  return value == null || (Number.isSafeInteger(value) && value >= 0);
+}
+function validOptionalPositiveNumber(value: number | null | undefined): boolean {
+  return value == null || (Number.isSafeInteger(value) && value >= 1);
+}
+function checkEvidenceMetadata(link: StoredWorkpaperEvidenceLinkForDraft): void {
+  checkKnownFields(link, KNOWN_EVIDENCE_DTO_FIELDS, "evidence");
+  if (
+    (link.documentName !== undefined && typeof link.documentName !== "string") ||
+    !validOptionalEpoch(link.contentObservedAtMs) ||
+    !validOptionalEpoch(link.controlledCapturedAtMs) ||
+    !validOptionalPositiveNumber(link.controlledVersionNumber) ||
+    (link.createdAtMs !== undefined &&
+      (!Number.isSafeInteger(link.createdAtMs) || link.createdAtMs < 0))
+  ) {
+    throw new TypeError("Invalid stored source evidence metadata");
+  }
+}
+function checkSignoffMetadata(signoff: StoredWorkpaperSignoffForDraft): void {
+  checkKnownFields(signoff, KNOWN_SIGNOFF_DTO_FIELDS, "sign-off");
+  if (
+    (signoff.revisionNumber !== undefined &&
+      (!Number.isSafeInteger(signoff.revisionNumber) || signoff.revisionNumber < 1)) ||
+    (signoff.signedAtMs !== undefined &&
+      (!Number.isSafeInteger(signoff.signedAtMs) || signoff.signedAtMs < 0)) ||
+    (signoff.signoffType !== undefined && !nonBlank(signoff.signoffType)) ||
+    (signoff.actorId !== undefined && !nonBlank(signoff.actorId)) ||
+    (signoff.actorRole !== undefined && !nonBlank(signoff.actorRole)) ||
+    (signoff.comment !== undefined && signoff.comment !== null &&
+      typeof signoff.comment !== "string") ||
+    !validOptionalEpoch(signoff.supersededAtMs) ||
+    (signoff.supersededReason !== undefined &&
+      signoff.supersededReason !== null &&
+      typeof signoff.supersededReason !== "string") ||
+    (signoff.supersededByRevisionId !== undefined &&
+      signoff.supersededByRevisionId !== null &&
+      !nonBlank(signoff.supersededByRevisionId))
+  ) {
+    throw new TypeError("Invalid stored sign-off metadata");
+  }
+  if (signoff.evidenceLinkIds !== undefined) {
+    if (!Array.isArray(signoff.evidenceLinkIds) ||
+      signoff.evidenceLinkIds.some(id => !nonBlank(id)) ||
+      new Set(signoff.evidenceLinkIds).size !== signoff.evidenceLinkIds.length) {
+      throw new TypeError("Invalid stored sign-off evidence-link snapshot");
+    }
+  }
 }
 
 /**
@@ -165,6 +258,7 @@ export function openStoredWorkpaperRevisionReadSnapshot(
     ) {
       throw new TypeError("Source evidence must identify exactly one exact version");
     }
+    checkEvidenceMetadata(link);
     linkIds.add(link.evidenceLinkId);
     return Object.freeze({
       evidenceLinkId: link.evidenceLinkId,
@@ -188,6 +282,27 @@ export function openStoredWorkpaperRevisionReadSnapshot(
       !revisionIds.has(signoff.workpaperRevisionId)
     ) {
       throw new TypeError("Invalid, duplicate or foreign workpaper sign-off observation");
+    }
+    checkSignoffMetadata(signoff);
+    const signedRevision = input.revisions.find(
+      revision => revision.workpaperRevisionId === signoff.workpaperRevisionId,
+    );
+    if (signoff.revisionNumber !== undefined &&
+        signoff.revisionNumber !== signedRevision?.revisionNumber) {
+      throw new TypeError("Stored sign-off revision-number observation disagrees with its revision");
+    }
+    // Current Tauri sign-off DTOs include their exact signed link IDs. For a
+    // sign-off on the observed base, reject a partial, foreign or altered
+    // snapshot instead of presenting it as consistent history. Historical
+    // sign-offs may reference older revisions whose evidence was not fetched.
+    if (signoff.workpaperRevisionId === latest.workpaperRevisionId &&
+        signoff.evidenceLinkIds !== undefined) {
+      const snapshotIds = [...signoff.evidenceLinkIds].sort();
+      const observedIds = [...linkIds].sort();
+      if (snapshotIds.length !== observedIds.length ||
+        snapshotIds.some((id, index) => id !== observedIds[index])) {
+        throw new TypeError("Observed base sign-off evidence snapshot disagrees with exact source links");
+      }
     }
     signoffIds.add(signoff.signoffId);
     if (signoff.workpaperRevisionId === latest.workpaperRevisionId) {
