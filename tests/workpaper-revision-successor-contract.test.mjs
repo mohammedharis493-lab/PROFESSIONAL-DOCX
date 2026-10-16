@@ -27,6 +27,8 @@ const rows = (db, rev = "rev-1") => db.prepare(
   "WHERE workpaper_revision_id = ? ORDER BY evidence_link_id"
 ).all(rev);
 const observed = (db, rev = "rev-1") => JSON.stringify(rows(db, rev));
+// Expected evidence is frozen at synthetic draft opening, never refreshed by Save.
+const openedEvidence = new WeakMap();
 const count = (db, name) => db.prepare("SELECT count(*) n FROM " + name).get().n;
 
 function fixture(t) {
@@ -55,6 +57,7 @@ function fixture(t) {
     "INSERT INTO workpaper_signoff_evidence VALUES ('snapshot-1','sign-1','link-a',1);",
     "INSERT INTO __fixture_grants VALUES ('author-1','wp-1','REVISE_WORKPAPER',0);",
   ].join("\n"));
+  openedEvidence.set(db, observed(db));
   return db;
 }
 
@@ -62,7 +65,7 @@ function fixture(t) {
 function successor(db, options = {}) {
   const {
     subjectId = "author-1", workpaperId = "wp-1",
-    expectedRevisionId = "rev-1", expectedEvidence = observed(db, expectedRevisionId),
+    expectedRevisionId = "rev-1", expectedEvidence = openedEvidence.get(db),
     content = { ...original(), conclusion: "Corrected conclusion" },
     failAt = "",
   } = options;
@@ -71,6 +74,7 @@ function successor(db, options = {}) {
     fields.some(k => !Object.hasOwn(content, k) || typeof content[k] !== "string")) {
     throw new Error("INVALID_SEVEN_FIELDS");
   }
+  if (typeof expectedEvidence !== "string") throw new Error("MISSING_OPEN_EVIDENCE_SNAPSHOT");
   db.exec("BEGIN IMMEDIATE");
   try {
     const grant = db.prepare("SELECT 1 FROM __fixture_grants WHERE subject_id=? AND workpaper_id=? AND permission='REVISE_WORKPAPER' AND revoked=0").get(subjectId, workpaperId);
@@ -173,7 +177,7 @@ test("evidence-only addition causes conflict even with unchanged canonical text"
   const db = fixture(t);
   const atOpen = observed(db);
   db.exec("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,controlled_evidence_version_id,relationship_type,description,created_at_ms) VALUES ('later','rev-1','doc-a','va',NULL,'CORROBORATES',NULL,2)");
-  assert.throws(() => successor(db, { expectedEvidence: atOpen, content: original() }), /STALE_EVIDENCE/);
+  assert.throws(() => successor(db, { content: original() }), /STALE_EVIDENCE/);
   assert.equal(count(db, "workpaper_revisions"), 1);
 });
 
@@ -216,7 +220,7 @@ test("immutable production DDL rejects mutation of historical revision, links, a
 test("cross-document evidence version cannot be transferred despite valid foreign keys", t => {
   const db = fixture(t);
   db.exec("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,controlled_evidence_version_id,relationship_type,created_at_ms) VALUES ('bad','rev-1','doc-a','vb',NULL,'CROSS_DOCUMENT',2)");
-  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.throws(() => successor(db, { expectedEvidence: observed(db) }), /INVALID_EVIDENCE_VERSION/);
   assert.equal(count(db, "workpaper_revisions"), 1);
 });
 
