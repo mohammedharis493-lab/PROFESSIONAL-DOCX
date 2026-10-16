@@ -217,11 +217,16 @@ test("exact version, relation and description carry into new link IDs, not old I
   const next = successor(db);
   const after = rows(db, next);
   assert.equal(after.length, before.length);
-  for (let i = 0; i < before.length; i++) {
-    assert.notEqual(after[i].evidence_link_id, before[i].evidence_link_id);
-    for (const k of ["document_id", "content_version_id", "controlled_evidence_version_id",
-      "relationship_type", "description"]) assert.equal(after[i][k], before[i][k]);
-  }
+  // Newly generated link IDs are random; order-by-ID is deliberately unstable.
+  // Compare complete evidence tuples as multisets and distinct link identities.
+  const exactTuples = links => links.map(({ document_id, content_version_id,
+    controlled_evidence_version_id, relationship_type, description }) =>
+    JSON.stringify([document_id, content_version_id,
+      controlled_evidence_version_id, relationship_type, description])).sort();
+  assert.deepEqual(exactTuples(after), exactTuples(before));
+  const originalLinkIds = new Set(before.map(x => x.evidence_link_id));
+  for (const link of after) assert.equal(originalLinkIds.has(link.evidence_link_id), false);
+  assert.equal(new Set(after.map(x => x.evidence_link_id)).size, after.length);
   assert.deepEqual(rows(db), before);
 });
 
