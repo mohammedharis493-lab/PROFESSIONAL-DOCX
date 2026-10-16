@@ -1194,6 +1194,11 @@ test("valid two-successor lineage retains immediate signed supersession target",
 test("signed baseline stores SHA-256 with Rust-compatible UTF-8 byte-length framing", t => {
   const db = fixture(t);
   const expected = digestCanonicalSqlContent(original());
+  // Fixed digest independently calculated from Rust's specified framing:
+  // SHA-256 over [u64-LE UTF-8 byte length, exact UTF-8 bytes] × 7 fields.
+  // This catches shared implementation mistakes in fixture insert + reader.
+  assert.equal(expected.toString("hex"),
+    "7c882c7fdbe9fb4c2de2de950839bdec597d091c08fac2bed22ea98db5f192a2");
   const signed = db.prepare(
     "SELECT content_hash,objective,procedure_performed,population,sample," +
     "exceptions,management_explanation,conclusion " +
@@ -1260,6 +1265,8 @@ test("canonical SHA-256 framing measures UTF-8 bytes and preserves Unicode compo
   ).get(next);
   assert.equal(Buffer.from(row.content_hash).toString("hex"),
     digestCanonicalSqlContent(contents).toString("hex"));
+  assert.equal(digestCanonicalSqlContent(contents).toString("hex"),
+    "4965cd4f9e19fe32f82fd054dc681ba2314e1db23b82718be45bf6047847b0ea");
   assert.notEqual(digestCanonicalSqlContent({ ...contents, population: "é" }).toString("hex"),
     digestCanonicalSqlContent(contents).toString("hex"));
   assert.notEqual(digestCanonicalSqlContent({ ...contents, exceptions: "line 1\nline 2" }).toString("hex"),
