@@ -127,6 +127,21 @@ function successor(db, options = {}) {
     const latest = db.prepare("SELECT r.workpaper_revision_id id,r.revision_number num FROM workpaper_revisions r JOIN workpapers w ON w.workpaper_id=r.workpaper_id WHERE w.workpaper_id=? AND w.archived_at_ms IS NULL ORDER BY r.revision_number DESC LIMIT 1").get(workpaperId);
     if (!latest || latest.id !== expectedRevisionId) throw new Error("STALE_REVISION");
     if (observed(db, latest.id) !== expectedEvidence) throw new Error("STALE_EVIDENCE");
+    // SQLite's DDL only prevents deleting existing immutable revisions and
+    // direct self-references. It does NOT validate full per-workpaper ancestry.
+    // This test-only oracle refuses a broken chain before adding a successor.
+    // This is not a production integrity check or a trusted Save endpoint.
+    const ancestry = db.prepare(
+      "SELECT workpaper_revision_id id, revision_number num," +
+      "supersedes_revision_id parent FROM workpaper_revisions " +
+      "WHERE workpaper_id=? ORDER BY revision_number"
+    ).all(workpaperId);
+    if (ancestry.length !== latest.num ||
+        ancestry.some((r, i) =>
+          r.num !== i + 1 ||
+          r.parent !== (i === 0 ? null : ancestry[i - 1].id))) {
+      throw new Error("INVALID_REVISION_CHAIN");
+    }
     const links = rows(db, latest.id);
     for (const link of links) {
       const controlled = link.controlled_evidence_version_id !== null;
@@ -181,7 +196,7 @@ function successor(db, options = {}) {
       "SELECT s.signoff_id id,s.workpaper_id signed_wp,s.workpaper_revision_id signed_revision," +
       "wr.workpaper_id revision_wp,wr.revision_number signed_number," +
       "ss.superseded_by_revision_id superseded_by,next.workpaper_id next_wp," +
-      "next.revision_number next_number " +
+      "next.revision_number next_number,next.supersedes_revision_id next_parent " +
       "FROM workpaper_signoffs s " +
       "LEFT JOIN workpaper_revisions wr ON wr.workpaper_revision_id=s.workpaper_revision_id " +
       "LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id=s.signoff_id " +
@@ -211,8 +226,12 @@ function successor(db, options = {}) {
         throw new Error("INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET");
       }
       if (signed.superseded_by !== null) {
+        // An approval is superseded by the immediate direct successor of
+        // precisely its signed revision, never an arbitrary later revision.
+        // A later pointer would conceal intermediate historical revisions.
         if (signed.next_wp !== workpaperId ||
-          signed.next_number <= signed.signed_number) {
+            signed.next_number !== signed.signed_number + 1 ||
+            signed.next_parent !== signed.signed_revision) {
           throw new Error("INVALID_HISTORICAL_SIGNOFF_SUPERSESSION");
         }
       } else if (signed.signed_number < latest.num) {
@@ -499,7 +518,7 @@ test("second successor retains the first supersession without renewing approval"
 
 test("missing supersession of an older signed revision cannot be silently ignored", t => {
   const db = fixture(t);
-  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms) VALUES ('unexpected-next','wp-1',2,2)");
+  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,supersedes_revision_id) VALUES ('unexpected-next','wp-1',2,2,'rev-1')");
   assert.throws(() => successor(db, {
     expectedRevisionId: "unexpected-next",
     expectedEvidence: observed(db, "unexpected-next"),
@@ -1003,4 +1022,132 @@ test("cross-layer read rejects incomplete historical signoff evidence before ope
     /Observed base sign-off evidence snapshot disagrees with exact source links/);
   assert.equal(count(db, "workpaper_revisions"), 1);
   assert.equal(count(db, "audit_events"), 0);
+});
+
+
+/**
+ * Ancestry negatives against real migration DDL, using deliberately malformed
+ * direct SQL writes that an authorized high-level revision API must NEVER
+ * permit. All failures must be read-only and preserve signed history.
+ */
+function revisionPath(db) {
+  return db.prepare(
+    "SELECT workpaper_revision_id id, revision_number n, " +
+    "supersedes_revision_id parent FROM workpaper_revisions " +
+    "WHERE workpaper_id='wp-1' ORDER BY revision_number"
+  ).all();
+}
+function insertTestRevision(db, id, number, parentId, workpaperId = "wp-1") {
+  db.prepare(
+    "INSERT INTO workpaper_revisions " +
+    "(workpaper_revision_id,workpaper_id,revision_number,created_at_ms,supersedes_revision_id) " +
+    "VALUES (?,?,?,2,?)"
+  ).run(id, workpaperId, number, parentId);
+}
+function syntheticNextOptions(db, revisionId) {
+  return {
+    expectedRevisionId: revisionId,
+    expectedEvidence: observed(db, revisionId),
+    content: original(),
+  };
+}
+function assertRejectedWithoutNewRecords(db, fn, message) {
+  const before = {
+    revisions: count(db, "workpaper_revisions"),
+    links: count(db, "workpaper_evidence_links"),
+    supersessions: count(db, "workpaper_signoff_supersessions"),
+    audit: count(db, "audit_events"),
+    signoffs: count(db, "workpaper_signoffs"),
+  };
+  assert.throws(fn, message);
+  assert.deepEqual({
+    revisions: count(db, "workpaper_revisions"),
+    links: count(db, "workpaper_evidence_links"),
+    supersessions: count(db, "workpaper_signoff_supersessions"),
+    audit: count(db, "audit_events"),
+    signoffs: count(db, "workpaper_signoffs"),
+  }, before);
+}
+test("test-only successor rejects second revision lacking an explicit immutable parent", t => {
+  const db = fixture(t);
+  insertTestRevision(db, "parentless", 2, null);
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, syntheticNextOptions(db, "parentless")),
+    /INVALID_REVISION_CHAIN/);
+  assert.deepEqual(revisionPath(db).map(x => x.parent), [null, null]);
+});
+test("test-only successor rejects revision numbering gaps before creating another revision", t => {
+  const db = fixture(t);
+  insertTestRevision(db, "skipped-two", 3, "rev-1");
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, syntheticNextOptions(db, "skipped-two")),
+    /INVALID_REVISION_CHAIN/);
+  assert.deepEqual(revisionPath(db).map(x => x.n), [1, 3]);
+});
+test("test-only successor rejects cross-workpaper ancestry even where SQLite FK exists", t => {
+  const db = fixture(t);
+  insertTestRevision(db, "other-parent", 1, null, "wp-2");
+  insertTestRevision(db, "foreign-parent", 2, "other-parent");
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, syntheticNextOptions(db, "foreign-parent")),
+    /INVALID_REVISION_CHAIN/);
+  assert.equal(db.prepare(
+    "SELECT workpaper_id id FROM workpaper_revisions WHERE workpaper_revision_id='other-parent'"
+  ).get().id, "wp-2");
+});
+test("test-only successor rejects same-workpaper ancestry pointing to an older, nonadjacent revision", t => {
+  const db = fixture(t);
+  insertTestRevision(db, "second", 2, "rev-1");
+  insertTestRevision(db, "third-bad-parent", 3, "rev-1");
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, syntheticNextOptions(db, "third-bad-parent")),
+    /INVALID_REVISION_CHAIN/);
+});
+test("signed revision supersession must not skip the immediate successor even if ancestry is valid", t => {
+  const db = fixture(t);
+  insertTestRevision(db, "second", 2, "rev-1");
+  insertTestRevision(db, "third", 3, "second");
+  db.exec(
+    "INSERT INTO workpaper_signoff_supersessions " +
+    "(signoff_supersession_id,signoff_id,superseded_by_revision_id," +
+    "superseded_at_ms,superseded_reason) " +
+    "VALUES ('jumped','sign-1','third',3,'Malicious skipped successor')"
+  );
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, syntheticNextOptions(db, "third")),
+    /INVALID_HISTORICAL_SIGNOFF_SUPERSESSION/);
+  assert.equal(db.prepare(
+    "SELECT superseded_by_revision_id id FROM workpaper_signoff_supersessions " +
+    "WHERE signoff_id='sign-1'"
+  ).get().id, "third");
+});
+test("signed revision cannot claim to supersede itself", t => {
+  const db = fixture(t);
+  db.exec(
+    "INSERT INTO workpaper_signoff_supersessions " +
+    "(signoff_supersession_id,signoff_id,superseded_by_revision_id," +
+    "superseded_at_ms,superseded_reason) " +
+    "VALUES ('self-signoff','sign-1','rev-1',2,'Malformed self pointer')"
+  );
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db), /INVALID_HISTORICAL_SIGNOFF_SUPERSESSION/);
+});
+test("valid two-successor lineage retains immediate signed supersession target", t => {
+  const db = fixture(t);
+  const next = successor(db);
+  const third = successor(db, {
+    expectedRevisionId: next,
+    expectedEvidence: observed(db, next),
+  });
+  const path = revisionPath(db);
+  assert.deepEqual(path.map(x => x.n), [1, 2, 3]);
+  assert.deepEqual(path.map(x => x.parent), [null, "rev-1", next]);
+  assert.equal(path.at(-1).id, third);
+  assert.equal(db.prepare(
+    "SELECT superseded_by_revision_id id FROM workpaper_signoff_supersessions " +
+    "WHERE signoff_id='sign-1'"
+  ).get().id, next);
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
+  ).get(third).n, 0);
 });
