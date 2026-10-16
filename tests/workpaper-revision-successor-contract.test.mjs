@@ -33,18 +33,25 @@ const observed = (db, rev = "rev-1") => JSON.stringify(rows(db, rev));
 const openedEvidence = new WeakMap();
 // Only the test harness knows these temporary SQLite file paths.
 const fixtureFiles = new WeakMap();
+const fixtureSiblingConnections = new WeakMap();
 const count = (db, name) => db.prepare("SELECT count(*) n FROM " + name).get().n;
 
 function fixture(t, { fileBacked = false } = {}) {
   const directory = fileBacked ? mkdtempSync(join(tmpdir(), "docx-revision-fixture-")) : null;
   const path = directory ? join(directory, "workpapers.sqlite") : ":memory:";
   const db = new DatabaseSync(path);
-  // Close the database before removing its storage, including on Windows.
+  const siblings = [];
+  // Close every independent connection before removing the file. This makes
+  // cleanup safe on Windows, where deleting an open SQLite file can fail.
   t.after(() => {
+    for (const sibling of siblings.reverse()) sibling.close();
     db.close();
     if (directory) rmSync(directory, { recursive: true, force: true });
   });
-  if (directory) fixtureFiles.set(db, path);
+  if (directory) {
+    fixtureFiles.set(db, path);
+    fixtureSiblingConnections.set(db, siblings);
+  }
   db.exec("PRAGMA foreign_keys=ON");
   for (const file of ["0001_initial.sql", "0004_controlled_evidence.sql",
     "0006_engagement_workpapers.sql", "0009_workpaper_signoffs.sql"]) {
@@ -81,7 +88,7 @@ function secondConnection(t, sourceDb) {
   const file = fixtureFiles.get(sourceDb);
   if (!file) throw new Error("FILE_BACKED_FIXTURE_REQUIRED");
   const connection = new DatabaseSync(file);
-  t.after(() => connection.close());
+  fixtureSiblingConnections.get(sourceDb).push(connection);
   connection.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=20");
   return connection;
 }
