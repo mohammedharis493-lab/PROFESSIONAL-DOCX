@@ -11,6 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { openStoredWorkpaperRevisionReadSnapshot } from "../src/workpaper-revision-read-snapshot.ts";
+import {
+  editWorkpaperRevisionSessionField,
+  projectWorkpaperRevisionDraftContent,
+} from "../src/workpaper-revision-edit-draft.ts";
+import { inspectWorkpaperRevisionObservedText } from "../src/workpaper-revision-conflict-inspection.ts";
 
 const fields = ["objective", "procedure_performed", "population", "sample",
   "exceptions", "management_explanation", "conclusion"];
@@ -603,3 +609,314 @@ test("fixture audit records claimed synthetic actor; this is NOT real human iden
   assert.equal(event.actor_id, "author-1");
   assert.equal(JSON.parse(event.details_json).supersedes, "rev-1");
 });
+
+
+/**
+ * CROSS-LAYER TEST FIXTURE ONLY. The explicit DTO mapping below joins the
+ * production SQLite DDL to the unmounted read/editor helper and to the
+ * synthetic successor transaction. This is NOT a production adapter, Tauri
+ * command, authenticated data service, permission or Save implementation.
+ *
+ * Crucially the exact source evidence expectation is detached at OPEN time,
+ * never rebuilt just before Save to mask evidence-only races.
+ */
+const canonicalSqlFields = Object.freeze([
+  ["objective", "objective"],
+  ["procedurePerformed", "procedure_performed"],
+  ["population", "population"],
+  ["sample", "sample"],
+  ["exceptions", "exceptions"],
+  ["managementExplanation", "management_explanation"],
+  ["conclusion", "conclusion"],
+]);
+function readFixtureIntoEditor(db, workpaperId = "wp-1") {
+  const sqlRevisions = db.prepare(
+    "SELECT * FROM workpaper_revisions WHERE workpaper_id=? ORDER BY revision_number"
+  ).all(workpaperId);
+  const revisions = sqlRevisions.map(row => ({
+    workpaperId: row.workpaper_id,
+    workpaperRevisionId: row.workpaper_revision_id,
+    revisionNumber: row.revision_number,
+    ...Object.fromEntries(canonicalSqlFields.map(([ui, sql]) => [ui, row[sql]])),
+  }));
+  const latest = revisions.at(-1);
+  const sourceLinks = latest ? rows(db, latest.workpaperRevisionId) : [];
+  const evidenceLinks = sourceLinks.map(link => ({
+    evidenceLinkId: link.evidence_link_id,
+    workpaperRevisionId: latest.workpaperRevisionId,
+    documentId: link.document_id,
+    contentVersionId: link.content_version_id,
+    controlledEvidenceVersionId: link.controlled_evidence_version_id,
+    relationshipType: link.relationship_type,
+    description: link.description,
+  }));
+  const signoffs = db.prepare(
+    "SELECT signoff_id,workpaper_id,workpaper_revision_id " +
+    "FROM workpaper_signoffs WHERE workpaper_id=?"
+  ).all(workpaperId).map(row => ({
+    signoffId: row.signoff_id,
+    workpaperId: row.workpaper_id,
+    workpaperRevisionId: row.workpaper_revision_id,
+  }));
+  const read = openStoredWorkpaperRevisionReadSnapshot({
+    workpaperId, revisions, evidenceLinks, signoffs,
+  });
+  return Object.freeze({
+    read,
+    // Immutable string detached while the draft is opened, not by Save.
+    expectedEvidenceAtOpen: JSON.stringify(sourceLinks),
+  });
+}
+function submitToSyntheticSuccessor(db, opened, session, { subjectId = "author-1" } = {}) {
+  const projection = projectWorkpaperRevisionDraftContent(session);
+  assert.equal(projection.workpaperId, opened.read.session.base.workpaperId);
+  assert.equal(projection.expectedLatestRevisionId,
+    opened.read.session.base.workpaperRevisionId);
+  const content = Object.fromEntries(
+    canonicalSqlFields.map(([ui, sql]) => [sql, projection.content[ui]])
+  );
+  // In real code the server MUST independently establish the actor and
+  // verify grants, evidence custody, CAS and sign-off state in one transaction.
+  return successor(db, {
+    subjectId,
+    workpaperId: projection.workpaperId,
+    expectedRevisionId: projection.expectedLatestRevisionId,
+    expectedEvidence: opened.expectedEvidenceAtOpen,
+    content,
+  });
+}
+function evidenceTuples(db, revision) {
+  return rows(db, revision).map(link => JSON.stringify([
+    link.document_id,
+    link.content_version_id,
+    link.controlled_evidence_version_id,
+    link.relationship_type,
+    link.description,
+  ])).sort();
+}
+
+test("cross-layer signed typo correction preserves all seven stored fields and exact source evidence", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  assert.equal(opened.read.observedBaseSignoffCount, 1);
+  assert.deepEqual(opened.read.session.draft.content, {
+    objective: "Objective\r\noriginal ",
+    procedurePerformed: "Trace approvals",
+    population: "All entries",
+    sample: "Sample twenty",
+    exceptions: "One exception",
+    managementExplanation: "Reply\u00a0 ",
+    conclusion: "Prior signed conclusion",
+  });
+  const changed = editWorkpaperRevisionSessionField(
+    opened.read.session, "conclusion", "Prior signed conclusion.",
+  );
+  const next = submitToSyntheticSuccessor(db, opened, changed);
+  const stored = db.prepare("SELECT * FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next);
+  assert.equal(stored.revision_number, 2);
+  assert.equal(stored.supersedes_revision_id, "rev-1");
+  for (const [ui, sql] of canonicalSqlFields) {
+    assert.equal(stored[sql], changed.draft.content[ui], "mismatched canonical field " + ui);
+  }
+  assert.deepEqual(evidenceTuples(db, next), evidenceTuples(db, "rev-1"));
+  assert.equal(new Set(rows(db, next).map(x => x.evidence_link_id)).size, 2);
+  for (const link of rows(db, next)) {
+    assert.equal(["link-a", "link-b"].includes(link.evidence_link_id), false);
+  }
+  assert.equal(db.prepare(
+    "SELECT superseded_by_revision_id id FROM workpaper_signoff_supersessions WHERE signoff_id='sign-1'"
+  ).get().id, next);
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
+  ).get(next).n, 0);
+  assert.equal(db.prepare(
+    "SELECT workpaper_revision_id id FROM workpaper_signoffs WHERE signoff_id='sign-1'"
+  ).get().id, "rev-1");
+});
+
+test("cross-layer unchanged-text deliberate Save still makes a new unsigned successor", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  const next = submitToSyntheticSuccessor(db, opened, opened.read.session);
+  const current = db.prepare("SELECT * FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next);
+  for (const [ui, sql] of canonicalSqlFields) {
+    assert.equal(current[sql], opened.read.session.base.content[ui]);
+  }
+  assert.equal(current.revision_number, 2);
+  assert.equal(count(db, "workpaper_revisions"), 2);
+  assert.equal(count(db, "workpaper_signoffs"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 1);
+  assert.deepEqual(evidenceTuples(db, next), evidenceTuples(db, "rev-1"));
+});
+
+test("cross-layer all-seven-field edits preserve exact Unicode, CRLF, spaces and deliberate blanks", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  const edited = {
+    objective: "X\r\nY  ",
+    procedurePerformed: "🧪\u00a0Audit\t",
+    population: "",
+    sample: "ⅠⅢ samples",
+    exceptions: "False\n",
+    managementExplanation: "Response e\u0301 / é",
+    conclusion: "\u0000End ",
+  };
+  let session = opened.read.session;
+  for (const [field, value] of Object.entries(edited)) {
+    session = editWorkpaperRevisionSessionField(session, field, value);
+  }
+  const next = submitToSyntheticSuccessor(db, opened, session);
+  const row = db.prepare("SELECT * FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next);
+  for (const [ui, sql] of canonicalSqlFields) {
+    assert.equal(row[sql], edited[ui]);
+  }
+  assert.equal(row.objective, "X\r\nY  ");
+  assert.equal(row.conclusion, "\u0000End ");
+  assert.deepEqual(evidenceTuples(db, next), evidenceTuples(db, "rev-1"));
+});
+
+test("cross-layer exact version observations remain separate from projected editable text", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  const projection = projectWorkpaperRevisionDraftContent(opened.read.session);
+  assert.equal(opened.read.observedSourceEvidence.length, 2);
+  assert.deepEqual(opened.read.observedSourceEvidence.map(x => x.evidenceLinkId).sort(),
+    ["link-a", "link-b"]);
+  assert.deepEqual(Object.keys(projection).sort(),
+    ["content","expectedLatestRevisionId","scope","workpaperId"].sort());
+  assert.equal("evidenceLinkIds" in projection, false);
+  assert.equal("signoffIds" in projection, false);
+  assert.ok(Object.isFrozen(projection.content));
+  assert.ok(Object.isFrozen(opened.read.observedSourceEvidence));
+});
+
+test("cross-layer evidence-only race rejects an unchanged-text Save rather than refreshing at Save time", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  db.exec(
+    "INSERT INTO workpaper_evidence_links " +
+    "(evidence_link_id,workpaper_revision_id,document_id,content_version_id,relationship_type,created_at_ms) " +
+    "VALUES ('new-evidence-after-open','rev-1','doc-a','va','CORROBORATES',3)"
+  );
+  assert.throws(() => submitToSyntheticSuccessor(db, opened, opened.read.session),
+    /STALE_EVIDENCE/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+  assert.equal(count(db, "audit_events"), 0);
+});
+
+test("cross-layer latest revision conflict never silently reopens or overwrites stale base", t => {
+  const db = fixture(t);
+  const old = readFixtureIntoEditor(db);
+  const local = editWorkpaperRevisionSessionField(old.read.session,
+    "objective", "Local correction");
+  const first = submitToSyntheticSuccessor(db, old, old.read.session);
+  const now = readFixtureIntoEditor(db);
+  assert.equal(now.read.session.base.workpaperRevisionId, first);
+  assert.equal(now.read.observedBaseSignoffCount, 0);
+  const comparison = inspectWorkpaperRevisionObservedText(local, now.read.session.base);
+  assert.equal(comparison.differentRevisionObserved, true);
+  assert.equal(comparison.fields.find(x => x.field === "objective").status, "local-only");
+  assert.throws(() => submitToSyntheticSuccessor(db, old, local),
+    /STALE_REVISION/);
+  assert.equal(local.draft.expectedLatestRevisionId, "rev-1");
+  assert.equal(local.draft.content.objective, "Local correction");
+  assert.equal(count(db, "workpaper_revisions"), 2);
+});
+
+test("cross-layer in-flight grant revocation is rechecked at synthetic SQLite write boundary", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  const changed = editWorkpaperRevisionSessionField(
+    opened.read.session, "exceptions", "One exception, corrected.",
+  );
+  db.exec("UPDATE __fixture_grants SET revoked=1 WHERE subject_id='author-1'");
+  assert.throws(() => submitToSyntheticSuccessor(db, opened, changed),
+    /DENIED_NO_REVISION_GRANT/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+});
+
+test("cross-layer signoff made after draft opened remains historical and is superseded, not inherited", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  db.exec(
+    "INSERT INTO workpaper_signoffs " +
+    "(signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) " +
+    "VALUES ('sign-later','wp-1','rev-1','PREPARED','reviewer-fixture','PREPARER',3)"
+  );
+  db.exec(
+    "INSERT INTO workpaper_signoff_evidence VALUES " +
+    "('snapshot-later-a','sign-later','link-a',3)," +
+    "('snapshot-later-b','sign-later','link-b',3)"
+  );
+  const edited = editWorkpaperRevisionSessionField(
+    opened.read.session, "sample", "Sample twenty-one",
+  );
+  const next = submitToSyntheticSuccessor(db, opened, edited);
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoff_supersessions " +
+    "WHERE superseded_by_revision_id=?"
+  ).get(next).n, 2);
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
+  ).get(next).n, 0);
+  assert.equal(opened.read.observedBaseSignoffCount, 1);
+  assert.equal(db.prepare(
+    "SELECT workpaper_revision_id id FROM workpaper_signoffs WHERE signoff_id='sign-later'"
+  ).get().id, "rev-1");
+});
+
+test("cross-layer malformed future canonical text is refused before entering the transaction", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  const corrupt = {
+    ...opened.read.session,
+    draft: {
+      ...opened.read.session.draft,
+      content: { ...opened.read.session.draft.content, futureField: "new data" },
+    },
+  };
+  assert.throws(() => submitToSyntheticSuccessor(db, opened, corrupt),
+    /Unexpected canonical content field: futureField/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "audit_events"), 0);
+});
+
+test("cross-layer denied synthetic actor cannot use a valid detached text projection", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  assert.throws(
+    () => submitToSyntheticSuccessor(db, opened, opened.read.session, {
+      subjectId: "not-granted",
+    }),
+    /DENIED_NO_REVISION_GRANT/
+  );
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("cross-layer second open after successor targets latest and retains exact evidence across chains", t => {
+  const db = fixture(t);
+  const old = readFixtureIntoEditor(db);
+  const second = submitToSyntheticSuccessor(db, old,
+    editWorkpaperRevisionSessionField(old.read.session,
+      "conclusion", "Second conclusion"));
+  const current = readFixtureIntoEditor(db);
+  assert.equal(current.read.session.base.workpaperRevisionId, second);
+  assert.equal(current.read.observedBaseSignoffCount, 0);
+  const third = submitToSyntheticSuccessor(db, current,
+    editWorkpaperRevisionSessionField(current.read.session,
+      "conclusion", "Third conclusion"));
+  const thirdRow = db.prepare(
+    "SELECT revision_number,conclusion,supersedes_revision_id " +
+    "FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  ).get(third);
+  assert.equal(thirdRow.revision_number, 3);
+  assert.equal(thirdRow.conclusion, "Third conclusion");
+  assert.equal(thirdRow.supersedes_revision_id, second);
+  assert.deepEqual(evidenceTuples(db, third), evidenceTuples(db, second));
+  assert.deepEqual(evidenceTuples(db, second), evidenceTuples(db, "rev-1"));
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 1);
+  assert.equal(count(db, "workpaper_signoffs"), 1);
+});
+
