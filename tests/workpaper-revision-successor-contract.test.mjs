@@ -54,7 +54,7 @@ function fixture(t) {
     "INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion) VALUES ('rev-1','wp-1',1,1,'Objective'||char(13)||char(10)||'original ','Trace approvals','All entries','Sample twenty','One exception','Reply'||char(160)||' ','Prior signed conclusion');",
     "INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,controlled_evidence_version_id,relationship_type,description,created_at_ms) VALUES ('link-a','rev-1','doc-a','va',NULL,'SUPPORTS','Exact original note',1),('link-b','rev-1','doc-b',NULL,'cb','REVIEWED_WITH',NULL,1);",
     "INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('sign-1','wp-1','rev-1','PREPARED','fixture-preparer','PREPARER',1);",
-    "INSERT INTO workpaper_signoff_evidence VALUES ('snapshot-1','sign-1','link-a',1);",
+    "INSERT INTO workpaper_signoff_evidence VALUES ('snapshot-1','sign-1','link-a',1),('snapshot-2','sign-1','link-b',1);",
     "INSERT INTO __fixture_grants VALUES ('author-1','wp-1','REVISE_WORKPAPER',0);",
   ].join("\n"));
   openedEvidence.set(db, observed(db));
@@ -127,6 +127,53 @@ function successor(db, options = {}) {
         }
       }
     }
+    // The production sign-off path snapshots EVERY link of its exact signed
+    // revision. Before superseding any sign-off, verify historical sign-off
+    // scope, exact link-set equality and supersession history. Production
+    // migration DDL protects historical rows from update/delete but permits
+    // malformed new rows to be inserted by lower-level SQL.
+    const signoffBindings = db.prepare(
+      "SELECT s.signoff_id id,s.workpaper_id signed_wp,s.workpaper_revision_id signed_revision," +
+      "wr.workpaper_id revision_wp,wr.revision_number signed_number," +
+      "ss.superseded_by_revision_id superseded_by,next.workpaper_id next_wp," +
+      "next.revision_number next_number " +
+      "FROM workpaper_signoffs s " +
+      "LEFT JOIN workpaper_revisions wr ON wr.workpaper_revision_id=s.workpaper_revision_id " +
+      "LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id=s.signoff_id " +
+      "LEFT JOIN workpaper_revisions next ON next.workpaper_revision_id=ss.superseded_by_revision_id " +
+      "WHERE s.workpaper_id=? OR wr.workpaper_id=?"
+    ).all(workpaperId, workpaperId);
+    const expectedSignedLinks = db.prepare(
+      "SELECT evidence_link_id id FROM workpaper_evidence_links " +
+      "WHERE workpaper_revision_id=? ORDER BY evidence_link_id"
+    );
+    const snapshottedLinks = db.prepare(
+      "SELECT se.evidence_link_id id,wel.workpaper_revision_id link_revision " +
+      "FROM workpaper_signoff_evidence se " +
+      "LEFT JOIN workpaper_evidence_links wel ON wel.evidence_link_id=se.evidence_link_id " +
+      "WHERE se.signoff_id=? ORDER BY se.evidence_link_id"
+    );
+    for (const signed of signoffBindings) {
+      if (signed.signed_wp !== workpaperId ||
+        signed.revision_wp !== workpaperId || !signed.signed_number) {
+        throw new Error("INVALID_HISTORICAL_SIGNOFF_BINDING");
+      }
+      const exactIds = expectedSignedLinks.all(signed.signed_revision).map(x => x.id);
+      const snapshot = snapshottedLinks.all(signed.id);
+      if (snapshot.length !== exactIds.length ||
+        snapshot.some((x, i) =>
+          x.id !== exactIds[i] || x.link_revision !== signed.signed_revision)) {
+        throw new Error("INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET");
+      }
+      if (signed.superseded_by !== null) {
+        if (signed.next_wp !== workpaperId ||
+          signed.next_number <= signed.signed_number) {
+          throw new Error("INVALID_HISTORICAL_SIGNOFF_SUPERSESSION");
+        }
+      } else if (signed.signed_number < latest.num) {
+        throw new Error("MISSING_HISTORICAL_SIGNOFF_SUPERSESSION");
+      }
+    }
     const next = randomUUID();
     db.prepare("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,revision_reason,supersedes_revision_id,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion) VALUES (?,?,?,2,'Fixture correction',?,?,?,?,?,?,?,?)")
       .run(next, workpaperId, latest.num + 1, latest.id, ...fields.map(k => content[k]));
@@ -182,7 +229,8 @@ test("historical signoff and its exact evidence snapshot stay old, successor uns
   const db = fixture(t);
   const next = successor(db);
   assert.equal(db.prepare("SELECT workpaper_revision_id FROM workpaper_signoffs WHERE signoff_id='sign-1'").get().workpaper_revision_id, "rev-1");
-  assert.equal(db.prepare("SELECT evidence_link_id FROM workpaper_signoff_evidence WHERE signoff_id='sign-1'").get().evidence_link_id, "link-a");
+  assert.deepEqual(db.prepare("SELECT evidence_link_id FROM workpaper_signoff_evidence WHERE signoff_id='sign-1' ORDER BY evidence_link_id").all().map(x => x.evidence_link_id), ["link-a", "link-b"]);
+  assert.deepEqual(rows(db).map(x => x.evidence_link_id), ["link-a", "link-b"]);
   assert.equal(db.prepare("SELECT superseded_by_revision_id FROM workpaper_signoff_supersessions WHERE signoff_id='sign-1'").get().superseded_by_revision_id, next);
   assert.equal(db.prepare("SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?").get(next).n, 0);
 });
@@ -314,6 +362,100 @@ test("controlled-version document must match the signed source document", t => {
   db.exec("UPDATE controlled_evidence_versions SET document_id='doc-a' WHERE controlled_evidence_version_id='cb'");
   assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
   assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+
+test("the signed base fixture represents the full exact evidence-link set", t => {
+  const db = fixture(t);
+  const signedIds = db.prepare("SELECT evidence_link_id id FROM workpaper_signoff_evidence WHERE signoff_id='sign-1' ORDER BY evidence_link_id")
+    .all().map(x => x.id);
+  assert.deepEqual(signedIds, rows(db).map(x => x.evidence_link_id));
+  assert.equal(signedIds.length, 2);
+});
+
+test("a sign-off missing one source evidence snapshot blocks successor creation", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('incomplete','wp-1','rev-1','PREPARED','fixture','PREPARER',1)");
+  db.exec("INSERT INTO workpaper_signoff_evidence VALUES ('incomplete-a','incomplete','link-a',1)");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+});
+
+test("a sign-off with zero captured links cannot claim two-link signed revision", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('empty','wp-1','rev-1','PREPARED','fixture','PREPARER',1)");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("an extra link appended to signed evidence history blocks silent inheritance", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms) VALUES ('other-rev','wp-2',1,1)");
+  db.exec("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,relationship_type,created_at_ms) VALUES ('foreign-link','other-rev','doc-a','va','SUPPORTS',1)");
+  db.exec("INSERT INTO workpaper_signoff_evidence VALUES ('malicious-extra','sign-1','foreign-link',2)");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET/);
+  assert.equal(count(db, "workpaper_revisions"), 2);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+});
+
+test("sign-off claiming a different workpaper with a foreign revision fails closed", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('foreign-sign','wp-2','rev-1','PREPARED','fixture','PREPARER',1)");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_BINDING/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("sign-off snapshot referencing only a different revision fails closed", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms) VALUES ('other-rev','wp-2',1,1)");
+  db.exec("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,relationship_type,created_at_ms) VALUES ('foreign-link','other-rev','doc-a','va','SUPPORTS',1)");
+  db.exec("INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('malformed-sign','wp-1','rev-1','PREPARED','fixture','PREPARER',1)");
+  db.exec("INSERT INTO workpaper_signoff_evidence VALUES ('malformed-snapshot','malformed-sign','foreign-link',1)");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_EVIDENCE_SET/);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+});
+
+test("a prior supersession pointed at another workpaper cannot be trusted", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms) VALUES ('other-rev','wp-2',1,2)");
+  db.exec("INSERT INTO workpaper_signoff_supersessions (signoff_supersession_id,signoff_id,superseded_by_revision_id,superseded_at_ms,superseded_reason) VALUES ('bad-sup','sign-1','other-rev',2,'Malformed fixture row')");
+  assert.throws(() => successor(db), /INVALID_HISTORICAL_SIGNOFF_SUPERSESSION/);
+  assert.equal(count(db, "workpaper_revisions"), 2);
+});
+
+test("appended historical signed-evidence rows cannot be changed or deleted", t => {
+  const db = fixture(t);
+  assert.throws(() => db.exec("DELETE FROM workpaper_signoff_evidence WHERE signoff_evidence_id='snapshot-2'"), /immutable/);
+  assert.throws(() => db.exec("UPDATE workpaper_signoff_evidence SET evidence_link_id='link-a' WHERE signoff_evidence_id='snapshot-2'"), /immutable/);
+  assert.equal(count(db, "workpaper_signoff_evidence"), 2);
+});
+
+test("second successor retains the first supersession without renewing approval", t => {
+  const db = fixture(t);
+  const second = successor(db);
+  const next = successor(db, {
+    expectedRevisionId: second,
+    expectedEvidence: observed(db, second),
+    content: { ...original(), conclusion: "Third unsigned revision" },
+  });
+  const historical = db.prepare("SELECT superseded_by_revision_id FROM workpaper_signoff_supersessions WHERE signoff_id='sign-1'").get();
+  assert.equal(historical.superseded_by_revision_id, second);
+  assert.equal(db.prepare("SELECT supersedes_revision_id FROM workpaper_revisions WHERE workpaper_revision_id=?").get(next).supersedes_revision_id, second);
+  assert.equal(db.prepare("SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?").get(next).n, 0);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 1);
+  assert.deepEqual(rows(db, second).map(x => x.evidence_link_id).length, 2);
+});
+
+test("missing supersession of an older signed revision cannot be silently ignored", t => {
+  const db = fixture(t);
+  db.exec("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms) VALUES ('unexpected-next','wp-1',2,2)");
+  assert.throws(() => successor(db, {
+    expectedRevisionId: "unexpected-next",
+    expectedEvidence: observed(db, "unexpected-next"),
+    content: original(),
+  }), /MISSING_HISTORICAL_SIGNOFF_SUPERSESSION/);
+  assert.equal(count(db, "workpaper_revisions"), 2);
 });
 
 for (const stage of ["revision", "evidence", "signoff"]) {
