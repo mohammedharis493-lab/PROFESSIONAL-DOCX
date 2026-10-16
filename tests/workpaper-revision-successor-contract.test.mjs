@@ -112,6 +112,13 @@ function successor(db, options = {}) {
     fields.some(k => !Object.hasOwn(content, k) || typeof content[k] !== "string")) {
     throw new Error("INVALID_SEVEN_FIELDS");
   }
+  // Node 22's experimental node:sqlite stores embedded NUL bytes, but its
+  // TEXT read accessor truncates at NUL. Until that test-driver limitation is
+  // resolved, fail closed rather than reporting a lossless round-trip.
+  // Production Rust/Tauri text handling requires its own reviewed tests.
+  if (fields.some(k => content[k].includes("\u0000"))) {
+    throw new Error("UNSUPPORTED_EMBEDDED_NUL_IN_TEST_SQLITE");
+  }
   if (typeof expectedEvidence !== "string") throw new Error("MISSING_OPEN_EVIDENCE_SNAPSHOT");
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -759,7 +766,7 @@ test("cross-layer all-seven-field edits preserve exact Unicode, CRLF, spaces and
     sample: "ⅠⅢ samples",
     exceptions: "False\n",
     managementExplanation: "Response e\u0301 / é",
-    conclusion: "\u0000End ",
+    conclusion: "End \u2028 ",
   };
   let session = opened.read.session;
   for (const [field, value] of Object.entries(edited)) {
@@ -771,8 +778,27 @@ test("cross-layer all-seven-field edits preserve exact Unicode, CRLF, spaces and
     assert.equal(row[sql], edited[ui]);
   }
   assert.equal(row.objective, "X\r\nY  ");
-  assert.equal(row.conclusion, "\u0000End ");
+  assert.equal(row.conclusion, "End \u2028 ");
   assert.deepEqual(evidenceTuples(db, next), evidenceTuples(db, "rev-1"));
+});
+
+
+test("Node experimental SQLite NUL truncation is rejected rather than called a lossless Save", t => {
+  const db = fixture(t);
+  const opened = readFixtureIntoEditor(db);
+  for (const unsafe of ["\u0000Leading", "Mid\u0000dle", "Trailing\u0000"]) {
+    const changed = editWorkpaperRevisionSessionField(
+      opened.read.session, "conclusion", unsafe,
+    );
+    // Client projection is deliberately still verbatim; only the synthetic
+    // node:sqlite boundary rejects a value its TEXT reader cannot recover.
+    assert.equal(projectWorkpaperRevisionDraftContent(changed).content.conclusion, unsafe);
+    assert.throws(() => submitToSyntheticSuccessor(db, opened, changed),
+      /UNSUPPORTED_EMBEDDED_NUL_IN_TEST_SQLITE/);
+  }
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+  assert.equal(count(db, "audit_events"), 0);
 });
 
 test("cross-layer exact version observations remain separate from projected editable text", t => {
