@@ -229,7 +229,8 @@ test("two edited fields render two independent restore actions without losing ot
   assert.equal((html.match(/<button\b/g) ?? []).length, 2);
   assert.match(html, /aria-label="Restore original Sample text"/);
   assert.match(html, /aria-label="Restore original Objective text"/);
-  assert.match(html, /Twenty vendors/);
+  assert.match(html, /Changed count/);
+  assert.match(html, /All vendors/);
   assert.equal(session.draft.content.objective, "Local correction");
 });
 
