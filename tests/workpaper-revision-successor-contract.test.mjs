@@ -91,10 +91,10 @@ function successor(db, options = {}) {
         // the same exact document and source identity before reuse.
         const chain = db.prepare(
           "SELECT cev.document_id,cev.verification_state,cev.retention_state," +
-          "cev.source_stable_during_read,cev.source_file_instance_id," +
+          "cev.source_stable_during_read,cev.source_file_instance_id controlled_source_file_id," +
           "cev.source_content_version_id,cj.status capture_status," +
           "cj.document_id capture_document_id,cj.file_instance_id capture_file_instance_id," +
-          "cv.document_id source_document_id,cv.file_instance_id source_file_instance_id," +
+          "cv.document_id source_document_id,cv.file_instance_id version_source_file_id," +
           "fi.document_id instance_document_id " +
           "FROM controlled_evidence_versions cev " +
           "LEFT JOIN evidence_capture_jobs cj ON cj.evidence_capture_job_id=cev.evidence_capture_job_id " +
@@ -109,9 +109,9 @@ function successor(db, options = {}) {
           chain.source_stable_during_read !== 1 ||
           chain.capture_status !== "COMPLETE" ||
           chain.capture_document_id !== link.document_id ||
-          chain.capture_file_instance_id !== chain.source_file_instance_id ||
+          chain.capture_file_instance_id !== chain.controlled_source_file_id ||
           chain.source_document_id !== link.document_id ||
-          chain.source_file_instance_id !== chain.source_file_instance_id ||
+          chain.version_source_file_id !== chain.controlled_source_file_id ||
           chain.instance_document_id !== link.document_id) {
           throw new Error("INVALID_EVIDENCE_VERSION");
         }
