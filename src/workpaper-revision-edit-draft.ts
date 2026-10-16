@@ -220,6 +220,47 @@ export function editWorkpaperRevisionSessionField(
   });
 }
 
+/**
+ * Untrusted, detached projection of the seven editable fields and frozen base
+ * identity. This is available for BOTH unchanged and changed text; a
+ * content-only comparison MUST NEVER suppress an intended revision Save.
+ *
+ * This is NOT a Save request, Tauri payload, permission proof, evidence-set
+ * hash or approval. Only a future reviewed backend transaction can decide
+ * whether to accept a requested successor revision, by authenticating the
+ * human actor and checking scope, expected latest revision, exact evidence
+ * and historical sign-off integrity under the same write reservation.
+ */
+export type WorkpaperRevisionDraftProjection = Readonly<{
+  scope: "untrusted-draft-content-only";
+  workpaperId: string;
+  expectedLatestRevisionId: string;
+  content: Readonly<WorkpaperRevisionContent>;
+}>;
+
+export function projectWorkpaperRevisionDraftContent(
+  session: WorkpaperRevisionEditorSession,
+): WorkpaperRevisionDraftProjection {
+  // Revalidate both identities and all canonical content, including future
+  // schema additions, rather than trusting a cached preview or mutable caller.
+  previewWorkpaperRevisionEditorSession(session);
+  const workpaperId = session.base.workpaperId;
+  const expectedLatestRevisionId = session.base.workpaperRevisionId;
+  if (
+    typeof workpaperId !== "string" || workpaperId.trim().length === 0 ||
+    typeof expectedLatestRevisionId !== "string" ||
+    expectedLatestRevisionId.trim().length === 0
+  ) {
+    throw new TypeError("The immutable workpaper and revision identities must be nonblank");
+  }
+  return Object.freeze({
+    scope: "untrusted-draft-content-only",
+    workpaperId,
+    expectedLatestRevisionId,
+    content: Object.freeze(copyCanonicalContent(session.draft.content)),
+  });
+}
+
 /** Compare text only; unchanged content does NOT mean no Save is necessary. */
 export function previewWorkpaperRevisionEditorSession(
   session: WorkpaperRevisionEditorSession,

@@ -6,6 +6,7 @@ import {
 import {
   editWorkpaperRevisionSessionField,
   previewWorkpaperRevisionEditorSession,
+  projectWorkpaperRevisionDraftContent,
 } from "../src/workpaper-revision-edit-draft.ts";
 
 function revision(overrides = {}) {
@@ -244,4 +245,31 @@ test("snapshot observations never produce a persistence command or approval clai
   assert.equal("grant" in read, false);
   assert.equal("approval" in read, false);
   assert.equal(previewWorkpaperRevisionEditorSession(read.session).kind, "content-unchanged");
+});
+
+test("persisted DTO opens a signed unchanged draft that still projects all seven fields", () => {
+  const observation = openStoredWorkpaperRevisionReadSnapshot(input());
+  assert.equal(previewWorkpaperRevisionEditorSession(observation.session).kind, "content-unchanged");
+  const projected = projectWorkpaperRevisionDraftContent(observation.session);
+  assert.equal(projected.expectedLatestRevisionId, "rev-7");
+  assert.equal(projected.content.objective, "Old objective  ");
+  assert.equal(projected.content.population, "Population Ⅰ");
+  assert.equal(projected.content.conclusion, "Signed conclusion");
+  assert.equal("observedSourceEvidence" in projected, false);
+  assert.equal("observedBaseSignoffCount" in projected, false);
+});
+
+test("persisted DTO projection keeps signed history and exact evidence only as read observations", () => {
+  const observation = openStoredWorkpaperRevisionReadSnapshot(input());
+  const updated = editWorkpaperRevisionSessionField(
+    observation.session, "conclusion", "Minor fix",
+  );
+  const projected = projectWorkpaperRevisionDraftContent(updated);
+  assert.equal(projected.content.conclusion, "Minor fix");
+  assert.equal(projected.content.managementExplanation, "Manager's explanation");
+  assert.equal(projected.expectedLatestRevisionId, "rev-7");
+  assert.equal(observation.observedSourceEvidence[0].contentVersionId, "file-ver-3");
+  assert.equal(observation.observedBaseSignoffCount, 1);
+  assert.equal("evidenceLinkIds" in projected, false);
+  assert.equal("signoffs" in projected, false);
 });

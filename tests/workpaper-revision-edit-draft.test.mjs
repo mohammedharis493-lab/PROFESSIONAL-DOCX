@@ -4,6 +4,7 @@ import {
   WORKPAPER_REVISION_CONTENT_FIELDS,
   openWorkpaperRevisionEditDraft,
   previewWorkpaperRevisionContentChange,
+  projectWorkpaperRevisionDraftContent,
 } from "../src/workpaper-revision-edit-draft.ts";
 
 function baseline() {
@@ -341,4 +342,115 @@ test("proposed text content is snapshotted, never an alias of an input object", 
   assert.equal(proposal.proposedWrite.content.conclusion, "Revised");
   assert.equal(session.draft.content.conclusion, "Revised");
   assert.equal("actorId" in proposal.proposedWrite, false);
+});
+
+
+test("unchanged text still projects all seven fields and the expected immutable base", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  assert.equal(previewWorkpaperRevisionEditorSession(session).kind, "content-unchanged");
+  const projected = projectWorkpaperRevisionDraftContent(session);
+  assert.equal(projected.scope, "untrusted-draft-content-only");
+  assert.equal(projected.workpaperId, "workpaper-a");
+  assert.equal(projected.expectedLatestRevisionId, "revision-7");
+  assert.deepEqual(projected.content, baseline().content);
+  assert.deepEqual(Object.keys(projected.content), [...WORKPAPER_REVISION_CONTENT_FIELDS]);
+});
+
+test("one-word edit projects changed text plus every untouched canonical field", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(baseline()), "objective", "Typo corrected",
+  );
+  const projected = projectWorkpaperRevisionDraftContent(session);
+  assert.equal(projected.content.objective, "Typo corrected");
+  assert.equal(projected.content.population, baseline().content.population);
+  assert.equal(projected.content.managementExplanation, baseline().content.managementExplanation);
+  assert.equal(projected.expectedLatestRevisionId, "revision-7");
+});
+
+test("projection keeps explicit empty strings rather than substituting omitted fields", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(baseline()), "exceptions", "",
+  );
+  const projected = projectWorkpaperRevisionDraftContent(session);
+  assert.equal(projected.content.exceptions, "");
+  assert.equal(Object.keys(projected.content).length, 7);
+  assert.equal(projected.content.sample, baseline().content.sample);
+});
+
+test("projection preserves CRLF, trailing whitespace and Unicode byte-for-byte", () => {
+  const base = baseline();
+  base.content.objective = "A\r\nB \t \u00a0🔍é\u0301";
+  const session = openWorkpaperRevisionEditorSession(base);
+  const projected = projectWorkpaperRevisionDraftContent(session);
+  assert.equal(projected.content.objective, "A\r\nB \t \u00a0🔍é\u0301");
+  assert.equal(projected.content.managementExplanation, base.content.managementExplanation);
+});
+
+test("projection is deeply frozen and remains independent of subsequent session edits", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  const first = projectWorkpaperRevisionDraftContent(session);
+  const second = editWorkpaperRevisionSessionField(session, "conclusion", "Edited later");
+  const later = projectWorkpaperRevisionDraftContent(second);
+  assert.ok(Object.isFrozen(first));
+  assert.ok(Object.isFrozen(first.content));
+  assert.notEqual(first.content, session.draft.content);
+  assert.equal(first.content.conclusion, baseline().content.conclusion);
+  assert.equal(later.content.conclusion, "Edited later");
+});
+
+test("projection excludes actor, grant, source evidence, copied links and all signoffs", () => {
+  const projected = projectWorkpaperRevisionDraftContent(
+    openWorkpaperRevisionEditorSession(baseline()),
+  );
+  assert.deepEqual(Object.keys(projected).sort(), [
+    "content", "expectedLatestRevisionId", "scope", "workpaperId",
+  ]);
+  for (const forbidden of [
+    "actorId", "actorRole", "permission", "grant", "evidenceLinkIds",
+    "contentVersionId", "controlledEvidenceVersionId", "signoffId",
+    "approval", "authorized", "save",
+  ]) {
+    assert.equal(forbidden in projected, false);
+  }
+});
+
+test("projection fails closed when edited session targets another revision or workpaper", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  assert.throws(() => projectWorkpaperRevisionDraftContent({
+    ...session,
+    draft: { ...session.draft, expectedLatestRevisionId: "revision-8" },
+  }), /immutable.*base/);
+  assert.throws(() => projectWorkpaperRevisionDraftContent({
+    ...session,
+    draft: { ...session.draft, workpaperId: "workpaper-other" },
+  }), /immutable.*base/);
+});
+
+test("projection refuses missing or future canonical fields instead of losing text", () => {
+  const session = openWorkpaperRevisionEditorSession(baseline());
+  assert.throws(() => projectWorkpaperRevisionDraftContent({
+    ...session,
+    draft: { ...session.draft, content: {
+      ...session.draft.content, sample: undefined,
+    } },
+  }), /sample/);
+  assert.throws(() => projectWorkpaperRevisionDraftContent({
+    ...session,
+    draft: { ...session.draft, content: {
+      ...session.draft.content, futureCanonicalField: "Keep this",
+    } },
+  }), /futureCanonicalField/);
+});
+
+test("projection refuses missing or whitespace-only base identifiers", () => {
+  const base = baseline();
+  base.workpaperId = " ";
+  assert.throws(() => projectWorkpaperRevisionDraftContent(
+    openWorkpaperRevisionEditorSession(base),
+  ), /nonblank/);
+  const another = baseline();
+  another.workpaperRevisionId = " ";
+  assert.throws(() => projectWorkpaperRevisionDraftContent(
+    openWorkpaperRevisionEditorSession(another),
+  ), /nonblank/);
 });
