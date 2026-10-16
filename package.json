@@ -9,7 +9,7 @@
     "test:normal-data": "node --experimental-strip-types --test tests/normal-data-comparison-rules.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:workpaper-editor": "node --experimental-strip-types --test tests/workpaper-revision-edit-draft.test.mjs tests/workpaper-revision-draft-panel.test.mjs"
+    "test:workpaper-editor": "node --experimental-strip-types --test tests/workpaper-revision-edit-draft.test.mjs tests/workpaper-revision-draft-panel.test.mjs tests/workpaper-revision-read-snapshot.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
