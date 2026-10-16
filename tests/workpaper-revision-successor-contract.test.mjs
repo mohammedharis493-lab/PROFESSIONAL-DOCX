@@ -85,12 +85,46 @@ function successor(db, options = {}) {
     const links = rows(db, latest.id);
     for (const link of links) {
       const controlled = link.controlled_evidence_version_id !== null;
-      const version = controlled
-        ? db.prepare("SELECT document_id,verification_state FROM controlled_evidence_versions WHERE controlled_evidence_version_id=?").get(link.controlled_evidence_version_id)
-        : db.prepare("SELECT document_id FROM content_versions WHERE content_version_id=?").get(link.content_version_id);
-      if (!version || version.document_id !== link.document_id ||
-        (controlled && version.verification_state !== "HASH_VERIFIED")) {
-        throw new Error("INVALID_EVIDENCE_VERSION");
+      if (controlled) {
+        // A HASH_VERIFIED label alone is insufficient. The retained version,
+        // capture job, source version and file instance must all resolve to
+        // the same exact document and source identity before reuse.
+        const chain = db.prepare(
+          "SELECT cev.document_id,cev.verification_state,cev.retention_state," +
+          "cev.source_stable_during_read,cev.source_file_instance_id," +
+          "cev.source_content_version_id,cj.status capture_status," +
+          "cj.document_id capture_document_id,cj.file_instance_id capture_file_instance_id," +
+          "cv.document_id source_document_id,cv.file_instance_id source_file_instance_id," +
+          "fi.document_id instance_document_id " +
+          "FROM controlled_evidence_versions cev " +
+          "LEFT JOIN evidence_capture_jobs cj ON cj.evidence_capture_job_id=cev.evidence_capture_job_id " +
+          "LEFT JOIN content_versions cv ON cv.content_version_id=cev.source_content_version_id " +
+          "LEFT JOIN file_instances fi ON fi.file_instance_id=cev.source_file_instance_id " +
+          "WHERE cev.controlled_evidence_version_id=?"
+        ).get(link.controlled_evidence_version_id);
+        if (!chain ||
+          chain.document_id !== link.document_id ||
+          chain.verification_state !== "HASH_VERIFIED" ||
+          chain.retention_state !== "RETAINED" ||
+          chain.source_stable_during_read !== 1 ||
+          chain.capture_status !== "COMPLETE" ||
+          chain.capture_document_id !== link.document_id ||
+          chain.capture_file_instance_id !== chain.source_file_instance_id ||
+          chain.source_document_id !== link.document_id ||
+          chain.source_file_instance_id !== chain.source_file_instance_id ||
+          chain.instance_document_id !== link.document_id) {
+          throw new Error("INVALID_EVIDENCE_VERSION");
+        }
+      } else {
+        const version = db.prepare(
+          "SELECT cv.document_id,fi.document_id instance_document_id " +
+          "FROM content_versions cv LEFT JOIN file_instances fi " +
+          "ON fi.file_instance_id=cv.file_instance_id WHERE cv.content_version_id=?"
+        ).get(link.content_version_id);
+        if (!version || version.document_id !== link.document_id ||
+          version.instance_document_id !== link.document_id) {
+          throw new Error("INVALID_EVIDENCE_VERSION");
+        }
       }
     }
     const next = randomUUID();
@@ -227,6 +261,57 @@ test("cross-document evidence version cannot be transferred despite valid foreig
 test("quarantined controlled evidence cannot be silently carried into successor", t => {
   const db = fixture(t);
   db.exec("UPDATE controlled_evidence_versions SET verification_state='QUARANTINED' WHERE controlled_evidence_version_id='cb'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+
+test("HASH_VERIFIED label does not substitute for successful completed capture job", t => {
+  const db = fixture(t);
+  db.exec("UPDATE evidence_capture_jobs SET status='FAILED' WHERE evidence_capture_job_id='job-b'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 0);
+});
+
+test("controlled evidence must be tied to the same captured document", t => {
+  const db = fixture(t);
+  db.exec("UPDATE evidence_capture_jobs SET document_id='doc-a' WHERE evidence_capture_job_id='job-b'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("captured file instance must equal the controlled evidence source instance", t => {
+  const db = fixture(t);
+  db.exec("UPDATE evidence_capture_jobs SET file_instance_id='fa' WHERE evidence_capture_job_id='job-b'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("controlled source content version cannot silently change to another document", t => {
+  const db = fixture(t);
+  db.exec("UPDATE controlled_evidence_versions SET source_content_version_id='va' WHERE controlled_evidence_version_id='cb'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("controlled source file cannot silently change to another file instance", t => {
+  const db = fixture(t);
+  db.exec("UPDATE controlled_evidence_versions SET source_file_instance_id='fa' WHERE controlled_evidence_version_id='cb'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("ordinary content-version file instance must belong to that exact document", t => {
+  const db = fixture(t);
+  db.exec("UPDATE content_versions SET file_instance_id='fb' WHERE content_version_id='va'");
+  assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
+  assert.equal(count(db, "workpaper_revisions"), 1);
+});
+
+test("controlled-version document must match the signed source document", t => {
+  const db = fixture(t);
+  db.exec("UPDATE controlled_evidence_versions SET document_id='doc-a' WHERE controlled_evidence_version_id='cb'");
   assert.throws(() => successor(db), /INVALID_EVIDENCE_VERSION/);
   assert.equal(count(db, "workpaper_revisions"), 1);
 });
