@@ -221,6 +221,25 @@ export function editWorkpaperRevisionSessionField(
 }
 
 /**
+ * Restore ONE edited field from this session's immutable original revision.
+ * This is a local draft action only. It never reopens, rebases, signs, saves or
+ * changes linked evidence, and it leaves all other pending edits untouched.
+ * In particular a stale editor must NOT adopt any newer revision's text.
+ */
+export function restoreWorkpaperRevisionSessionField(
+  session: WorkpaperRevisionEditorSession,
+  field: WorkpaperRevisionContentField,
+): WorkpaperRevisionEditorSession {
+  if (!(WORKPAPER_REVISION_CONTENT_FIELDS as readonly string[]).includes(field)) {
+    throw new TypeError("Unrecognized workpaper revision content field");
+  }
+  // Validates the complete base and current draft, including unexpected
+  // future fields and the unchanged exact workpaper/revision identity.
+  previewWorkpaperRevisionEditorSession(session);
+  return editWorkpaperRevisionSessionField(session, field, session.base.content[field]);
+}
+
+/**
  * Untrusted, detached projection of the seven editable fields and frozen base
  * identity. This is available for BOTH unchanged and changed text; a
  * content-only comparison MUST NEVER suppress an intended revision Save.

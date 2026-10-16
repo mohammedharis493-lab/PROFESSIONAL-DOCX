@@ -10,6 +10,7 @@ import { useId } from "react";
 import {
   WORKPAPER_REVISION_CONTENT_FIELDS,
   editWorkpaperRevisionSessionField,
+  restoreWorkpaperRevisionSessionField,
   inspectWorkpaperRevisionEditorFreshness,
   previewWorkpaperRevisionEditorSession,
 } from "./workpaper-revision-edit-draft";
@@ -138,29 +139,47 @@ export default function WorkpaperRevisionDraftPanel({
       ) : null}
       <div className="workspace-grid workspace-grid-two">
         {WORKPAPER_REVISION_CONTENT_FIELDS.map((field) => (
-          <label key={field} htmlFor={`${prefix}-${field}`}>
-            <span>
-              {FIELD_LABELS[field]}
-              {changed.has(field) ? " · Edited" : ""}
-            </span>
-            <textarea
-              id={`${prefix}-${field}`}
-              name={field}
-              rows={4}
-              value={session.draft.content[field]}
-              onChange={(event) => {
-                onSessionChange(
-                  editWorkpaperRevisionSessionField(session, field, event.currentTarget.value),
-                );
-              }}
-            />
-          </label>
+          <div key={field}>
+            <label htmlFor={`${prefix}-${field}`}>
+              <span>
+                {FIELD_LABELS[field]}
+                {changed.has(field) ? " · Edited" : ""}
+              </span>
+              <textarea
+                id={`${prefix}-${field}`}
+                name={field}
+                rows={4}
+                value={session.draft.content[field]}
+                onChange={(event) => {
+                  onSessionChange(
+                    editWorkpaperRevisionSessionField(session, field, event.currentTarget.value),
+                  );
+                }}
+              />
+            </label>
+            {changed.has(field) ? (
+              <button
+                type="button"
+                className="secondary-button"
+                aria-label={`Restore original ${FIELD_LABELS[field]} text`}
+                onClick={() => {
+                  onSessionChange(restoreWorkpaperRevisionSessionField(session, field));
+                }}
+              >
+                Restore original text
+              </button>
+            ) : null}
+          </div>
         ))}
       </div>
       <p role="status">
         {preview.kind === "content-unchanged"
           ? "Canonical text unchanged. Evidence and approval state are not compared."
           : `${preview.changedFields.length} canonical text field(s) edited. Evidence and approval state are not compared.`}
+      </p>
+      <p className="evidence-integrity-note">
+        Restore original text affects only that field in this local draft,
+        using the original opened revision rather than any newer revision.
       </p>
       <p className="evidence-integrity-note">
         No Save or sign-off action is connected. A later implementation must

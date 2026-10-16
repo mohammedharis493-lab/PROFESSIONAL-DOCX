@@ -5,6 +5,7 @@ import {
   openWorkpaperRevisionEditDraft,
   previewWorkpaperRevisionContentChange,
   projectWorkpaperRevisionDraftContent,
+  restoreWorkpaperRevisionSessionField,
 } from "../src/workpaper-revision-edit-draft.ts";
 
 function baseline() {
@@ -453,4 +454,92 @@ test("projection refuses missing or whitespace-only base identifiers", () => {
   assert.throws(() => projectWorkpaperRevisionDraftContent(
     openWorkpaperRevisionEditorSession(another),
   ), /nonblank/);
+});
+
+
+test("restore original text resets only one edited field, preserving another local edit", () => {
+  const base = baseline();
+  const start = openWorkpaperRevisionEditorSession(base);
+  const first = editWorkpaperRevisionSessionField(start, "objective", "Fixed typo");
+  const second = editWorkpaperRevisionSessionField(first, "conclusion", "New conclusion");
+  const restored = restoreWorkpaperRevisionSessionField(second, "objective");
+  assert.deepEqual(previewWorkpaperRevisionEditorSession(restored).changedFields, ["conclusion"]);
+  assert.equal(restored.draft.content.objective, base.content.objective);
+  assert.equal(restored.draft.content.conclusion, "New conclusion");
+  assert.equal(second.draft.content.objective, "Fixed typo");
+  assert.equal(restored.draft.expectedLatestRevisionId, base.workpaperRevisionId);
+});
+
+test("restoring the last local edit leaves a content-unchanged draft, not a Save decision", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(baseline()), "exceptions", "Spelling changed",
+  );
+  const restored = restoreWorkpaperRevisionSessionField(session, "exceptions");
+  assert.equal(previewWorkpaperRevisionEditorSession(restored).kind, "content-unchanged");
+  assert.equal(projectWorkpaperRevisionDraftContent(restored).content.exceptions,
+    baseline().content.exceptions);
+  assert.equal(projectWorkpaperRevisionDraftContent(restored).scope,
+    "untrusted-draft-content-only");
+});
+
+test("restore is independent of signed history and carries no signoff or permission", () => {
+  const signed = {
+    ...baseline(),
+    signoffs: [{ signoffId: "old-signoff", workpaperRevisionId: "revision-7" }],
+  };
+  const opened = openWorkpaperRevisionEditorSession(signed);
+  const local = editWorkpaperRevisionSessionField(opened, "conclusion", "A minor fix");
+  const restored = restoreWorkpaperRevisionSessionField(local, "conclusion");
+  assert.equal(restored.draft.content.conclusion, "Control is effective subject to the exception.");
+  for (const forbidden of ["signoffs", "approval", "actorId", "grant", "save"]) {
+    assert.equal(forbidden in restored, false);
+  }
+});
+
+test("restore targets original immutable base after client observes newer revision", () => {
+  const original = openWorkpaperRevisionEditorSession(baseline());
+  const changed = editWorkpaperRevisionSessionField(original, "objective", "Local edit");
+  const freshness = inspectWorkpaperRevisionEditorFreshness(changed, {
+    workpaperId: "workpaper-a", workpaperRevisionId: "revision-8",
+  });
+  assert.equal(freshness.state, "base-stale");
+  const restored = restoreWorkpaperRevisionSessionField(changed, "objective");
+  assert.equal(restored.base.workpaperRevisionId, "revision-7");
+  assert.equal(restored.draft.expectedLatestRevisionId, "revision-7");
+  assert.equal(restored.draft.content.objective, baseline().content.objective);
+});
+
+test("field restore does not normalize CRLF, combining marks, trailing whitespace or NBSP", () => {
+  const base = baseline();
+  base.content.objective = "α\r\né\u0301 \t\u00a0";
+  const opened = openWorkpaperRevisionEditorSession(base);
+  const changed = editWorkpaperRevisionSessionField(opened, "objective", "");
+  const restored = restoreWorkpaperRevisionSessionField(changed, "objective");
+  assert.equal(restored.draft.content.objective, "α\r\né\u0301 \t\u00a0");
+  assert.equal(restored.draft.content.objective, base.content.objective);
+});
+
+test("restoring a field already equal to its base is a safe detached local operation", () => {
+  const opened = openWorkpaperRevisionEditorSession(baseline());
+  const restored = restoreWorkpaperRevisionSessionField(opened, "population");
+  assert.notEqual(restored, opened);
+  assert.deepEqual(restored.draft.content, opened.draft.content);
+  assert.ok(Object.isFrozen(restored.draft.content));
+});
+
+test("malformed session, wrong field or future-schema draft is denied rather than losing data", () => {
+  const opened = openWorkpaperRevisionEditorSession(baseline());
+  assert.throws(() => restoreWorkpaperRevisionSessionField(opened, "futureText"),
+    /Unrecognized/);
+  assert.throws(() => restoreWorkpaperRevisionSessionField({
+    ...opened,
+    draft: { ...opened.draft, expectedLatestRevisionId: "different" },
+  }, "objective"), /immutable.*base/);
+  assert.throws(() => restoreWorkpaperRevisionSessionField({
+    ...opened,
+    draft: {
+      ...opened.draft,
+      content: { ...opened.draft.content, futureField: "must not be lost" },
+    },
+  }, "objective"), /Unexpected canonical/);
 });

@@ -6,6 +6,7 @@ import { createServer } from "vite";
 import {
   WORKPAPER_REVISION_CONTENT_FIELDS,
   editWorkpaperRevisionSessionField,
+  restoreWorkpaperRevisionSessionField,
   openWorkpaperRevisionEditorSession,
 } from "../src/workpaper-revision-edit-draft.ts";
 
@@ -147,7 +148,9 @@ test("full observed revision explains remote-only and local-only fields without 
   assert.match(html, /Objective: Edited in this draft only/);
   assert.match(html, /Population: Changed in observed revision only/);
   assert.match(html, /My unsaved correction/);
-  assert.doesNotMatch(html, /<button\b|<form\b/);
+  assert.match(html, /aria-label="Restore original Objective text"/);
+  assert.match(html, /type="button"/);
+  assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
   assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
 });
 
@@ -164,7 +167,8 @@ test("full observed revision warns about conflicting same-field changes", () => 
   assert.match(html, /manual review needed/);
   assert.match(html, /My conclusion/);
   assert.doesNotMatch(html, /Their conclusion/);
-  assert.doesNotMatch(html, /<button\b/);
+  assert.match(html, /aria-label="Restore original Conclusion text"/);
+  assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
 });
 
 test("observed same text on different revision never implies save authority", () => {
@@ -193,4 +197,80 @@ test("mismatched latest ID props and divergent purported immutable text fail clo
   };
   assert.throws(() => render(session, { observedLatestRevision: divergent }),
     /Inconsistent text observed for the same immutable revision/);
+});
+
+
+test("unchanged seven-field draft contains no restore buttons", () => {
+  const html = render(openWorkpaperRevisionEditorSession(base()));
+  assert.equal((html.match(/<textarea\b/g) ?? []).length, 7);
+  assert.equal((html.match(/aria-label="Restore original /g) ?? []).length, 0);
+  assert.doesNotMatch(html, /<button\b|<form\b|type="submit"/);
+});
+
+test("one local correction renders exactly one non-submitting restore control", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(base()), "conclusion", "Corrected wording",
+  );
+  const html = render(session);
+  assert.equal((html.match(/<textarea\b/g) ?? []).length, 7);
+  assert.equal((html.match(/<button\b/g) ?? []).length, 1);
+  assert.match(html, /aria-label="Restore original Conclusion text"/);
+  assert.match(html, /type="button"/);
+  assert.match(html, /Restore original text/);
+  assert.doesNotMatch(html, /type="submit"|<form\b|>Save</);
+});
+
+test("two edited fields render two independent restore actions without losing other text", () => {
+  const first = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(base()), "sample", "Changed count",
+  );
+  const session = editWorkpaperRevisionSessionField(first, "objective", "Local correction");
+  const html = render(session);
+  assert.equal((html.match(/<button\b/g) ?? []).length, 2);
+  assert.match(html, /aria-label="Restore original Sample text"/);
+  assert.match(html, /aria-label="Restore original Objective text"/);
+  assert.match(html, /Twenty vendors/);
+  assert.equal(session.draft.content.objective, "Local correction");
+});
+
+test("restoring one field removes only that field restore control in a detached render", () => {
+  const start = openWorkpaperRevisionEditorSession(base());
+  let session = editWorkpaperRevisionSessionField(start, "sample", "Changed count");
+  session = editWorkpaperRevisionSessionField(session, "objective", "Local correction");
+  const restored = restoreWorkpaperRevisionSessionField(session, "sample");
+  const html = render(restored);
+  assert.equal((html.match(/<button\b/g) ?? []).length, 1);
+  assert.match(html, /aria-label="Restore original Objective text"/);
+  assert.doesNotMatch(html, /aria-label="Restore original Sample text"/);
+  assert.equal(restored.draft.content.sample, "Twenty vendors.");
+  assert.equal(restored.draft.content.objective, "Local correction");
+});
+
+test("stale observed revision leaves restore bound to original base, never observed text", () => {
+  const changed = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(base()), "conclusion", "My unsaved correction",
+  );
+  const current = {
+    ...base(),
+    workpaperRevisionId: "revision-8",
+    content: { ...base().content, conclusion: "Other writer's conclusion" },
+  };
+  const html = render(changed, { observedLatestRevision: current });
+  assert.match(html, /role="alert"/);
+  assert.match(html, /Restore original Conclusion text/);
+  assert.match(html, /original opened revision rather than any newer revision/);
+  const restored = restoreWorkpaperRevisionSessionField(changed, "conclusion");
+  assert.equal(restored.draft.content.conclusion, base().content.conclusion);
+  assert.notEqual(restored.draft.content.conclusion, current.content.conclusion);
+  assert.equal(restored.draft.expectedLatestRevisionId, "revision-7");
+});
+
+test("signed draft exposes local restore but no review unlock, Save or sign-off button", () => {
+  const session = editWorkpaperRevisionSessionField(
+    openWorkpaperRevisionEditorSession(base()), "objective", "Minor correction",
+  );
+  const html = render(session, { hasHistoricalSignoff: true });
+  assert.match(html, /does not inherit that sign-off/);
+  assert.match(html, /aria-label="Restore original Objective text"/);
+  assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
 });
