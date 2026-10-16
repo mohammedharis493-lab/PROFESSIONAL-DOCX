@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openStoredWorkpaperRevisionReadSnapshot } from "../src/workpaper-revision-read-snapshot.ts";
 import {
@@ -29,6 +29,22 @@ const original = () => ({
   management_explanation: "Reply\u00a0 ",
   conclusion: "Prior signed conclusion",
 });
+/**
+ * The current production Rust function frames each canonical UTF-8 string
+ * with its u64 LITTLE-ENDIAN BYTE length before SHA-256 (not JS .length).
+ * Oracle only: matching it does not establish authenticated Save authority.
+ */
+function digestCanonicalSqlContent(content) {
+  const hash = createHash("sha256");
+  for (const field of fields) {
+    const bytes = Buffer.from(content[field], "utf8");
+    const lengthBytes = Buffer.alloc(8);
+    lengthBytes.writeBigUInt64LE(BigInt(bytes.length));
+    hash.update(lengthBytes);
+    hash.update(bytes);
+  }
+  return hash.digest();
+}
 const rows = (db, rev = "rev-1") => db.prepare(
   "SELECT evidence_link_id,document_id,content_version_id,controlled_evidence_version_id," +
   "relationship_type,description FROM workpaper_evidence_links " +
@@ -42,7 +58,13 @@ const fixtureFiles = new WeakMap();
 const fixtureSiblingConnections = new WeakMap();
 const count = (db, name) => db.prepare("SELECT count(*) n FROM " + name).get().n;
 
-function fixture(t, { fileBacked = false } = {}) {
+function fixture(t, { fileBacked = false, sourceHashMode = "current" } = {}) {
+  if (!["current", "mismatched", "legacy-null"].includes(sourceHashMode)) {
+    throw new Error("INVALID_TEST_SOURCE_HASH_MODE");
+  }
+  const signedBaseHashSql = sourceHashMode === "legacy-null" ? "NULL" :
+    "X'" + (sourceHashMode === "mismatched" ? "00".repeat(32) :
+      digestCanonicalSqlContent(original()).toString("hex")) + "'";
   const directory = fileBacked ? mkdtempSync(join(tmpdir(), "docx-revision-fixture-")) : null;
   const path = directory ? join(directory, "workpapers.sqlite") : ":memory:";
   const db = new DatabaseSync(path);
@@ -75,7 +97,7 @@ function fixture(t, { fileBacked = false } = {}) {
     "INSERT INTO content_versions (content_version_id,document_id,file_instance_id,observed_at_ms,size_bytes,verification_state) VALUES ('va','doc-a','fa',1,2,'UNVERIFIED'),('vb','doc-b','fb',1,2,'HASH_VERIFIED');",
     "INSERT INTO evidence_capture_jobs (evidence_capture_job_id,file_instance_id,document_id,status,requested_at_ms,started_at_ms,completed_at_ms,capture_reason,capture_policy) VALUES ('job-b','fb','doc-b','COMPLETE',1,1,1,'FIXTURE','FIXTURE');",
     "INSERT INTO controlled_evidence_versions (controlled_evidence_version_id,document_id,source_file_instance_id,source_content_version_id,evidence_capture_job_id,version_number,controlled_storage_locator,sha256,size_bytes,captured_at_ms,capture_reason,capture_policy,retention_state,verification_state,source_stable_during_read) VALUES ('cb','doc-b','fb','vb','job-b',1,'test-only://b',zeroblob(32),2,1,'FIXTURE','FIXTURE','RETAINED','HASH_VERIFIED',1);",
-    "INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion) VALUES ('rev-1','wp-1',1,1,'Objective'||char(13)||char(10)||'original ','Trace approvals','All entries','Sample twenty','One exception','Reply'||char(160)||' ','Prior signed conclusion');",
+    "INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion,content_hash) VALUES ('rev-1','wp-1',1,1,'Objective'||char(13)||char(10)||'original ','Trace approvals','All entries','Sample twenty','One exception','Reply'||char(160)||' ','Prior signed conclusion'," + signedBaseHashSql + ");",
     "INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,controlled_evidence_version_id,relationship_type,description,created_at_ms) VALUES ('link-a','rev-1','doc-a','va',NULL,'SUPPORTS','Exact original note',1),('link-b','rev-1','doc-b',NULL,'cb','REVIEWED_WITH',NULL,1);",
     "INSERT INTO workpaper_signoffs (signoff_id,workpaper_id,workpaper_revision_id,signoff_type,actor_id,actor_role,signed_at_ms) VALUES ('sign-1','wp-1','rev-1','PREPARED','fixture-preparer','PREPARER',1);",
     "INSERT INTO workpaper_signoff_evidence VALUES ('snapshot-1','sign-1','link-a',1),('snapshot-2','sign-1','link-b',1);",
@@ -141,6 +163,22 @@ function successor(db, options = {}) {
           r.num !== i + 1 ||
           r.parent !== (i === 0 ? null : ancestry[i - 1].id))) {
       throw new Error("INVALID_REVISION_CHAIN");
+    }
+    // Verify every existing revision whose stored digest is present,
+    // including older signed revisions, before creating a new successor.
+    // The current DDL allows a NULL digest for legacy source revisions;
+    // a missing hash cannot be treated as proof of byte integrity.
+    const signedTexts = db.prepare(
+      "SELECT content_hash," + fields.join(",") +
+      " FROM workpaper_revisions WHERE workpaper_revision_id=?"
+    );
+    for (const r of ancestry) {
+      const stored = signedTexts.get(r.id);
+      if (stored.content_hash !== null) {
+        if (!Buffer.from(stored.content_hash).equals(
+          digestCanonicalSqlContent(stored)
+        )) throw new Error("INVALID_IMMUTABLE_CONTENT_HASH");
+      }
     }
     const links = rows(db, latest.id);
     for (const link of links) {
@@ -239,8 +277,8 @@ function successor(db, options = {}) {
       }
     }
     const next = randomUUID();
-    db.prepare("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,revision_reason,supersedes_revision_id,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion) VALUES (?,?,?,2,'Fixture correction',?,?,?,?,?,?,?,?)")
-      .run(next, workpaperId, latest.num + 1, latest.id, ...fields.map(k => content[k]));
+    db.prepare("INSERT INTO workpaper_revisions (workpaper_revision_id,workpaper_id,revision_number,created_at_ms,revision_reason,supersedes_revision_id,objective,procedure_performed,population,sample,exceptions,management_explanation,conclusion,content_hash) VALUES (?,?,?,2,'Fixture correction',?,?,?,?,?,?,?,?,?)")
+      .run(next, workpaperId, latest.num + 1, latest.id, ...fields.map(k => content[k]), digestCanonicalSqlContent(content));
     if (failAt === "revision") throw new Error("INJECTED_ROLLBACK");
     const insertLink = db.prepare("INSERT INTO workpaper_evidence_links (evidence_link_id,workpaper_revision_id,document_id,content_version_id,controlled_evidence_version_id,relationship_type,description,created_at_ms) VALUES (?,?,?,?,?,?,?,2)");
     for (const link of links) {
@@ -1151,3 +1189,125 @@ test("valid two-successor lineage retains immediate signed supersession target",
     "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
   ).get(third).n, 0);
 });
+
+
+test("signed baseline stores SHA-256 with Rust-compatible UTF-8 byte-length framing", t => {
+  const db = fixture(t);
+  const expected = digestCanonicalSqlContent(original());
+  const signed = db.prepare(
+    "SELECT content_hash,objective,procedure_performed,population,sample," +
+    "exceptions,management_explanation,conclusion " +
+    "FROM workpaper_revisions WHERE workpaper_revision_id='rev-1'"
+  ).get();
+  assert.equal(expected.length, 32);
+  assert.equal(Buffer.from(signed.content_hash).toString("hex"), expected.toString("hex"));
+  assert.equal(digestCanonicalSqlContent(signed).toString("hex"), expected.toString("hex"));
+});
+
+test("signed one-field typo successor stores different valid seven-field SHA-256 digest", t => {
+  const db = fixture(t);
+  const originalHash = Buffer.from(db.prepare(
+    "SELECT content_hash h FROM workpaper_revisions WHERE workpaper_revision_id='rev-1'"
+  ).get().h).toString("hex");
+  const revised = { ...original(), conclusion: "Prior signed conclusion." };
+  const next = successor(db, { content: revised });
+  const stored = db.prepare(
+    "SELECT content_hash,objective,procedure_performed,population,sample," +
+    "exceptions,management_explanation,conclusion " +
+    "FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  ).get(next);
+  assert.notEqual(Buffer.from(stored.content_hash).toString("hex"), originalHash);
+  assert.equal(Buffer.from(stored.content_hash).toString("hex"),
+    digestCanonicalSqlContent(revised).toString("hex"));
+  assert.equal(Buffer.from(stored.content_hash).toString("hex"),
+    digestCanonicalSqlContent(stored).toString("hex"));
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
+  ).get(next).n, 0);
+});
+
+test("unchanged-text successor retains exact digest but no inherited sign-off", t => {
+  const db = fixture(t);
+  const next = successor(db, { content: original() });
+  const signedHash = Buffer.from(db.prepare(
+    "SELECT content_hash h FROM workpaper_revisions WHERE workpaper_revision_id='rev-1'"
+  ).get().h).toString("hex");
+  const unsignedHash = Buffer.from(db.prepare(
+    "SELECT content_hash h FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  ).get(next).h).toString("hex");
+  assert.equal(signedHash, unsignedHash);
+  assert.equal(db.prepare(
+    "SELECT count(*) n FROM workpaper_signoffs WHERE workpaper_revision_id=?"
+  ).get(next).n, 0);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 1);
+});
+
+test("canonical SHA-256 framing measures UTF-8 bytes and preserves Unicode composition", t => {
+  const db = fixture(t);
+  const contents = {
+    objective: "🔎🔎",
+    procedure_performed: "é",
+    population: "e\u0301",
+    sample: "Ⅰ\u00a0 ",
+    exceptions: "line 1\r\nline 2",
+    management_explanation: "",
+    conclusion: " ",
+  };
+  const next = successor(db, { content: contents });
+  const row = db.prepare(
+    "SELECT content_hash," + fields.join(",") +
+    " FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  ).get(next);
+  assert.equal(Buffer.from(row.content_hash).toString("hex"),
+    digestCanonicalSqlContent(contents).toString("hex"));
+  assert.notEqual(digestCanonicalSqlContent({ ...contents, population: "é" }).toString("hex"),
+    digestCanonicalSqlContent(contents).toString("hex"));
+  assert.notEqual(digestCanonicalSqlContent({ ...contents, exceptions: "line 1\nline 2" }).toString("hex"),
+    digestCanonicalSqlContent(contents).toString("hex"));
+  assert.equal(row.population, "e\u0301");
+  assert.equal(row.exceptions, "line 1\r\nline 2");
+});
+
+test("mismatched immutable source digest rejects Save before revision or signoff mutation", t => {
+  const db = fixture(t, { sourceHashMode: "mismatched" });
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db), /INVALID_IMMUTABLE_CONTENT_HASH/);
+  assert.equal(db.prepare(
+    "SELECT hex(content_hash) h FROM workpaper_revisions WHERE workpaper_revision_id='rev-1'"
+  ).get().h, "00".repeat(32));
+});
+
+test("legacy signed revision without hash is allowed, not mistaken for verified source", t => {
+  const db = fixture(t, { sourceHashMode: "legacy-null" });
+  const nullHash = db.prepare(
+    "SELECT content_hash h FROM workpaper_revisions WHERE workpaper_revision_id='rev-1'"
+  ).get().h;
+  assert.equal(nullHash, null);
+  const next = successor(db);
+  const successorHash = db.prepare(
+    "SELECT content_hash h FROM workpaper_revisions WHERE workpaper_revision_id=?"
+  ).get(next).h;
+  assert.equal(Buffer.from(successorHash).length, 32);
+  assert.equal(count(db, "workpaper_signoff_supersessions"), 1);
+  assert.equal(count(db, "workpaper_signoffs"), 1);
+});
+
+test("corrupt older signed hash blocks later successor even when latest digest is valid", t => {
+  const db = fixture(t, { sourceHashMode: "mismatched" });
+  // Add a structurally valid unsigned revision and historical supersession
+  // using test-only direct SQL to isolate the old signed digest guard.
+  insertTestRevision(db, "rev-second", 2, "rev-1");
+  db.exec(
+    "INSERT INTO workpaper_signoff_supersessions " +
+    "(signoff_supersession_id,signoff_id,superseded_by_revision_id," +
+    "superseded_at_ms,superseded_reason) " +
+    "VALUES ('sup-2','sign-1','rev-second',2,'Prior direct successor')"
+  );
+  assertRejectedWithoutNewRecords(db,
+    () => successor(db, {
+      expectedRevisionId: "rev-second",
+      expectedEvidence: observed(db, "rev-second"),
+      content: original(),
+    }), /INVALID_IMMUTABLE_CONTENT_HASH/);
+});
+
