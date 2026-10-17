@@ -835,6 +835,62 @@ struct TestOnlySourceLink {
     description: Option<String>,
 }
 
+/// Test-only validation of the ENTIRE workpaper revision ancestry and all
+/// non-null SHA-256 content hashes, including historical signed revisions.
+/// Legacy NULL hashes are accepted for compatibility but cannot prove prior
+/// content identity. This is NOT a production native trust/custody check.
+fn test_only_validate_complete_ancestry_and_hashes(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let mut statement = tx
+        .prepare(
+            "SELECT workpaper_revision_id, revision_number, supersedes_revision_id,
+                    objective, procedure_performed, population, sample, exceptions,
+                    management_explanation, conclusion, content_hash
+             FROM workpaper_revisions
+             WHERE workpaper_id='workpaper-native'
+             ORDER BY revision_number ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+    let mut expected_number = 1_i64;
+    let mut expected_parent: Option<String> = None;
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        let revision_id: String = row.get(0).map_err(|error| error.to_string())?;
+        let revision_number: i64 = row.get(1).map_err(|error| error.to_string())?;
+        let parent: Option<String> = row.get(2).map_err(|error| error.to_string())?;
+        if revision_number != expected_number || parent.as_deref() != expected_parent.as_deref() {
+            return Err("INVALID_NATIVE_REVISION_ANCESTRY".to_string());
+        }
+        let fields: [String; 7] = [
+            row.get(3).map_err(|error| error.to_string())?,
+            row.get(4).map_err(|error| error.to_string())?,
+            row.get(5).map_err(|error| error.to_string())?,
+            row.get(6).map_err(|error| error.to_string())?,
+            row.get(7).map_err(|error| error.to_string())?,
+            row.get(8).map_err(|error| error.to_string())?,
+            row.get(9).map_err(|error| error.to_string())?,
+        ];
+        let recorded_hash: Option<Vec<u8>> =
+            row.get(10).map_err(|error| error.to_string())?;
+        if let Some(recorded) = recorded_hash {
+            let mut digest = Sha256::new();
+            for field in &fields {
+                digest.update((field.len() as u64).to_le_bytes());
+                digest.update(field.as_bytes());
+            }
+            if recorded.as_slice() != digest.finalize().as_slice() {
+                return Err("INVALID_NATIVE_IMMUTABLE_CONTENT_HASH".to_string());
+            }
+        }
+        expected_parent = Some(revision_id);
+        expected_number += 1;
+    }
+    Ok(())
+}
+
 fn test_only_checked_successor(
     path: &std::path::Path,
     expected_base: &str,
@@ -871,6 +927,7 @@ fn test_only_checked_successor(
     if latest_id != expected_base {
         return Err("STALE_NATIVE_BASE".to_string());
     }
+    test_only_validate_complete_ancestry_and_hashes(&tx)?;
 
     let links: Vec<TestOnlySourceLink> = {
         let mut statement = tx
@@ -1418,4 +1475,149 @@ fn reference_native_partial_copy_failure_can_retry_same_base_without_leaking_row
         )
         .expect("count all related writes after retry");
     assert_eq!(counts, (2, 4, 1, 1));
+}
+
+/// Direct, isolated SQL fixture injection is intentional: the production
+/// immutable-row triggers forbid editing a row after creation, but do not
+/// validate every newly inserted digest or revision-parent relationship.
+fn test_only_insert_direct_revision(
+    fixture: &NativeRevisionFixture,
+    revision_id: &str,
+    revision_number: i64,
+    parent: Option<&str>,
+    hash: Option<&[u8]>,
+) {
+    use rusqlite::params;
+
+    let connection = Connection::open(&fixture.path).expect("open isolated native fixture");
+    connection
+        .execute(
+            "INSERT INTO workpaper_revisions
+             (workpaper_revision_id, workpaper_id, revision_number, created_at_ms,
+              supersedes_revision_id, objective, procedure_performed, population, sample,
+              exceptions, management_explanation, conclusion, content_hash)
+             VALUES (?1, 'workpaper-native', ?2, 1, ?3, ?4, 'B', '', '\r\n',
+                     'Exception', 'Response', 'Conclusion', ?5)",
+            params![revision_id, revision_number, parent, "A\u{0000}Ω", hash],
+        )
+        .expect("direct SQL test fixture records actual migration-allowed row");
+}
+
+/// Current legacy PREPARED sign-off accepts this syntactically valid fixture
+/// row despite its incorrect stored hash. The new test-only successor
+/// reference MUST reject it without altering a prior sign-off or adding rows.
+/// This is an intentionally malformed source, NOT a production authorization.
+#[test]
+fn reference_native_rejects_corrupted_signed_source_content_hash() {
+    let fixture = NativeRevisionFixture::new();
+    let corrupt = [0_u8; 32];
+    test_only_insert_direct_revision(&fixture, "corrupt-native-1", 1, None, Some(&corrupt));
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: "corrupt-native-1",
+            signoff_type: "PREPARED",
+            actor_id: "fixture-unverified",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("legacy API does not authenticate or validate a stored content hash");
+
+    let result = test_only_checked_successor(
+        &fixture.path,
+        "corrupt-native-1",
+        &[],
+        ["Edited", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        false,
+    );
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_IMMUTABLE_CONTENT_HASH".to_string())
+    );
+    assert_eq!(fixture.rows().len(), 1);
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("original sign-off remains historical");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].signoff_id, signed.signoff_id);
+    assert_eq!(history[0].superseded_by_revision_id, None);
+}
+
+/// Even when the CURRENT unsigned revision is valid, a historical signed
+/// row's mismatched digest must block the test-only copy-forward path.
+#[test]
+fn reference_native_rejects_corrupted_older_signed_revision_hash() {
+    let fixture = NativeRevisionFixture::new();
+    let corrupt = [255_u8; 32];
+    test_only_insert_direct_revision(&fixture, "corrupt-older-1", 1, None, Some(&corrupt));
+    create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: "corrupt-older-1",
+            signoff_type: "PREPARED",
+            actor_id: "fixture-unverified",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("fixture legacy sign-off");
+    let latest = fixture.insert(["Revised", "B", "", "\r\n", "Exception", "Response", "Conclusion"]);
+    let result = test_only_checked_successor(
+        &fixture.path,
+        &latest.workpaper_revision_id,
+        &[],
+        ["Again", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        false,
+    );
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_IMMUTABLE_CONTENT_HASH".to_string())
+    );
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest.workpaper_revision_id);
+}
+
+/// The real migration permits legacy null hashes. The test-only guard does
+/// not pretend to verify missing historical digests; a successful successor
+/// gets a complete native seven-field hash of its own.
+#[test]
+fn reference_native_allows_legacy_null_hash_and_hashes_successor() {
+    let fixture = NativeRevisionFixture::new();
+    test_only_insert_direct_revision(&fixture, "legacy-null-1", 1, None, None);
+    let successor_id = test_only_checked_successor(
+        &fixture.path,
+        "legacy-null-1",
+        &[],
+        ["A\u{0000}Ω!", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        false,
+    )
+    .expect("nullable historical hash compatibility should allow append");
+    let rows = fixture.rows();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].content_hash, None);
+    assert_eq!(rows[0].workpaper_revision_id, successor_id);
+    assert_eq!(rows[0].content_hash.as_ref().map(Vec::len), Some(32));
+    assert_eq!(rows[0].revision_number, 2);
+}
+
+/// The actual migration permits a directly inserted revision #2 with no
+/// predecessor. The test-only transaction must fail closed on that ancestry
+/// instead of silently treating the malformed row as an authorized parent.
+#[test]
+fn reference_native_rejects_malformed_contiguous_revision_ancestry() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["A", "B", "C", "D", "E", "F", "G"]);
+    test_only_insert_direct_revision(&fixture, "broken-parent-2", 2, None, None);
+    let result = test_only_checked_successor(
+        &fixture.path,
+        "broken-parent-2",
+        &[],
+        ["Edited", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        false,
+    );
+    assert_eq!(result, Err("INVALID_NATIVE_REVISION_ANCESTRY".to_string()));
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(fixture.rows()[1].workpaper_revision_id, first.workpaper_revision_id);
 }
