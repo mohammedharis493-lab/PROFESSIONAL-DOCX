@@ -141,7 +141,11 @@ mod non_authorizing_contract_tests {
             ..FixturePolicy::default()
         };
         mock.grant(person, WorkpaperAuthoringPermission::ReadWorkpaper, target);
-        mock.grant(person, WorkpaperAuthoringPermission::ReviseWorkpaper, target);
+        mock.grant(
+            person,
+            WorkpaperAuthoringPermission::ReviseWorkpaper,
+            target,
+        );
         assert_eq!(
             check_workpaper_revision_authoring_preflight(None, &target.to_string(), &mock, 100),
             Err(WorkpaperAuthoringDenied)
@@ -173,7 +177,11 @@ mod non_authorizing_contract_tests {
             ..FixturePolicy::default()
         };
         mock.grant(person, WorkpaperAuthoringPermission::ReadWorkpaper, target);
-        mock.grant(person, WorkpaperAuthoringPermission::ReviseWorkpaper, foreign);
+        mock.grant(
+            person,
+            WorkpaperAuthoringPermission::ReviseWorkpaper,
+            foreign,
+        );
         assert_eq!(
             check_workpaper_revision_authoring_preflight(
                 Some(&session),
@@ -183,7 +191,11 @@ mod non_authorizing_contract_tests {
             ),
             Err(WorkpaperAuthoringDenied)
         );
-        mock.grant(person, WorkpaperAuthoringPermission::ReviseWorkpaper, target);
+        mock.grant(
+            person,
+            WorkpaperAuthoringPermission::ReviseWorkpaper,
+            target,
+        );
         assert_eq!(
             check_workpaper_revision_authoring_preflight(
                 Some(&session),
@@ -214,7 +226,11 @@ mod non_authorizing_contract_tests {
             ..FixturePolicy::default()
         };
         mock.grant(person, WorkpaperAuthoringPermission::ReadWorkpaper, target);
-        mock.grant(person, WorkpaperAuthoringPermission::ReviseWorkpaper, target);
+        mock.grant(
+            person,
+            WorkpaperAuthoringPermission::ReviseWorkpaper,
+            target,
+        );
         assert_eq!(
             check_workpaper_revision_authoring_preflight(
                 Some(&session),
