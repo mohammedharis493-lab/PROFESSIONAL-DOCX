@@ -249,3 +249,167 @@ fn native_one_character_correction_preserves_old_text_and_signed_history() {
         .iter()
         .all(|signoff| signoff.workpaper_revision_id != next.workpaper_revision_id));
 }
+
+#[test]
+fn native_immutable_revision_and_signature_history_rejects_sql_updates_and_deletes() {
+    let fixture = NativeRevisionFixture::new();
+    let fields = [
+        "Original objective\u{0000}",
+        "Original procedure",
+        "All items",
+        "",
+        "",
+        "Response\u{00a0}",
+        "Signed conclusion",
+    ];
+    let signed_revision = fixture.insert(fields);
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &signed_revision.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("create test-only legacy sign-off");
+    let corrected = fixture.insert([
+        "Original objective\u{0000}",
+        "Original procedure",
+        "All items",
+        "",
+        "",
+        "Response\u{00a0}",
+        "Signed conclusion!",
+    ]);
+
+    // Production migration triggers, not a synthetic mock, prevent writes
+    // against already signed immutable rows even from direct SQL.
+    let connection = Connection::open(&fixture.path).expect("open native SQLite");
+    for (sql, id) in [
+        (
+            "UPDATE workpaper_revisions SET conclusion='forged' WHERE workpaper_revision_id=?1",
+            signed_revision.workpaper_revision_id.as_str(),
+        ),
+        (
+            "DELETE FROM workpaper_revisions WHERE workpaper_revision_id=?1",
+            signed_revision.workpaper_revision_id.as_str(),
+        ),
+        (
+            "UPDATE workpaper_signoffs SET actor_id='forged' WHERE signoff_id=?1",
+            signed.signoff_id.as_str(),
+        ),
+        (
+            "DELETE FROM workpaper_signoffs WHERE signoff_id=?1",
+            signed.signoff_id.as_str(),
+        ),
+        (
+            "UPDATE workpaper_signoff_supersessions SET superseded_by_revision_id='forged' WHERE signoff_id=?1",
+            signed.signoff_id.as_str(),
+        ),
+        (
+            "DELETE FROM workpaper_signoff_supersessions WHERE signoff_id=?1",
+            signed.signoff_id.as_str(),
+        ),
+    ] {
+        let error = connection
+            .execute(sql, [id])
+            .expect_err("immutable history SQL must fail");
+        assert!(
+            error.to_string().contains("immutable"),
+            "unexpected direct-SQL denial for {sql}: {error}"
+        );
+    }
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(as_fields(&fixture.rows()[1]), fields);
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("historical sign-off still visible");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].actor_id, "untrusted-fixture");
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(corrected.workpaper_revision_id.as_str())
+    );
+}
+
+#[test]
+fn native_signoff_rejects_stale_exact_revision_without_creating_history() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["a", "b", "c", "d", "e", "f", "g"]);
+    let latest = fixture.insert(["a", "b", "c", "d", "e", "f", "h"]);
+    let error = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect_err("historical revision cannot receive a fresh legacy sign-off");
+    assert!(error.to_string().contains("latest workpaper revision"));
+    assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("check sign-off rows")
+        .is_empty());
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest.workpaper_revision_id);
+}
+
+#[test]
+fn native_third_revision_preserves_original_signoff_and_immediate_supersession() {
+    let fixture = NativeRevisionFixture::new();
+    let original = ["ø", "a\u{0000}b", "Population", "", "Exception", "", "Original"];
+    let first = fixture.insert(original);
+    let signoff = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("test fixture sign-off");
+    let second = fixture.insert(["ø", "a\u{0000}b", "Population", "", "Exception", "", "Second"]);
+    let third = fixture.insert(["ø", "a\u{0000}b", "Population", "", "Exception", "", "Third"]);
+
+    let rows = fixture.rows();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        [
+            rows[0].revision_number,
+            rows[1].revision_number,
+            rows[2].revision_number
+        ],
+        [3, 2, 1]
+    );
+    assert_eq!(rows[0].workpaper_revision_id, third.workpaper_revision_id);
+    assert_eq!(
+        rows[0].supersedes_revision_id.as_deref(),
+        Some(second.workpaper_revision_id.as_str())
+    );
+    assert_eq!(
+        rows[1].supersedes_revision_id.as_deref(),
+        Some(first.workpaper_revision_id.as_str())
+    );
+    assert_eq!(as_fields(&rows[2]), original);
+
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("historical signed predecessor still visible");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].signoff_id, signoff.signoff_id);
+    assert_eq!(signoffs[0].workpaper_revision_id, first.workpaper_revision_id);
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(second.workpaper_revision_id.as_str())
+    );
+    assert!(signoffs.iter().all(|entry| {
+        entry.workpaper_revision_id != second.workpaper_revision_id
+            && entry.workpaper_revision_id != third.workpaper_revision_id
+    }));
+}
