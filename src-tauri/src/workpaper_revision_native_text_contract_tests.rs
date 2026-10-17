@@ -11,10 +11,8 @@
 
 use crate::persistence::{
     create_workpaper_evidence_link, create_workpaper_revision, create_workpaper_signoff,
-    initialize_database,
-    list_workpaper_evidence_links, list_workpaper_revisions, list_workpaper_signoffs,
-    NewWorkpaperRevision, NewWorkpaperSignoff,
-    WorkpaperRevisionRecord,
+    initialize_database, list_workpaper_evidence_links, list_workpaper_revisions,
+    list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff, WorkpaperRevisionRecord,
 };
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -56,7 +54,6 @@ impl NativeRevisionFixture {
             .expect("seed native test workpaper");
         Self { root, path }
     }
-
 
     /// Only test data: linked metadata/version, NOT a captured immutable
     /// controlled evidence file. No source filesystem bytes are trusted.
@@ -659,7 +656,10 @@ fn legacy_native_revision_does_not_carry_signed_exact_evidence_to_successor() {
     )
     .expect("legacy PREPARED fixture sign-off; not an authenticated reviewer");
 
-    assert_eq!(signed.evidence_link_ids, vec![link.evidence_link_id.clone()]);
+    assert_eq!(
+        signed.evidence_link_ids,
+        vec![link.evidence_link_id.clone()]
+    );
 
     let updated = fixture.insert([
         "Objective",
@@ -676,15 +676,27 @@ fn legacy_native_revision_does_not_carry_signed_exact_evidence_to_successor() {
         .expect("new revision's independent evidence links");
     assert_eq!(historical.len(), 1);
     assert_eq!(historical[0].evidence_link_id, link.evidence_link_id);
-    assert_eq!(historical[0].content_version_id.as_deref(), Some("version-native"));
-    assert_eq!(historical[0].description.as_deref(), Some("Exact observed content version"));
-    assert!(successor.is_empty(), "legacy revision creates no new evidence links");
+    assert_eq!(
+        historical[0].content_version_id.as_deref(),
+        Some("version-native")
+    );
+    assert_eq!(
+        historical[0].description.as_deref(),
+        Some("Exact observed content version")
+    );
+    assert!(
+        successor.is_empty(),
+        "legacy revision creates no new evidence links"
+    );
 
     let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
         .expect("read historical signoff and exact source snapshot");
     assert_eq!(signoffs.len(), 1);
     assert_eq!(signoffs[0].signoff_id, signed.signoff_id);
-    assert_eq!(signoffs[0].evidence_link_ids, vec![link.evidence_link_id.clone()]);
+    assert_eq!(
+        signoffs[0].evidence_link_ids,
+        vec![link.evidence_link_id.clone()]
+    );
     assert_eq!(
         signoffs[0].superseded_by_revision_id.as_deref(),
         Some(updated.workpaper_revision_id.as_str())
@@ -786,20 +798,23 @@ fn native_signed_evidence_snapshot_is_immutable_and_late_attachment_is_rejected(
         None,
     )
     .expect_err("superseded predecessor may not acquire evidence");
-    assert!(historical_add.to_string().contains("latest workpaper revision"));
+    assert!(historical_add
+        .to_string()
+        .contains("latest workpaper revision"));
     assert_eq!(
         list_workpaper_evidence_links(&fixture.path, &original.workpaper_revision_id)
             .expect("history still visible")
             .len(),
         1
     );
-    assert!(list_workpaper_evidence_links(&fixture.path, &successor.workpaper_revision_id)
-        .expect("successor is initially independent")
-        .is_empty());
+    assert!(
+        list_workpaper_evidence_links(&fixture.path, &successor.workpaper_revision_id)
+            .expect("successor is initially independent")
+            .is_empty()
+    );
     assert_eq!(
         list_workpaper_signoffs(&fixture.path, "workpaper-native")
-            .expect("frozen sign-off link snapshot remains")
-            [0]
+            .expect("frozen sign-off link snapshot remains")[0]
             .evidence_link_ids,
         vec![link.evidence_link_id]
     );
