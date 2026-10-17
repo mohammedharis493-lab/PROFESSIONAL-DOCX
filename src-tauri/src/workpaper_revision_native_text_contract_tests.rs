@@ -881,7 +881,7 @@ fn test_only_checked_successor(
                  WHERE workpaper_revision_id=?1 ORDER BY evidence_link_id",
             )
             .map_err(|error| error.to_string())?;
-        statement
+        let collected = statement
             .query_map([expected_base], |row| {
                 Ok(TestOnlySourceLink {
                     id: row.get(0)?,
@@ -894,7 +894,8 @@ fn test_only_checked_successor(
             })
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        collected
     };
     let mut expected_ids = observed_link_ids.to_vec();
     expected_ids.sort();
@@ -937,11 +938,12 @@ fn test_only_checked_successor(
                  ORDER BY s.signoff_id",
             )
             .map_err(|error| error.to_string())?;
-        statement
+        let collected = statement
             .query_map([expected_base], |row| row.get(0))
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        collected
     };
     for signoff_id in &active_signoff_ids {
         let signed_ids: Vec<String> = {
@@ -951,11 +953,12 @@ fn test_only_checked_successor(
                      WHERE signoff_id=?1 ORDER BY evidence_link_id",
                 )
                 .map_err(|error| error.to_string())?;
-            statement
+            let collected = statement
                 .query_map([signoff_id], |row| row.get(0))
                 .map_err(|error| error.to_string())?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            collected
         };
         if signed_ids != actual_ids {
             return Err("INVALID_NATIVE_SIGNED_EVIDENCE_SNAPSHOT".to_string());
