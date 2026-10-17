@@ -10,8 +10,10 @@
 //! legacy command; a test fixture's PREPARED row is not professional approval.
 
 use crate::persistence::{
-    create_workpaper_revision, create_workpaper_signoff, initialize_database,
-    list_workpaper_revisions, list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff,
+    create_workpaper_evidence_link, create_workpaper_revision, create_workpaper_signoff,
+    initialize_database,
+    list_workpaper_evidence_links, list_workpaper_revisions, list_workpaper_signoffs,
+    NewWorkpaperRevision, NewWorkpaperSignoff,
     WorkpaperRevisionRecord,
 };
 use rusqlite::Connection;
@@ -53,6 +55,40 @@ impl NativeRevisionFixture {
             )
             .expect("seed native test workpaper");
         Self { root, path }
+    }
+
+
+    /// Only test data: linked metadata/version, NOT a captured immutable
+    /// controlled evidence file. No source filesystem bytes are trusted.
+    fn seed_unverified_linked_content_version(&self) {
+        let connection = Connection::open(&self.path).expect("open isolated database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 INSERT INTO documents
+                   (document_id, storage_state, display_name, created_at_ms)
+                   VALUES ('doc-native', 'LINKED', 'Observation.txt', 1);
+                 INSERT INTO storage_roots
+                   (storage_root_id, kind, native_locator, native_locator_encoding,
+                    display_locator, availability_state, approved_at_ms, created_at_ms,
+                    updated_at_ms)
+                   VALUES ('root-native', 'LOCAL', X'2F', 'UNIX', '/fixture-only',
+                           'AVAILABLE', 1, 1, 1);
+                 INSERT INTO file_instances
+                   (file_instance_id, document_id, storage_root_id,
+                    relative_path_native, path_native_encoding,
+                    relative_path_display, relative_path_search, size_bytes,
+                    first_seen_at_ms, last_seen_at_ms, availability_state)
+                   VALUES ('instance-native', 'doc-native', 'root-native',
+                           X'61', 'UNIX', 'Observation.txt', 'observation.txt', 5,
+                           1, 1, 'AVAILABLE');
+                 INSERT INTO content_versions
+                   (content_version_id, document_id, file_instance_id,
+                    observed_at_ms, size_bytes, verification_state)
+                   VALUES ('version-native', 'doc-native', 'instance-native',
+                           1, 5, 'METADATA_ONLY');",
+            )
+            .expect("seed test-only linked version with actual migration tables");
     }
 
     fn insert(&self, fields: [&str; 7]) -> WorkpaperRevisionRecord {
@@ -580,4 +616,191 @@ fn legacy_native_api_currently_appends_identical_text_and_supersedes_signoff() {
     assert!(history
         .iter()
         .all(|entry| entry.workpaper_revision_id != duplicate.workpaper_revision_id));
+}
+
+/// DOCUMENTED LEGACY GAP: the real create revision path does NOT inherit or
+/// carry forward a previously signed revision's exact evidence-link set.
+/// The prior signed link and immutable snapshot survive, but the successor
+/// has zero links even for a one-character change. A future trusted Save
+/// requires separately approved atomic unchanged-version carry-forward.
+#[test]
+fn legacy_native_revision_does_not_carry_signed_exact_evidence_to_successor() {
+    let fixture = NativeRevisionFixture::new();
+    fixture.seed_unverified_linked_content_version();
+    let original = fixture.insert([
+        "Objective",
+        "Procedure",
+        "Population",
+        "Sample",
+        "",
+        "",
+        "Signed conclusion",
+    ]);
+    let link = create_workpaper_evidence_link(
+        &fixture.path,
+        &original.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Exact observed content version"),
+    )
+    .expect("attach test-only exact linked-content version before signing");
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &original.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("legacy PREPARED fixture sign-off; not an authenticated reviewer");
+
+    assert_eq!(signed.evidence_link_ids, vec![link.evidence_link_id.clone()]);
+
+    let updated = fixture.insert([
+        "Objective",
+        "Procedure",
+        "Population",
+        "Sample",
+        "",
+        "",
+        "Signed conclusion.",
+    ]);
+    let historical = list_workpaper_evidence_links(&fixture.path, &original.workpaper_revision_id)
+        .expect("original historical evidence remains visible");
+    let successor = list_workpaper_evidence_links(&fixture.path, &updated.workpaper_revision_id)
+        .expect("new revision's independent evidence links");
+    assert_eq!(historical.len(), 1);
+    assert_eq!(historical[0].evidence_link_id, link.evidence_link_id);
+    assert_eq!(historical[0].content_version_id.as_deref(), Some("version-native"));
+    assert_eq!(historical[0].description.as_deref(), Some("Exact observed content version"));
+    assert!(successor.is_empty(), "legacy revision creates no new evidence links");
+
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("read historical signoff and exact source snapshot");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].signoff_id, signed.signoff_id);
+    assert_eq!(signoffs[0].evidence_link_ids, vec![link.evidence_link_id.clone()]);
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(updated.workpaper_revision_id.as_str())
+    );
+    assert_eq!(
+        signoffs[0].workpaper_revision_id,
+        original.workpaper_revision_id
+    );
+    // This is a real missing carry-forward characteristic, NOT safe
+    // immutable evidence custody or authorization to copy on the new Save.
+}
+
+/// Assert that the production SQL triggers freeze the exact source evidence
+/// link and sign-off snapshot, and that the API refuses attaching evidence
+/// to either an old signed revision or a newer actively signed revision.
+#[test]
+fn native_signed_evidence_snapshot_is_immutable_and_late_attachment_is_rejected() {
+    let fixture = NativeRevisionFixture::new();
+    fixture.seed_unverified_linked_content_version();
+    let original = fixture.insert(["A", "B", "C", "D", "E", "F", "G"]);
+    let link = create_workpaper_evidence_link(
+        &fixture.path,
+        &original.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Before PREPARED sign-off"),
+    )
+    .expect("fixture exact observed-version link");
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &original.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("sign latest revision for fixture only");
+
+    let too_late = create_workpaper_evidence_link(
+        &fixture.path,
+        &original.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "OTHER",
+        None,
+    )
+    .expect_err("actively signed latest revision may not acquire another link");
+    assert!(too_late.to_string().contains("signed workpaper revision"));
+
+    let connection = Connection::open(&fixture.path).expect("inspect migrated triggers");
+    let snapshot_id: String = connection
+        .query_row(
+            "SELECT signoff_evidence_id
+             FROM workpaper_signoff_evidence WHERE signoff_id=?1",
+            [&signed.signoff_id],
+            |row| row.get(0),
+        )
+        .expect("sign-off includes exact link snapshot");
+    for (sql, id) in [
+        (
+            "UPDATE workpaper_evidence_links SET description='tampered' WHERE evidence_link_id=?1",
+            link.evidence_link_id.as_str(),
+        ),
+        (
+            "DELETE FROM workpaper_evidence_links WHERE evidence_link_id=?1",
+            link.evidence_link_id.as_str(),
+        ),
+        (
+            "UPDATE workpaper_signoff_evidence SET evidence_link_id='tampered' WHERE signoff_evidence_id=?1",
+            snapshot_id.as_str(),
+        ),
+        (
+            "DELETE FROM workpaper_signoff_evidence WHERE signoff_evidence_id=?1",
+            snapshot_id.as_str(),
+        ),
+    ] {
+        let failure = connection
+            .execute(sql, [id])
+            .expect_err("native immutable SQL evidence history must reject updates");
+        assert!(
+            failure.to_string().contains("immutable"),
+            "unexpected SQL evidence mutation result {sql}: {failure}"
+        );
+    }
+    let successor = fixture.insert(["A", "B", "C", "D", "E", "F", "H"]);
+    let historical_add = create_workpaper_evidence_link(
+        &fixture.path,
+        &original.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "OTHER",
+        None,
+    )
+    .expect_err("superseded predecessor may not acquire evidence");
+    assert!(historical_add.to_string().contains("latest workpaper revision"));
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &original.workpaper_revision_id)
+            .expect("history still visible")
+            .len(),
+        1
+    );
+    assert!(list_workpaper_evidence_links(&fixture.path, &successor.workpaper_revision_id)
+        .expect("successor is initially independent")
+        .is_empty());
+    assert_eq!(
+        list_workpaper_signoffs(&fixture.path, "workpaper-native")
+            .expect("frozen sign-off link snapshot remains")
+            [0]
+            .evidence_link_ids,
+        vec![link.evidence_link_id]
+    );
 }
