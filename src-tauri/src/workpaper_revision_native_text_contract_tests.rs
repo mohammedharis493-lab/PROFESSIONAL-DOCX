@@ -819,3 +819,415 @@ fn native_signed_evidence_snapshot_is_immutable_and_late_attachment_is_rejected(
         vec![link.evidence_link_id]
     );
 }
+
+/// Test-only reference, never a Tauri command, production grant or custody
+/// verifier. This demonstrates SQLite atomicity with actual migrations, NOT
+/// that arbitrary metadata-only links may be copied in a real engagement.
+/// Production must supply DEC-03/04 authenticated authority, DEC-05 custody
+/// and DEC-08 carry-forward approval before any implementation.
+#[derive(Clone)]
+struct TestOnlySourceLink {
+    id: String,
+    document_id: String,
+    content_version_id: Option<String>,
+    controlled_version_id: Option<String>,
+    relationship_type: String,
+    description: Option<String>,
+}
+
+fn test_only_checked_successor(
+    path: &std::path::Path,
+    expected_base: &str,
+    observed_link_ids: &[String],
+    fields: [&str; 7],
+    fail_after_first_copied_link: bool,
+) -> Result<String, String> {
+    use rusqlite::{params, OptionalExtension, TransactionBehavior};
+    use sha2::{Digest, Sha256};
+
+    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| error.to_string())?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let latest: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT workpaper_revision_id, revision_number
+             FROM workpaper_revisions WHERE workpaper_id='workpaper-native'
+             ORDER BY revision_number DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((latest_id, latest_number)) = latest else {
+        return Err("NO_NATIVE_BASE".to_string());
+    };
+    if latest_id != expected_base {
+        return Err("STALE_NATIVE_BASE".to_string());
+    }
+
+    let links: Vec<TestOnlySourceLink> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT evidence_link_id, document_id, content_version_id,
+                        controlled_evidence_version_id, relationship_type, description
+                 FROM workpaper_evidence_links
+                 WHERE workpaper_revision_id=?1 ORDER BY evidence_link_id",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([expected_base], |row| {
+                Ok(TestOnlySourceLink {
+                    id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    content_version_id: row.get(2)?,
+                    controlled_version_id: row.get(3)?,
+                    relationship_type: row.get(4)?,
+                    description: row.get(5)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut expected_ids = observed_link_ids.to_vec();
+    expected_ids.sort();
+    let actual_ids: Vec<String> = links.iter().map(|link| link.id.clone()).collect();
+    if expected_ids != actual_ids {
+        return Err("STALE_NATIVE_EVIDENCE".to_string());
+    }
+    // Actual document-to-version checks in this test-only schema oracle.
+    // These are NOT source-byte retention or formal controlled-custody checks.
+    for link in &links {
+        let valid: i64 = tx
+            .query_row(
+                "SELECT CASE
+                   WHEN ?2 IS NOT NULL THEN
+                     EXISTS(SELECT 1 FROM content_versions
+                            WHERE content_version_id=?2 AND document_id=?1)
+                   WHEN ?3 IS NOT NULL THEN
+                     EXISTS(SELECT 1 FROM controlled_evidence_versions
+                            WHERE controlled_evidence_version_id=?3 AND document_id=?1)
+                   ELSE 0 END",
+                params![
+                    &link.document_id,
+                    link.content_version_id.as_deref(),
+                    link.controlled_version_id.as_deref()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if valid != 1 {
+            return Err("INVALID_NATIVE_EVIDENCE_VERSION".to_string());
+        }
+    }
+
+    let active_signoff_ids: Vec<String> = {
+        let mut statement = tx
+            .prepare(
+                "SELECT s.signoff_id FROM workpaper_signoffs s
+                 LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id=s.signoff_id
+                 WHERE s.workpaper_revision_id=?1 AND ss.signoff_id IS NULL
+                 ORDER BY s.signoff_id",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([expected_base], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    for signoff_id in &active_signoff_ids {
+        let signed_ids: Vec<String> = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT evidence_link_id FROM workpaper_signoff_evidence
+                     WHERE signoff_id=?1 ORDER BY evidence_link_id",
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map([signoff_id], |row| row.get(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        if signed_ids != actual_ids {
+            return Err("INVALID_NATIVE_SIGNED_EVIDENCE_SNAPSHOT".to_string());
+        }
+    }
+
+    let mut digest = Sha256::new();
+    for field in fields {
+        digest.update((field.len() as u64).to_le_bytes());
+        digest.update(field.as_bytes());
+    }
+    let hash = digest.finalize();
+    let successor_id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO workpaper_revisions
+         (workpaper_revision_id, workpaper_id, revision_number, created_at_ms,
+          revision_reason, supersedes_revision_id, objective, procedure_performed,
+          population, sample, exceptions, management_explanation, conclusion, content_hash)
+         VALUES (?1, 'workpaper-native', ?2, 2, 'test-only native CAS reference',
+                 ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &successor_id,
+            latest_number + 1,
+            expected_base,
+            fields[0],
+            fields[1],
+            fields[2],
+            fields[3],
+            fields[4],
+            fields[5],
+            fields[6],
+            hash.as_slice()
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    for (index, link) in links.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO workpaper_evidence_links
+             (evidence_link_id, workpaper_revision_id, document_id, content_version_id,
+              controlled_evidence_version_id, relationship_type, description, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 3)",
+            params![
+                Uuid::new_v4().to_string(),
+                &successor_id,
+                &link.document_id,
+                link.content_version_id.as_deref(),
+                link.controlled_version_id.as_deref(),
+                &link.relationship_type,
+                link.description.as_deref()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        if index == 0 && fail_after_first_copied_link {
+            return Err("INJECTED_NATIVE_COPY_FAILURE".to_string());
+        }
+    }
+    for signoff_id in &active_signoff_ids {
+        tx.execute(
+            "INSERT INTO workpaper_signoff_supersessions
+             (signoff_supersession_id, signoff_id, superseded_by_revision_id,
+              superseded_at_ms, superseded_reason)
+             VALUES (?1, ?2, ?3, 4, 'test-only native successor')",
+            params![Uuid::new_v4().to_string(), signoff_id, &successor_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.execute(
+        "INSERT INTO audit_events
+         (audit_event_id, event_type, entity_type, entity_id, occurred_at_ms, details_json)
+         VALUES (?1, 'TEST_ONLY_REFERENCE_SUCCESSOR', 'WORKPAPER_REVISION', ?2, 4, '{}')",
+        params![Uuid::new_v4().to_string(), &successor_id],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(successor_id)
+}
+
+fn test_only_signed_two_link_base() -> (
+    NativeRevisionFixture,
+    WorkpaperRevisionRecord,
+    String,
+    Vec<String>,
+) {
+    let fixture = NativeRevisionFixture::new();
+    fixture.seed_unverified_linked_content_version();
+    let base = fixture.insert([
+        "Original\u{0000} objective",
+        "Trace",
+        "Full population",
+        "Sample",
+        "",
+        "",
+        "Signed conclusion",
+    ]);
+    let first = create_workpaper_evidence_link(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Exact version \u{00a0}"),
+    )
+    .expect("first fixture exact version");
+    let second = create_workpaper_evidence_link(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "CORROBORATING",
+        Some("A different relationship"),
+    )
+    .expect("second fixture exact version");
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &base.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "unverified-test-label",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("test-only PREPARED label");
+    let mut ids = vec![first.evidence_link_id, second.evidence_link_id];
+    ids.sort();
+    (fixture, base, signed.signoff_id, ids)
+}
+
+#[test]
+fn reference_native_transaction_copies_exact_link_tuples_and_keeps_signoff_historical() {
+    let (fixture, base, signoff_id, opened_links) = test_only_signed_two_link_base();
+    let fields = [
+        "Original\u{0000} objective",
+        "Trace",
+        "Full population",
+        "Sample",
+        "",
+        "",
+        "Signed conclusion.",
+    ];
+    let successor_id = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        fields,
+        false,
+    )
+    .expect("test-only SQLite reference transaction");
+
+    let previous = list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id)
+        .expect("load original link tuples");
+    let current = list_workpaper_evidence_links(&fixture.path, &successor_id)
+        .expect("load successor link tuples");
+    assert_eq!(current.len(), 2);
+    for new_link in &current {
+        let old = previous
+            .iter()
+            .find(|old| old.relationship_type == new_link.relationship_type)
+            .expect("same relationship must exist in predecessor");
+        assert_ne!(old.evidence_link_id, new_link.evidence_link_id);
+        assert_eq!(old.document_id, new_link.document_id);
+        assert_eq!(old.content_version_id, new_link.content_version_id);
+        assert_eq!(old.controlled_evidence_version_id, new_link.controlled_evidence_version_id);
+        assert_eq!(old.description, new_link.description);
+    }
+    let revisions = fixture.rows();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(as_fields(&revisions[0]), fields);
+    assert_eq!(
+        revisions[0].supersedes_revision_id.as_deref(),
+        Some(base.workpaper_revision_id.as_str())
+    );
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("load historical sign-off");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].signoff_id, signoff_id);
+    assert_eq!(signoffs[0].evidence_link_ids.len(), 2);
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(successor_id.as_str())
+    );
+    assert!(signoffs.iter().all(|entry| entry.workpaper_revision_id != successor_id));
+}
+
+#[test]
+fn reference_native_transaction_refuses_stale_base_without_mutation() {
+    let (fixture, base, _signoff_id, opened_links) = test_only_signed_two_link_base();
+    let fields = ["Obj", "Procedure", "Population", "Sample", "", "", "New conclusion"];
+    let first = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        fields,
+        false,
+    )
+    .expect("first test-only successor commits");
+    let result = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        fields,
+        false,
+    );
+    assert_eq!(result, Err("STALE_NATIVE_BASE".to_string()));
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, first);
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &first)
+            .expect("only the committed successor has links")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn reference_native_transaction_refuses_evidence_only_race_without_mutation() {
+    let (fixture, base, _signoff_id, mut opened_links) = test_only_signed_two_link_base();
+    // Simulate an incomplete/stale editor observation; no review or source
+    // mutation needed. The actual source has two links, the opening state one.
+    opened_links.pop();
+    let result = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        ["O", "P", "Q", "R", "", "", "S"],
+        false,
+    );
+    assert_eq!(result, Err("STALE_NATIVE_EVIDENCE".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    assert_eq!(
+        list_workpaper_signoffs(&fixture.path, "workpaper-native")
+            .expect("sign-off unchanged")[0]
+            .superseded_by_revision_id,
+        None
+    );
+}
+
+#[test]
+fn reference_native_transaction_rolls_back_partial_link_copy_and_supersession() {
+    let (fixture, base, _signoff_id, opened_links) = test_only_signed_two_link_base();
+    let result = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        ["O", "P", "Q", "R", "", "", "S"],
+        true,
+    );
+    assert_eq!(result, Err("INJECTED_NATIVE_COPY_FAILURE".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    let connection = Connection::open(&fixture.path).expect("inspect actual DB after rollback");
+    let revision_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM workpaper_revisions", [], |row| row.get(0))
+        .expect("count revisions");
+    let link_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0))
+        .expect("count link rows");
+    let supersessions: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM workpaper_signoff_supersessions",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count supersessions");
+    let fake_audits: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type='TEST_ONLY_REFERENCE_SUCCESSOR'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count committed test-only successor audit events");
+    assert_eq!((revision_count, link_count, supersessions, fake_audits), (1, 2, 0, 0));
+}
