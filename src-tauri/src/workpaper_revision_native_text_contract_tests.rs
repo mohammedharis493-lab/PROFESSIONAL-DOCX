@@ -1253,3 +1253,156 @@ fn reference_native_transaction_rolls_back_partial_link_copy_and_supersession() 
         (1, 2, 0, 0)
     );
 }
+
+/// Two native Rust threads use TWO INDEPENDENT rusqlite connections to the
+/// same actual migrated SQLite database. Both start from one exact immutable
+/// predecessor; BEGIN IMMEDIATE plus in-transaction latest-CAS must allow
+/// ONE append and reject the other as stale, without inventing approval.
+/// This test-only model is not the callable legacy production revision API.
+#[test]
+fn reference_native_two_independent_writers_only_one_can_commit() {
+    use std::sync::{Arc, Barrier};
+
+    let (fixture, base, signoff_id, opened_links) = test_only_signed_two_link_base();
+    let start_together = Arc::new(Barrier::new(3));
+    let mut threads = Vec::new();
+    for new_conclusion in ["First independent correction", "Second independent correction"] {
+        let path = fixture.path.clone();
+        let expected_base = base.workpaper_revision_id.clone();
+        let opened = opened_links.clone();
+        let ready = Arc::clone(&start_together);
+        threads.push(std::thread::spawn(move || {
+            ready.wait();
+            test_only_checked_successor(
+                &path,
+                &expected_base,
+                &opened,
+                [
+                    "Original\u{0000} objective",
+                    "Trace",
+                    "Full population",
+                    "Sample",
+                    "",
+                    "",
+                    new_conclusion,
+                ],
+                false,
+            )
+        }));
+    }
+    start_together.wait();
+
+    let mut successful = Vec::new();
+    let mut rejected = Vec::new();
+    for thread in threads {
+        match thread.join().expect("native SQLite writer thread did not panic") {
+            Ok(successor_id) => successful.push(successor_id),
+            Err(error) => rejected.push(error),
+        }
+    }
+    assert_eq!(successful.len(), 1, "only one independent writer may commit");
+    assert_eq!(rejected, vec!["STALE_NATIVE_BASE".to_string()]);
+    let saved = &successful[0];
+    let revisions = fixture.rows();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].workpaper_revision_id, *saved);
+    assert_eq!(revisions[0].revision_number, 2);
+    assert_eq!(
+        revisions[0].supersedes_revision_id.as_deref(),
+        Some(base.workpaper_revision_id.as_str())
+    );
+    assert!(
+        revisions[0].conclusion == "First independent correction"
+            || revisions[0].conclusion == "Second independent correction"
+    );
+    assert_eq!(revisions[1].workpaper_revision_id, base.workpaper_revision_id);
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, saved)
+            .expect("committed successor owns only its two fresh copied links")
+            .len(),
+        2
+    );
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id)
+            .expect("signed source evidence retained")
+            .len(),
+        2
+    );
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("sign-off remains historical");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].signoff_id, signoff_id);
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(saved.as_str())
+    );
+    let db = Connection::open(&fixture.path).expect("read commit-only audit");
+    let accepted_audits: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events
+             WHERE event_type='TEST_ONLY_REFERENCE_SUCCESSOR'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count committed successor events");
+    assert_eq!(accepted_audits, 1);
+}
+
+/// A mid-copy fault must not leave a partially linked revision, consume a
+/// unique supersession, or hold the SQLite reservation so that a clean retry
+/// from the SAME base can be committed after the rollback.
+#[test]
+fn reference_native_partial_copy_failure_can_retry_same_base_without_leaking_rows() {
+    let (fixture, base, signoff_id, opened_links) = test_only_signed_two_link_base();
+    let fields = [
+        "Original\u{0000} objective",
+        "Trace",
+        "Full population",
+        "Sample",
+        "",
+        "",
+        "Post-rollback clean correction",
+    ];
+    let error = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        fields,
+        true,
+    );
+    assert_eq!(error, Err("INJECTED_NATIVE_COPY_FAILURE".to_string()));
+    let successor_id = test_only_checked_successor(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &opened_links,
+        fields,
+        false,
+    )
+    .expect("rolled-back write reservation and predecessor should permit a fresh retry");
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, successor_id);
+    assert_eq!(as_fields(&fixture.rows()[0]), fields);
+
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("read single committed supersession");
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].signoff_id, signoff_id);
+    assert_eq!(
+        signoffs[0].superseded_by_revision_id.as_deref(),
+        Some(successor_id.as_str())
+    );
+    let db = Connection::open(&fixture.path).expect("inspect committed write after retry");
+    let counts: (i64, i64, i64, i64) = db
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM workpaper_revisions),
+                (SELECT COUNT(*) FROM workpaper_evidence_links),
+                (SELECT COUNT(*) FROM workpaper_signoff_supersessions),
+                (SELECT COUNT(*) FROM audit_events
+                 WHERE event_type='TEST_ONLY_REFERENCE_SUCCESSOR')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("count all related writes after retry");
+    assert_eq!(counts, (2, 4, 1, 1));
+}
