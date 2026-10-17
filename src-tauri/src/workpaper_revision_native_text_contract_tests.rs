@@ -355,13 +355,24 @@ fn native_signoff_rejects_stale_exact_revision_without_creating_history() {
     assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
         .expect("check sign-off rows")
         .is_empty());
-    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest.workpaper_revision_id);
+    assert_eq!(
+        fixture.rows()[0].workpaper_revision_id,
+        latest.workpaper_revision_id
+    );
 }
 
 #[test]
 fn native_third_revision_preserves_original_signoff_and_immediate_supersession() {
     let fixture = NativeRevisionFixture::new();
-    let original = ["ø", "a\u{0000}b", "Population", "", "Exception", "", "Original"];
+    let original = [
+        "ø",
+        "a\u{0000}b",
+        "Population",
+        "",
+        "Exception",
+        "",
+        "Original",
+    ];
     let first = fixture.insert(original);
     let signoff = create_workpaper_signoff(
         &fixture.path,
@@ -375,8 +386,24 @@ fn native_third_revision_preserves_original_signoff_and_immediate_supersession()
         },
     )
     .expect("test fixture sign-off");
-    let second = fixture.insert(["ø", "a\u{0000}b", "Population", "", "Exception", "", "Second"]);
-    let third = fixture.insert(["ø", "a\u{0000}b", "Population", "", "Exception", "", "Third"]);
+    let second = fixture.insert([
+        "ø",
+        "a\u{0000}b",
+        "Population",
+        "",
+        "Exception",
+        "",
+        "Second",
+    ]);
+    let third = fixture.insert([
+        "ø",
+        "a\u{0000}b",
+        "Population",
+        "",
+        "Exception",
+        "",
+        "Third",
+    ]);
 
     let rows = fixture.rows();
     assert_eq!(rows.len(), 3);
@@ -403,7 +430,10 @@ fn native_third_revision_preserves_original_signoff_and_immediate_supersession()
         .expect("historical signed predecessor still visible");
     assert_eq!(signoffs.len(), 1);
     assert_eq!(signoffs[0].signoff_id, signoff.signoff_id);
-    assert_eq!(signoffs[0].workpaper_revision_id, first.workpaper_revision_id);
+    assert_eq!(
+        signoffs[0].workpaper_revision_id,
+        first.workpaper_revision_id
+    );
     assert_eq!(
         signoffs[0].superseded_by_revision_id.as_deref(),
         Some(second.workpaper_revision_id.as_str())
