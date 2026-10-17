@@ -443,3 +443,141 @@ fn native_third_revision_preserves_original_signoff_and_immediate_supersession()
             && entry.workpaper_revision_id != third.workpaper_revision_id
     }));
 }
+
+/// DOCUMENTED UNSAFE LEGACY BEHAVIOR, NOT A DESIRED ACCEPTANCE CONTRACT.
+///
+/// The existing API accepts a complete client-supplied seven-field snapshot,
+/// but has NO expected_latest_revision_id parameter. Two editors who
+/// started from the same predecessor can therefore serially append different
+/// successor revisions: the second writes an obsolete whole-document image.
+/// The old rows remain immutable, but the last/current revision loses the
+/// first editor's changes. Replace this characterization test when native
+/// CAS is introduced under reviewed DEC-03/04/06/08 authorization.
+#[test]
+fn legacy_native_api_currently_accepts_stale_full_snapshot_without_base_cas() {
+    let fixture = NativeRevisionFixture::new();
+    let original = [
+        "Objective",
+        "Procedure",
+        "Population A",
+        "Sample",
+        "",
+        "",
+        "Conclusion A",
+    ];
+    let base = fixture.insert(original);
+
+    // Two independent caller snapshots conceptually observe the same base.
+    let mut first_edit = original;
+    first_edit[2] = "Population B: another author updated this";
+    let mut stale_edit = original;
+    stale_edit[6] = "Conclusion B: stale author's correction";
+
+    let current = fixture.insert(first_edit);
+    let stale_accepted = fixture.insert(stale_edit);
+    let rows = fixture.rows();
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[0].workpaper_revision_id,
+        stale_accepted.workpaper_revision_id
+    );
+    assert_eq!(
+        rows[0].supersedes_revision_id.as_deref(),
+        Some(current.workpaper_revision_id.as_str())
+    );
+    assert_eq!(as_fields(&rows[0]), stale_edit);
+    assert_eq!(rows[0].population, original[2]);
+    assert_ne!(rows[0].population, current.population);
+    assert_eq!(rows[1].population, first_edit[2]);
+    assert_eq!(rows[2].workpaper_revision_id, base.workpaper_revision_id);
+    // This is evidence of a CURRENT GAP, not evidence of safe concurrency.
+}
+
+/// DOCUMENTED UNSAFE LEGACY BEHAVIOR, NOT AN AUTHORIZATION TEST.
+///
+/// Caller-chosen actor identity and role pass through this legacy API into
+/// an immutable PREPARED row without establishing a trusted person/session.
+/// The historical row is durable but does not authenticate the alleged actor.
+/// This characterization MUST change when a native identity issuer is built.
+#[test]
+fn legacy_native_signoff_currently_records_caller_asserted_identity_and_role() {
+    let fixture = NativeRevisionFixture::new();
+    let revision = fixture.insert(["a", "b", "c", "d", "e", "f", "g"]);
+    let claimed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &revision.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "arbitrary-caller-claimed-person",
+            actor_role: "ARBITRARY_CALLER_CLAIMED_ROLE",
+            comment: Some("Unverified fixture claims are not human approval"),
+        },
+    )
+    .expect("legacy command presently accepts syntactically valid asserted labels");
+
+    let rows = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("read persisted legacy asserted labels");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].signoff_id, claimed.signoff_id);
+    assert_eq!(rows[0].actor_id, "arbitrary-caller-claimed-person");
+    assert_eq!(rows[0].actor_role, "ARBITRARY_CALLER_CLAIMED_ROLE");
+    assert_eq!(
+        rows[0].workpaper_revision_id,
+        revision.workpaper_revision_id
+    );
+    // Existence of the row provides NO evidence of verified signer authority.
+}
+
+/// DOCUMENTED UNRESOLVED DEC-08 POLICY DIFFERENCE, NOT DESIRED NO-OP SEMANTICS.
+///
+/// The actual legacy create function currently appends even byte-identical
+/// canonical text and supersedes prior PREPARED history. Draft policy PR #136
+/// proposes a no-op on fully unchanged content + evidence + review state.
+/// The production choice is an open human decision. Do NOT implement a
+/// content-only shortcut here or automatically transfer sign-off.
+#[test]
+fn legacy_native_api_currently_appends_identical_text_and_supersedes_signoff() {
+    let fixture = NativeRevisionFixture::new();
+    let fields = [
+        "A\u{0000}B",
+        "e\u{0301}",
+        "Population",
+        "",
+        "Exception\r\n",
+        "Response\u{00a0}",
+        "Conclusion",
+    ];
+    let first = fixture.insert(fields);
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "untrusted-fixture",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("fixture signoff for legacy no-op characterization");
+    let duplicate = fixture.insert(fields);
+    assert_ne!(duplicate.workpaper_revision_id, first.workpaper_revision_id);
+    assert_eq!(duplicate.revision_number, 2);
+    assert_eq!(duplicate.content_hash, first.content_hash);
+    assert_eq!(as_fields(&duplicate), fields);
+    assert_eq!(as_fields(&fixture.rows()[1]), fields);
+
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .expect("read immutable legacy signoff after identical revision");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].signoff_id, signed.signoff_id);
+    assert_eq!(
+        history[0].superseded_by_revision_id.as_deref(),
+        Some(duplicate.workpaper_revision_id.as_str())
+    );
+    assert!(history
+        .iter()
+        .all(|entry| entry.workpaper_revision_id != duplicate.workpaper_revision_id));
+}
