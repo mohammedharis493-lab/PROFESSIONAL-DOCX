@@ -1121,7 +1121,10 @@ fn reference_native_transaction_copies_exact_link_tuples_and_keeps_signoff_histo
         assert_ne!(old.evidence_link_id, new_link.evidence_link_id);
         assert_eq!(old.document_id, new_link.document_id);
         assert_eq!(old.content_version_id, new_link.content_version_id);
-        assert_eq!(old.controlled_evidence_version_id, new_link.controlled_evidence_version_id);
+        assert_eq!(
+            old.controlled_evidence_version_id,
+            new_link.controlled_evidence_version_id
+        );
         assert_eq!(old.description, new_link.description);
     }
     let revisions = fixture.rows();
@@ -1140,13 +1143,23 @@ fn reference_native_transaction_copies_exact_link_tuples_and_keeps_signoff_histo
         signoffs[0].superseded_by_revision_id.as_deref(),
         Some(successor_id.as_str())
     );
-    assert!(signoffs.iter().all(|entry| entry.workpaper_revision_id != successor_id));
+    assert!(signoffs
+        .iter()
+        .all(|entry| entry.workpaper_revision_id != successor_id));
 }
 
 #[test]
 fn reference_native_transaction_refuses_stale_base_without_mutation() {
     let (fixture, base, _signoff_id, opened_links) = test_only_signed_two_link_base();
-    let fields = ["Obj", "Procedure", "Population", "Sample", "", "", "New conclusion"];
+    let fields = [
+        "Obj",
+        "Procedure",
+        "Population",
+        "Sample",
+        "",
+        "",
+        "New conclusion",
+    ];
     let first = test_only_checked_successor(
         &fixture.path,
         &base.workpaper_revision_id,
@@ -1189,8 +1202,7 @@ fn reference_native_transaction_refuses_evidence_only_race_without_mutation() {
     assert_eq!(result, Err("STALE_NATIVE_EVIDENCE".to_string()));
     assert_eq!(fixture.rows().len(), 1);
     assert_eq!(
-        list_workpaper_signoffs(&fixture.path, "workpaper-native")
-            .expect("sign-off unchanged")[0]
+        list_workpaper_signoffs(&fixture.path, "workpaper-native").expect("sign-off unchanged")[0]
             .superseded_by_revision_id,
         None
     );
@@ -1210,10 +1222,14 @@ fn reference_native_transaction_rolls_back_partial_link_copy_and_supersession() 
     assert_eq!(fixture.rows().len(), 1);
     let connection = Connection::open(&fixture.path).expect("inspect actual DB after rollback");
     let revision_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM workpaper_revisions", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM workpaper_revisions", [], |row| {
+            row.get(0)
+        })
         .expect("count revisions");
     let link_count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM workpaper_evidence_links", [], |row| {
+            row.get(0)
+        })
         .expect("count link rows");
     let supersessions: i64 = connection
         .query_row(
@@ -1229,5 +1245,8 @@ fn reference_native_transaction_rolls_back_partial_link_copy_and_supersession() 
             |row| row.get(0),
         )
         .expect("count committed test-only successor audit events");
-    assert_eq!((revision_count, link_count, supersessions, fake_audits), (1, 2, 0, 0));
+    assert_eq!(
+        (revision_count, link_count, supersessions, fake_audits),
+        (1, 2, 0, 0)
+    );
 }
