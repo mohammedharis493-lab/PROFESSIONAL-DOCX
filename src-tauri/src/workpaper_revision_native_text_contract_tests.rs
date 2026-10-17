@@ -11,8 +11,8 @@
 
 use crate::persistence::{
     create_workpaper_revision, create_workpaper_signoff, initialize_database,
-    list_workpaper_revisions, list_workpaper_signoffs, NewWorkpaperRevision,
-    NewWorkpaperSignoff, WorkpaperRevisionRecord,
+    list_workpaper_revisions, list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff,
+    WorkpaperRevisionRecord,
 };
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -116,7 +116,10 @@ fn actual_rust_sqlite_roundtrips_nul_unicode_blank_and_whitespace_in_all_fields(
     let created = fixture.insert(fields);
     let listed = fixture.rows();
     assert_eq!(listed.len(), 1);
-    assert_eq!(created.workpaper_revision_id, listed[0].workpaper_revision_id);
+    assert_eq!(
+        created.workpaper_revision_id,
+        listed[0].workpaper_revision_id
+    );
     assert_eq!(as_fields(&created), fields);
     assert_eq!(as_fields(&listed[0]), fields);
     assert_eq!(listed[0].revision_number, 1);
@@ -242,9 +245,7 @@ fn native_one_character_correction_preserves_old_text_and_signed_history() {
         Some(next.workpaper_revision_id.as_str())
     );
     assert!(signoffs[0].evidence_link_ids.is_empty());
-    assert!(
-        signoffs
-            .iter()
-            .all(|signoff| signoff.workpaper_revision_id != next.workpaper_revision_id)
-    );
+    assert!(signoffs
+        .iter()
+        .all(|signoff| signoff.workpaper_revision_id != next.workpaper_revision_id));
 }

@@ -41,14 +41,14 @@ mod normal_data_windows_dacl_probe;
 #[allow(dead_code)]
 mod normal_data_windows_owner_probe;
 mod persistence;
-#[cfg(test)]
-mod workpaper_revision_native_text_contract_tests;
 mod preview;
 mod reconciliation;
 mod search;
 mod spreadsheet;
 mod trial_balance;
 mod word;
+#[cfg(test)]
+mod workpaper_revision_native_text_contract_tests;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
