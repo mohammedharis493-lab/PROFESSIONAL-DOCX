@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "test:normal-data": "node --experimental-strip-types --test tests/normal-data-comparison-rules.test.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:workpaper-editor": "node --experimental-strip-types --experimental-sqlite --test tests/workpaper-revision-edit-draft.test.mjs tests/workpaper-revision-draft-panel.test.mjs tests/workpaper-revision-read-snapshot.test.mjs tests/workpaper-revision-successor-contract.test.mjs tests/workpaper-revision-conflict-inspection.test.mjs tests/workpaper-revision-isolation-boundary.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

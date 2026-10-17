@@ -47,6 +47,10 @@ mod search;
 mod spreadsheet;
 mod trial_balance;
 mod word;
+#[allow(dead_code)]
+mod workpaper_revision_authorization_contract;
+#[cfg(test)]
+mod workpaper_revision_native_text_contract_tests;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
