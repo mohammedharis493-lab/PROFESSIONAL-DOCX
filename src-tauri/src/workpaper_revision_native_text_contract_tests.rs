@@ -1648,7 +1648,15 @@ fn reference_native_rejects_malformed_contiguous_revision_ancestry() {
         &fixture.path,
         "broken-parent-2",
         &[],
-        ["Edited", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        [
+            "Edited",
+            "B",
+            "",
+            "\r\n",
+            "Exception",
+            "Response",
+            "Conclusion",
+        ],
         false,
     );
     assert_eq!(result, Err("INVALID_NATIVE_REVISION_ANCESTRY".to_string()));
