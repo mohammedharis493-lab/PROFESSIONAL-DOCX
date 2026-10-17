@@ -1266,7 +1266,10 @@ fn reference_native_two_independent_writers_only_one_can_commit() {
     let (fixture, base, signoff_id, opened_links) = test_only_signed_two_link_base();
     let start_together = Arc::new(Barrier::new(3));
     let mut threads = Vec::new();
-    for new_conclusion in ["First independent correction", "Second independent correction"] {
+    for new_conclusion in [
+        "First independent correction",
+        "Second independent correction",
+    ] {
         let path = fixture.path.clone();
         let expected_base = base.workpaper_revision_id.clone();
         let opened = opened_links.clone();
@@ -1295,12 +1298,19 @@ fn reference_native_two_independent_writers_only_one_can_commit() {
     let mut successful = Vec::new();
     let mut rejected = Vec::new();
     for thread in threads {
-        match thread.join().expect("native SQLite writer thread did not panic") {
+        match thread
+            .join()
+            .expect("native SQLite writer thread did not panic")
+        {
             Ok(successor_id) => successful.push(successor_id),
             Err(error) => rejected.push(error),
         }
     }
-    assert_eq!(successful.len(), 1, "only one independent writer may commit");
+    assert_eq!(
+        successful.len(),
+        1,
+        "only one independent writer may commit"
+    );
     assert_eq!(rejected, vec!["STALE_NATIVE_BASE".to_string()]);
     let saved = &successful[0];
     let revisions = fixture.rows();
@@ -1315,7 +1325,10 @@ fn reference_native_two_independent_writers_only_one_can_commit() {
         revisions[0].conclusion == "First independent correction"
             || revisions[0].conclusion == "Second independent correction"
     );
-    assert_eq!(revisions[1].workpaper_revision_id, base.workpaper_revision_id);
+    assert_eq!(
+        revisions[1].workpaper_revision_id,
+        base.workpaper_revision_id
+    );
     assert_eq!(
         list_workpaper_evidence_links(&fixture.path, saved)
             .expect("committed successor owns only its two fresh copied links")
