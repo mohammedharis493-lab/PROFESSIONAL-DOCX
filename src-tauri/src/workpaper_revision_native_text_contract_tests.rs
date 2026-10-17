@@ -873,8 +873,7 @@ fn test_only_validate_complete_ancestry_and_hashes(
             row.get(8).map_err(|error| error.to_string())?,
             row.get(9).map_err(|error| error.to_string())?,
         ];
-        let recorded_hash: Option<Vec<u8>> =
-            row.get(10).map_err(|error| error.to_string())?;
+        let recorded_hash: Option<Vec<u8>> = row.get(10).map_err(|error| error.to_string())?;
         if let Some(recorded) = recorded_hash {
             let mut digest = Sha256::new();
             for field in &fields {
@@ -1529,7 +1528,15 @@ fn reference_native_rejects_corrupted_signed_source_content_hash() {
         &fixture.path,
         "corrupt-native-1",
         &[],
-        ["Edited", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        [
+            "Edited",
+            "B",
+            "",
+            "\r\n",
+            "Exception",
+            "Response",
+            "Conclusion",
+        ],
         false,
     );
     assert_eq!(
@@ -1563,12 +1570,28 @@ fn reference_native_rejects_corrupted_older_signed_revision_hash() {
         },
     )
     .expect("fixture legacy sign-off");
-    let latest = fixture.insert(["Revised", "B", "", "\r\n", "Exception", "Response", "Conclusion"]);
+    let latest = fixture.insert([
+        "Revised",
+        "B",
+        "",
+        "\r\n",
+        "Exception",
+        "Response",
+        "Conclusion",
+    ]);
     let result = test_only_checked_successor(
         &fixture.path,
         &latest.workpaper_revision_id,
         &[],
-        ["Again", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        [
+            "Again",
+            "B",
+            "",
+            "\r\n",
+            "Exception",
+            "Response",
+            "Conclusion",
+        ],
         false,
     );
     assert_eq!(
@@ -1576,7 +1599,10 @@ fn reference_native_rejects_corrupted_older_signed_revision_hash() {
         Err("INVALID_NATIVE_IMMUTABLE_CONTENT_HASH".to_string())
     );
     assert_eq!(fixture.rows().len(), 2);
-    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest.workpaper_revision_id);
+    assert_eq!(
+        fixture.rows()[0].workpaper_revision_id,
+        latest.workpaper_revision_id
+    );
 }
 
 /// The real migration permits legacy null hashes. The test-only guard does
@@ -1590,7 +1616,15 @@ fn reference_native_allows_legacy_null_hash_and_hashes_successor() {
         &fixture.path,
         "legacy-null-1",
         &[],
-        ["A\u{0000}Ω!", "B", "", "\r\n", "Exception", "Response", "Conclusion"],
+        [
+            "A\u{0000}Ω!",
+            "B",
+            "",
+            "\r\n",
+            "Exception",
+            "Response",
+            "Conclusion",
+        ],
         false,
     )
     .expect("nullable historical hash compatibility should allow append");
@@ -1619,5 +1653,8 @@ fn reference_native_rejects_malformed_contiguous_revision_ancestry() {
     );
     assert_eq!(result, Err("INVALID_NATIVE_REVISION_ANCESTRY".to_string()));
     assert_eq!(fixture.rows().len(), 2);
-    assert_eq!(fixture.rows()[1].workpaper_revision_id, first.workpaper_revision_id);
+    assert_eq!(
+        fixture.rows()[1].workpaper_revision_id,
+        first.workpaper_revision_id
+    );
 }
