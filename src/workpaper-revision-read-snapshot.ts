@@ -57,6 +57,8 @@ export type StoredWorkpaperSignoffForDraft = Readonly<{
 }>;
 
 export type ObservedSourceEvidenceReference = Readonly<StoredWorkpaperEvidenceLinkForDraft>;
+/** Historical sign-off rows on this observed base only, NOT inherited approval. */
+export type ObservedBaseSignoffReference = Readonly<StoredWorkpaperSignoffForDraft>;
 
 export type WorkpaperRevisionReadSnapshot = Readonly<{
   scope: "client-read-snapshot-only";
@@ -67,6 +69,12 @@ export type WorkpaperRevisionReadSnapshot = Readonly<{
    * IDs can become stale immediately; native must recheck under write lock.
    */
   observedBaseActiveSignoffIds: readonly string[];
+  /** Frozen observations of ALL sign-offs on this exact base, including
+   * superseded entries and their observed immutable signed-evidence IDs.
+   * Neither these caller-visible identity labels nor this read prove that
+   * any human signer, evidence source or review is authentic or current.
+   */
+  observedBaseSignoffs: readonly ObservedBaseSignoffReference[];
   /** Legacy display-only count of ALL sign-offs on the observed latest revision,
    * including those with recorded supersessions. Never use as active CAS.
    */
@@ -281,6 +289,7 @@ export function openStoredWorkpaperRevisionReadSnapshot(
 
   const signoffIds = new Set<string>();
   const observedBaseActiveSignoffIds: string[] = [];
+  const observedBaseSignoffs: ObservedBaseSignoffReference[] = [];
   let observedBaseSignoffCount = 0;
   for (const signoff of input.signoffs) {
     if (
@@ -336,6 +345,25 @@ export function openStoredWorkpaperRevisionReadSnapshot(
     }
     signoffIds.add(signoff.signoffId);
     if (onBase) {
+      // Keep an independent, deeply frozen metadata-only observation so
+      // later reads can detect contradictions of the same immutable record.
+      // Normalize snapshot ID order; never convert IDs into a write request.
+      observedBaseSignoffs.push(Object.freeze({
+        signoffId: signoff.signoffId,
+        workpaperId: signoff.workpaperId,
+        workpaperRevisionId: signoff.workpaperRevisionId,
+        revisionNumber: signoff.revisionNumber,
+        signoffType: signoff.signoffType,
+        actorId: signoff.actorId,
+        actorRole: signoff.actorRole,
+        signedAtMs: signoff.signedAtMs,
+        comment: signoff.comment,
+        evidenceLinkIds: signoff.evidenceLinkIds === undefined ? undefined :
+          Object.freeze([...signoff.evidenceLinkIds].sort()),
+        supersededAtMs: signoff.supersededAtMs,
+        supersededReason: signoff.supersededReason,
+        supersededByRevisionId: signoff.supersededByRevisionId,
+      }));
       observedBaseSignoffCount++;
       if (!supersededAt) {
         observedBaseActiveSignoffIds.push(signoff.signoffId);
@@ -346,11 +374,13 @@ export function openStoredWorkpaperRevisionReadSnapshot(
   // Match candidate's sorted active ID set, never array ordering from
   // list_workpaper_signoffs. Clone/freeze prevents later caller mutations.
   observedBaseActiveSignoffIds.sort();
+  observedBaseSignoffs.sort((a, b) => a.signoffId.localeCompare(b.signoffId));
   return Object.freeze({
     scope: "client-read-snapshot-only",
     session,
     observedSourceEvidence: Object.freeze(evidence),
     observedBaseActiveSignoffIds: Object.freeze(observedBaseActiveSignoffIds),
+    observedBaseSignoffs: Object.freeze(observedBaseSignoffs),
     observedBaseSignoffCount,
   });
 }
