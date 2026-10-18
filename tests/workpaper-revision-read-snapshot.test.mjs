@@ -256,7 +256,7 @@ test("snapshot observations never produce a persistence command or approval clai
   const read = openStoredWorkpaperRevisionReadSnapshot(input());
   assert.deepEqual(Object.keys(read).sort(), [
     "observedBaseActiveSignoffIds", "observedBaseSignoffCount",
-    "observedSourceEvidence", "scope", "session",
+    "observedBaseSignoffs", "observedSourceEvidence", "scope", "session",
   ]);
   assert.equal("save" in read, false);
   assert.equal("grant" in read, false);
