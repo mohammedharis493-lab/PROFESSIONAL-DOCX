@@ -13,12 +13,20 @@ use uuid::Uuid;
 /// Candidate authorization must be rechecked under the final SQLite writer
 /// lock. No caller-provided role, claimed actor or frontend preflight suffices.
 pub(crate) trait CandidateTransactionAuthority {
-    fn check_under_write_lock(&self, tx: &Transaction<'_>, workpaper_id: &str) -> Result<(), String>;
+    fn check_under_write_lock(
+        &self,
+        tx: &Transaction<'_>,
+        workpaper_id: &str,
+    ) -> Result<(), String>;
 }
 
 pub(crate) struct DenyAllCandidateAuthority;
 impl CandidateTransactionAuthority for DenyAllCandidateAuthority {
-    fn check_under_write_lock(&self, _tx: &Transaction<'_>, _workpaper_id: &str) -> Result<(), String> {
+    fn check_under_write_lock(
+        &self,
+        _tx: &Transaction<'_>,
+        _workpaper_id: &str,
+    ) -> Result<(), String> {
         Err("CANDIDATE_NATIVE_AUTHORITY_UNAVAILABLE".to_string())
     }
 }
@@ -27,7 +35,11 @@ impl CandidateTransactionAuthority for DenyAllCandidateAuthority {
 /// It is NOT a trusted native session, permission or grant.
 pub(crate) struct FixtureOnlyCandidateAuthority;
 impl CandidateTransactionAuthority for FixtureOnlyCandidateAuthority {
-    fn check_under_write_lock(&self, _tx: &Transaction<'_>, _workpaper_id: &str) -> Result<(), String> {
+    fn check_under_write_lock(
+        &self,
+        _tx: &Transaction<'_>,
+        _workpaper_id: &str,
+    ) -> Result<(), String> {
         Ok(())
     }
 }
@@ -65,7 +77,9 @@ fn candidate_validate_complete_ancestry_and_hashes(
              ORDER BY revision_number ASC",
         )
         .map_err(|error| error.to_string())?;
-    let mut rows = statement.query([workpaper_id]).map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query([workpaper_id])
+        .map_err(|error| error.to_string())?;
     let mut expected_number = 1_i64;
     let mut expected_parent: Option<String> = None;
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
