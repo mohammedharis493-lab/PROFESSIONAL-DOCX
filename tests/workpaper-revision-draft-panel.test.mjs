@@ -9,6 +9,7 @@ import {
   restoreWorkpaperRevisionSessionField,
   openWorkpaperRevisionEditorSession,
 } from "../src/workpaper-revision-edit-draft.ts";
+import { openStoredWorkpaperRevisionReadSnapshot } from "../src/workpaper-revision-read-snapshot.ts";
 
 function base() {
   return {
@@ -274,4 +275,115 @@ test("signed draft exposes local restore but no review unlock, Save or sign-off 
   assert.match(html, /does not inherit that sign-off/);
   assert.match(html, /aria-label="Restore original Objective text"/);
   assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
+});
+
+function observedRead(revisionId = "revision-7", {
+  content = base().content,
+  evidence = [{
+    evidenceLinkId: "link-a", workpaperRevisionId: revisionId,
+    documentId: "doc-a", contentVersionId: "content-v1",
+    controlledEvidenceVersionId: null, relationshipType: "SUPPORTING",
+    description: null,
+  }],
+  signoffs = [{
+    signoffId: "sign-a", workpaperId: "synthetic-workpaper",
+    workpaperRevisionId: revisionId, supersededAtMs: null,
+    supersededReason: null, supersededByRevisionId: null,
+  }],
+} = {}) {
+  return openStoredWorkpaperRevisionReadSnapshot({
+    workpaperId: "synthetic-workpaper",
+    revisions: [{
+      workpaperId: "synthetic-workpaper", workpaperRevisionId: revisionId,
+      revisionNumber: revisionId === "revision-7" ? 7 : 8,
+      ...content,
+    }],
+    evidenceLinks: evidence,
+    signoffs,
+  });
+}
+
+test("detached preview reports exact source metadata and late active signoff without Save", () => {
+  const opening = observedRead();
+  const later = observedRead("revision-7", {
+    evidence: [{
+      ...opening.observedSourceEvidence[0],
+      relationshipType: "CORROBORATING",
+    }],
+    signoffs: [
+      { signoffId: "sign-a", workpaperId: "synthetic-workpaper",
+        workpaperRevisionId: "revision-7", supersededAtMs: null,
+        supersededReason: null, supersededByRevisionId: null },
+      { signoffId: "sign-later", workpaperId: "synthetic-workpaper",
+        workpaperRevisionId: "revision-7", supersededAtMs: null,
+        supersededReason: null, supersededByRevisionId: null },
+    ],
+  });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Keep unsaved wording",
+  );
+  const html = render(session, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+  });
+  assert.match(html, /Observed evidence and sign-off comparison/);
+  assert.match(html, /same revision is observed/);
+  assert.match(html, /1 evidence-link observation change\(s\)/);
+  assert.match(html, /1 active sign-off ID change\(s\)/);
+  assert.match(html, /Source link link-a/);
+  assert.match(html, /relationship or version metadata differs/);
+  assert.match(html, /Sign-off sign-later/);
+  assert.match(html, /Keep unsaved wording/);
+  assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
+  assert.equal(opening.observedSourceEvidence[0].relationshipType, "SUPPORTING");
+});
+
+test("successor read preview warns of different revision without inheriting sign-offs", () => {
+  const opening = observedRead();
+  const later = observedRead("revision-8", {
+    content: { ...base().content, population: "Remotely revised population" },
+    evidence: [{
+      evidenceLinkId: "link-b", workpaperRevisionId: "revision-8",
+      documentId: "doc-a", contentVersionId: "content-v1",
+      controlledEvidenceVersionId: null, relationshipType: "SUPPORTING",
+      description: null,
+    }],
+    signoffs: [],
+  });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Preserve local unsaved correction",
+  );
+  const html = render(session, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+  });
+  assert.match(html, /role="alert"/);
+  assert.match(html, /different revision is observed/i);
+  assert.match(html, /not inherited approvals/i);
+  assert.match(html, /link-b/);
+  assert.match(html, /sign-a/);
+  assert.match(html, /Preserve local unsaved correction/);
+  assert.match(html, /revision-8/);
+  assert.doesNotMatch(html, /<form\b|type="submit"|>Save</);
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
+});
+
+test("missing or mutually contradictory observation pairs fail closed", () => {
+  const opening = observedRead();
+  const later = observedRead("revision-8");
+  assert.throws(() => render(opening.session, {
+    openingReadSnapshot: opening,
+  }), /needs both complete read observations/);
+  assert.throws(() => render(opening.session, {
+    observedReadSnapshot: later,
+  }), /needs both complete read observations/);
+  assert.throws(() => render(opening.session, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+    observedLatestRevisionId: "revision-9",
+  }), /Conflicting latest revision observations/);
+  const other = openWorkpaperRevisionEditorSession({
+    ...base(), workpaperRevisionId: "foreign-base",
+  });
+  assert.throws(() => render(other, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+  }), /immutable draft base/);
 });
