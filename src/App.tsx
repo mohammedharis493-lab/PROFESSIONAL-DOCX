@@ -13211,6 +13211,22 @@ export default function App() {
                     </div>
                     <div className="workspace-grid workspace-grid-two">
                       <form className="workspace-card workspace-form" onSubmit={submitWorkpaperRevision}>
+                        <p className="evidence-integrity-note" role="note">
+                          Legacy local-draft entry only. This three-field form records Objective,
+                          Procedure performed, and Conclusion, but writes Population, Sample,
+                          Exceptions, and Management explanation as empty. The caller is not
+                          authenticated as a workpaper editor.
+                        </p>
+                        {workpaperRevisions.length > 0 ? (
+                          <p className="evidence-integrity-note evidence-integrity-strong" role="alert">
+                            Legacy revision warning: creating another revision here can omit existing
+                            Population, Sample, Exceptions, and Management explanation values in the
+                            new successor. Earlier revisions remain immutable, but exact evidence
+                            links are not carried forward, previous sign-offs become historical,
+                            and this form does not detect a stale editor. Do not use this form as a
+                            lossless correction or independently authorized Save.
+                          </p>
+                        ) : null}
                         <label>
                           <span>Objective</span>
                           <textarea
@@ -13645,9 +13661,12 @@ export default function App() {
                                 review notes on that revision to be cleared.
                               </p>
                             ) : null}
-                            <p className="signoff-authority-note">
-                              Actor and role are recorded for professional history. Authentication
-                              and role-authority enforcement are not claimed by this phase.
+                            <p className="signoff-authority-note" role="alert">
+                              Legacy unverified sign-off record: Actor identifier and Actor role
+                              are entered by the caller, not established by an authenticated native
+                              person/session. PREPARED, REVIEWED, and FINAL_APPROVAL labels here
+                              must not be treated as independently verified professional approval.
+                              Existing sign-off and exact evidence snapshots remain historical.
                             </p>
                             <button
                               className="primary-button"
