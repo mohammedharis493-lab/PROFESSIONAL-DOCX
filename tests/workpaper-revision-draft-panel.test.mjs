@@ -380,6 +380,13 @@ test("missing or mutually contradictory observation pairs fail closed", () => {
     openingReadSnapshot: opening, observedReadSnapshot: later,
     observedLatestRevisionId: "revision-9",
   }), /Conflicting latest revision observations/);
+  assert.throws(() => render(opening.session, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+    observedLatestRevision: {
+      ...base(), workpaperRevisionId: "revision-8",
+      content: { ...base().content, conclusion: "Contradictory cached text" },
+    },
+  }), /Conflicting canonical text observations/);
   const other = openWorkpaperRevisionEditorSession({
     ...base(), workpaperRevisionId: "foreign-base",
   });
