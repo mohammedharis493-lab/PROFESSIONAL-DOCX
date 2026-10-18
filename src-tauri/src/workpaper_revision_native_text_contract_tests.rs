@@ -16,8 +16,8 @@ use crate::persistence::{
     WorkpaperRevisionRecord,
 };
 use crate::workpaper_revision_successor_candidate::{
-    candidate_successor_transaction, CandidateObservedEvidenceLink, DenyAllCandidateAuthority,
-    FixtureOnlyCandidateAuthority,
+    candidate_successor_transaction, CandidateObservedEvidenceLink, CandidateObservedSnapshot,
+    DenyAllCandidateAuthority, FixtureOnlyCandidateAuthority,
 };
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -885,8 +885,10 @@ fn test_only_checked_successor(
         path,
         "workpaper-native",
         expected_base,
-        &observed_links,
-        &observed_signoffs,
+        CandidateObservedSnapshot {
+            evidence: &observed_links,
+            active_signoff_ids: &observed_signoffs,
+        },
         fields,
         fail_after_first_copied_link,
         &FixtureOnlyCandidateAuthority,
@@ -1603,8 +1605,10 @@ fn candidate_transaction_default_deny_preserves_real_native_history() {
         &fixture.path,
         "workpaper-native",
         &base.workpaper_revision_id,
-        &[],
-        &[],
+        CandidateObservedSnapshot {
+            evidence: &[],
+            active_signoff_ids: &[],
+        },
         as_fields(&base),
         false,
         &DenyAllCandidateAuthority,
@@ -1641,8 +1645,10 @@ fn candidate_transaction_cannot_cross_workpaper_scope() {
         &fixture.path,
         "other-workpaper",
         &base.workpaper_revision_id,
-        &[],
-        &[],
+        CandidateObservedSnapshot {
+            evidence: &[],
+            active_signoff_ids: &[],
+        },
         as_fields(&base),
         false,
         &FixtureOnlyCandidateAuthority,
@@ -1672,8 +1678,10 @@ fn candidate_rejects_same_evidence_ids_with_changed_tuple_without_writes() {
         &fixture.path,
         "workpaper-native",
         &base.workpaper_revision_id,
-        &stale,
-        &signoffs,
+        CandidateObservedSnapshot {
+            evidence: &stale,
+            active_signoff_ids: &signoffs,
+        },
         as_fields(&base),
         false,
         &FixtureOnlyCandidateAuthority,
@@ -1733,8 +1741,10 @@ fn candidate_rejects_signoff_added_after_opening_without_supersession() {
         &fixture.path,
         "workpaper-native",
         &base.workpaper_revision_id,
-        &opening_links,
-        &opening_signoffs,
+        CandidateObservedSnapshot {
+            evidence: &opening_links,
+            active_signoff_ids: &opening_signoffs,
+        },
         ["O", "P", "Population", "Sample", "E", "M", "C."],
         false,
         &FixtureOnlyCandidateAuthority,
