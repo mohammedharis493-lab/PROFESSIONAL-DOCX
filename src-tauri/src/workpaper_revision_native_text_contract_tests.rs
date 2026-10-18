@@ -2616,3 +2616,221 @@ fn candidate_rejects_orphan_signoff_creation_audit_with_local_revision_target() 
         &[],
     );
 }
+// Adjacent legacy workflow/review-note COMMAND characterization only.
+// Caller-entered "actor" fields here are synthetic labels, not proof of
+// authenticated persons or authorization to review, clear or approve.
+fn fixture_adjacent_write_counts(path: &std::path::Path) -> (i64, i64, i64, i64) {
+    let db = Connection::open(path).expect("open isolated native fixture");
+    db.query_row(
+        "SELECT
+           (SELECT COUNT(*) FROM workpaper_workflow_events),
+           (SELECT COUNT(*) FROM review_notes),
+           (SELECT COUNT(*) FROM review_note_events),
+           (SELECT COUNT(*) FROM audit_events)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .expect("count only fixture rows")
+}
+
+#[test]
+fn legacy_native_workflow_transition_records_unverified_caller_actor_label() {
+    let fixture = NativeRevisionFixture::new();
+    let base = fixture.insert(["Objective", "Procedure", "", "", "", "", "Conclusion"]);
+    let before = fixture_adjacent_write_counts(&fixture.path);
+    let transition = crate::persistence::transition_workpaper_state(
+        &fixture.path,
+        "workpaper-native",
+        "REVIEWED",
+        Some("unverified-workflow-caller"),
+        Some("Not authenticated professional approval"),
+    )
+    .expect("current legacy workflow accepts caller-provided label");
+    assert_eq!(transition.from_state, "IN_PROGRESS");
+    assert_eq!(transition.to_state, "REVIEWED");
+    assert_eq!(transition.actor_id.as_deref(), Some("unverified-workflow-caller"));
+    assert_eq!(
+        transition.workpaper_revision_id.as_deref(),
+        Some(base.workpaper_revision_id.as_str())
+    );
+    let db = Connection::open(&fixture.path).unwrap();
+    let persisted: String = db
+        .query_row(
+            "SELECT workflow_state FROM workpapers WHERE workpaper_id='workpaper-native'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(persisted, "REVIEWED");
+    let after = fixture_adjacent_write_counts(&fixture.path);
+    assert_eq!(after, (before.0 + 1, before.1, before.2, before.3 + 1));
+    assert_eq!(fixture.rows().len(), 1);
+}
+
+#[test]
+fn legacy_native_review_note_events_accept_caller_claimed_attribution_without_grants() {
+    let fixture = NativeRevisionFixture::new();
+    let base = fixture.insert(["Objective", "Procedure", "", "", "", "", "Conclusion"]);
+    let note = crate::persistence::create_review_note(
+        &fixture.path,
+        crate::persistence::NewReviewNote {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &base.workpaper_revision_id,
+            evidence_link_id: None,
+            title: "Unverified review point",
+            body: "Fixture-only source claim",
+            owner_id: Some("caller-selected-owner"),
+            due_at_ms: None,
+            location_kind: None,
+            location_value: None,
+            raised_by: Some("caller-selected-raiser"),
+        },
+    )
+    .expect("current legacy note creation permits synthetic labels");
+    assert_eq!(note.raised_by.as_deref(), Some("caller-selected-raiser"));
+    assert_eq!(note.owner_id.as_deref(), Some("caller-selected-owner"));
+    assert_eq!(note.current_state, "OPEN");
+
+    let response = crate::persistence::respond_to_review_note(
+        &fixture.path,
+        crate::persistence::ReviewNoteAction {
+            review_note_id: &note.review_note_id,
+            actor_id: Some("caller-selected-responder"),
+            response_text: Some("Synthetic response"),
+            comment: None,
+        },
+    )
+    .expect("legacy response records caller-supplied actor");
+    assert_eq!(response.actor_id.as_deref(), Some("caller-selected-responder"));
+
+    let clearance = crate::persistence::clear_review_note(
+        &fixture.path,
+        crate::persistence::ReviewNoteAction {
+            review_note_id: &note.review_note_id,
+            actor_id: Some("caller-selected-clearer"),
+            response_text: None,
+            comment: Some("Not verified clearance"),
+        },
+    )
+    .expect("legacy clear records caller-selected actor without native issuer");
+    assert_eq!(clearance.event_type, "CLEARED");
+    assert_eq!(clearance.actor_id.as_deref(), Some("caller-selected-clearer"));
+    let after_clear = crate::persistence::list_review_notes(&fixture.path, "workpaper-native")
+        .expect("read native note");
+    assert_eq!(after_clear.len(), 1);
+    assert_eq!(after_clear[0].current_state, "CLEARED");
+    let events =
+        crate::persistence::list_review_note_events(&fixture.path, &note.review_note_id)
+            .expect("read original synthetic event history");
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].actor_id.as_deref(), Some("caller-selected-raiser"));
+    assert_eq!(events[1].actor_id.as_deref(), Some("caller-selected-responder"));
+    assert_eq!(events[2].actor_id.as_deref(), Some("caller-selected-clearer"));
+
+    let reopened = crate::persistence::reopen_review_note(
+        &fixture.path,
+        crate::persistence::ReviewNoteAction {
+            review_note_id: &note.review_note_id,
+            actor_id: Some("caller-selected-reopener"),
+            response_text: None,
+            comment: None,
+        },
+    )
+    .expect("legacy reopen preserves caller-provided actor label");
+    assert_eq!(reopened.event_type, "REOPENED");
+    assert_eq!(reopened.actor_id.as_deref(), Some("caller-selected-reopener"));
+    assert_eq!(
+        crate::persistence::list_review_notes(&fixture.path, "workpaper-native")
+            .unwrap()[0]
+            .current_state,
+        "OPEN"
+    );
+    assert_eq!(fixture.rows().len(), 1);
+}
+
+#[test]
+fn legacy_review_note_creation_denies_wrong_workpaper_revision_with_no_writes() {
+    let fixture = NativeRevisionFixture::new();
+    let base = fixture.insert(["Objective", "Procedure", "", "", "", "", "Conclusion"]);
+    let foreign = fixture_create_other_workpaper_revision(&fixture);
+    let before = fixture_adjacent_write_counts(&fixture.path);
+    let failed = crate::persistence::create_review_note(
+        &fixture.path,
+        crate::persistence::NewReviewNote {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &foreign.workpaper_revision_id,
+            evidence_link_id: None,
+            title: "Wrong scope",
+            body: "Must not persist",
+            owner_id: None,
+            due_at_ms: None,
+            location_kind: None,
+            location_value: None,
+            raised_by: Some("unverified-injector"),
+        },
+    );
+    assert!(failed.unwrap_err().to_string().contains(
+        "review note revision must belong to the selected workpaper"
+    ));
+    assert_eq!(fixture_adjacent_write_counts(&fixture.path), before);
+    assert!(crate::persistence::list_review_notes(&fixture.path, "workpaper-native")
+        .unwrap()
+        .is_empty());
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, base.workpaper_revision_id);
+}
+
+#[test]
+fn legacy_review_note_invalid_transition_and_empty_response_do_not_write() {
+    let fixture = NativeRevisionFixture::new();
+    let base = fixture.insert(["Objective", "Procedure", "", "", "", "", "Conclusion"]);
+    let note = crate::persistence::create_review_note(
+        &fixture.path,
+        crate::persistence::NewReviewNote {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &base.workpaper_revision_id,
+            evidence_link_id: None,
+            title: "Native state check",
+            body: "Unverified fixture",
+            owner_id: None,
+            due_at_ms: None,
+            location_kind: None,
+            location_value: None,
+            raised_by: None,
+        },
+    )
+    .unwrap();
+    let before = fixture_adjacent_write_counts(&fixture.path);
+    let premature_reopen = crate::persistence::reopen_review_note(
+        &fixture.path,
+        crate::persistence::ReviewNoteAction {
+            review_note_id: &note.review_note_id,
+            actor_id: Some("caller-unverified"),
+            response_text: None,
+            comment: None,
+        },
+    );
+    assert!(premature_reopen.is_err());
+    let empty_response = crate::persistence::respond_to_review_note(
+        &fixture.path,
+        crate::persistence::ReviewNoteAction {
+            review_note_id: &note.review_note_id,
+            actor_id: Some("caller-unverified"),
+            response_text: Some("   "),
+            comment: None,
+        },
+    );
+    assert!(empty_response.is_err());
+    assert_eq!(fixture_adjacent_write_counts(&fixture.path), before);
+    assert_eq!(
+        crate::persistence::list_review_note_events(&fixture.path, &note.review_note_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        crate::persistence::list_review_notes(&fixture.path, "workpaper-native")
+            .unwrap()[0]
+            .current_state,
+        "OPEN"
+    );
+}
