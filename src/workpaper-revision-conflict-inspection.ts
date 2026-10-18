@@ -16,7 +16,6 @@ import type {
   WorkpaperRevisionEditorSession,
 } from "./workpaper-revision-edit-draft.ts";
 import type {
-  ObservedSourceEvidenceReference,
   WorkpaperRevisionReadSnapshot,
 } from "./workpaper-revision-read-snapshot.ts";
 
