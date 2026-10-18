@@ -62,6 +62,14 @@ export type WorkpaperRevisionReadSnapshot = Readonly<{
   scope: "client-read-snapshot-only";
   session: WorkpaperRevisionEditorSession;
   observedSourceEvidence: readonly ObservedSourceEvidenceReference[];
+  /** The precise IDs of ACTIVE sign-offs on the observed latest revision.
+   * Pure, untrusted opening observation, not trusted authority or a Save token.
+   * IDs can become stale immediately; native must recheck under write lock.
+   */
+  observedBaseActiveSignoffIds: readonly string[];
+  /** Legacy display-only count of ALL sign-offs on the observed latest revision,
+   * including those with recorded supersessions. Never use as active CAS.
+   */
   observedBaseSignoffCount: number;
 }>;
 
@@ -272,6 +280,7 @@ export function openStoredWorkpaperRevisionReadSnapshot(
   });
 
   const signoffIds = new Set<string>();
+  const observedBaseActiveSignoffIds: string[] = [];
   let observedBaseSignoffCount = 0;
   for (const signoff of input.signoffs) {
     if (
@@ -284,6 +293,24 @@ export function openStoredWorkpaperRevisionReadSnapshot(
       throw new TypeError("Invalid, duplicate or foreign workpaper sign-off observation");
     }
     checkSignoffMetadata(signoff);
+    // The current native DTO always returns these three nullable fields.
+    // An omitted one does NOT mean an active sign-off. For any sign-off
+    // recorded on the base, fail closed instead of inventing an active set.
+    const onBase = signoff.workpaperRevisionId === latest.workpaperRevisionId;
+    if (onBase && (
+      !Object.prototype.hasOwnProperty.call(signoff, "supersededAtMs") ||
+      !Object.prototype.hasOwnProperty.call(signoff, "supersededReason") ||
+      !Object.prototype.hasOwnProperty.call(signoff, "supersededByRevisionId")
+    )) {
+      throw new TypeError("Incomplete base sign-off supersession metadata");
+    }
+    const supersededAt = signoff.supersededAtMs != null;
+    const supersededReason = signoff.supersededReason != null;
+    const supersededBy = signoff.supersededByRevisionId != null;
+    if ((supersededAt || supersededReason || supersededBy) &&
+        !(supersededAt && supersededReason && supersededBy)) {
+      throw new TypeError("Inconsistent sign-off supersession metadata");
+    }
     const signedRevision = input.revisions.find(
       revision => revision.workpaperRevisionId === signoff.workpaperRevisionId,
     );
@@ -305,15 +332,22 @@ export function openStoredWorkpaperRevisionReadSnapshot(
       }
     }
     signoffIds.add(signoff.signoffId);
-    if (signoff.workpaperRevisionId === latest.workpaperRevisionId) {
+    if (onBase) {
       observedBaseSignoffCount++;
+      if (!supersededAt) {
+        observedBaseActiveSignoffIds.push(signoff.signoffId);
+      }
     }
   }
 
+  // Match candidate's sorted active ID set, never array ordering from
+  // list_workpaper_signoffs. Clone/freeze prevents later caller mutations.
+  observedBaseActiveSignoffIds.sort();
   return Object.freeze({
     scope: "client-read-snapshot-only",
     session,
     observedSourceEvidence: Object.freeze(evidence),
+    observedBaseActiveSignoffIds: Object.freeze(observedBaseActiveSignoffIds),
     observedBaseSignoffCount,
   });
 }
