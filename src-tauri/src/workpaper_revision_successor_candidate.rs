@@ -123,6 +123,37 @@ fn candidate_validate_complete_ancestry_and_hashes(
     Ok(())
 }
 
+/// A sign-off has two separately stored workpaper references: its claimed
+/// workpaper_id and the workpaper_id of the immutable revision it names.
+/// Current legacy SQLite foreign keys check each separately, but do NOT
+/// enforce equality. Inspect BOTH sides of the relationship, so a row with
+/// a foreign claimed workpaper cannot hide on this workpaper's ancestry.
+///
+/// This is a test-only consistency check, not identity, grants or approval.
+fn candidate_validate_signoff_revision_scope(
+    tx: &Transaction<'_>,
+    workpaper_id: &str,
+) -> Result<(), String> {
+    let invalid: i64 = tx
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM workpaper_signoffs s
+               LEFT JOIN workpaper_revisions r
+                 ON r.workpaper_revision_id = s.workpaper_revision_id
+               WHERE (s.workpaper_id = ?1 OR r.workpaper_id = ?1)
+                 AND (r.workpaper_revision_id IS NULL
+                      OR r.workpaper_id <> s.workpaper_id)
+             )",
+            [workpaper_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if invalid != 0 {
+        return Err("INVALID_NATIVE_SIGNOFF_REVISION_SCOPE".to_string());
+    }
+    Ok(())
+}
+
 /// Check every recorded sign-off (including superseded historical rows)
 /// against the exact evidence links of its own immutable revision. The
 /// existing candidate checked only ACTIVE signatures on the latest base;
@@ -262,6 +293,9 @@ pub(crate) fn candidate_successor_transaction(
         return Err("STALE_NATIVE_BASE".to_string());
     }
     candidate_validate_complete_ancestry_and_hashes(&tx, workpaper_id)?;
+    // Never infer the sign-off's scope solely from its claimed workpaper ID.
+    // Catch mis-scoped and orphaned rows before inspecting signed snapshots.
+    candidate_validate_signoff_revision_scope(&tx, workpaper_id)?;
     // Reject inconsistent historical signed evidence under the same writer
     // lock, before any successor, link, supersession or audit insert.
     candidate_validate_historical_signed_evidence(&tx, workpaper_id)?;
