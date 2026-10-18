@@ -125,10 +125,10 @@ test("tripwire permits unrelated native code and the single cfg(test) declaratio
 test("native successor candidate never compiles into shipping binaries", () => {
   const candidate = "workpaper_revision_successor_candidate";
   const lib = readFileSync(join(repoRoot, nativeDirectory, "lib.rs"), "utf8");
-  const declaration = "#[cfg(test)]\\nmod " + candidate + ";";
+  const declaration = "#[cfg(test)]\nmod " + candidate + ";";
   assert.equal(lib.split(declaration).length - 1, 1, "UNREVIEWED_CANDIDATE_REGISTRATION");
   for (const file of rustSources(repoRoot)) {
-    const path = relative(repoRoot, file).replaceAll("\\\\", "/");
+    const path = relative(repoRoot, file).replaceAll("\\", "/");
     if (path === "src-tauri/src/workpaper_revision_successor_candidate.rs" ||
         path === "src-tauri/src/workpaper_revision_native_text_contract_tests.rs") continue;
     const source = readFileSync(file, "utf8");
@@ -139,5 +139,5 @@ test("native successor candidate never compiles into shipping binaries", () => {
   }
   const moduleText = readFileSync(join(repoRoot, nativeDirectory, candidate + ".rs"), "utf8");
   assert.match(moduleText, /CANDIDATE_NATIVE_AUTHORITY_UNAVAILABLE/);
-  assert.match(moduleText, /authority\\.check_under_write_lock\\(&tx, workpaper_id\\)/);
+  assert.match(moduleText, /authority\.check_under_write_lock\(&tx, workpaper_id\)/);
 });
