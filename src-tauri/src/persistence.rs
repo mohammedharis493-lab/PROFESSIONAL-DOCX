@@ -14275,10 +14275,32 @@ pub fn list_workpapers(
     Ok(result)
 }
 
+// Backward-compatible callable legacy API. This method's permissive successor
+// behavior is unchanged pending human triage of installed workflows (issue #138).
 pub fn create_workpaper_revision(
     database_path: &Path,
     workpaper_id: &str,
     content: NewWorkpaperRevision<'_>,
+) -> Result<WorkpaperRevisionRecord, PersistenceError> {
+    create_workpaper_revision_legacy_scoped(database_path, workpaper_id, content, false)
+}
+
+// A narrower capability for the legacy THREE-FIELD initial-entry UI only.
+// This is neither an authorized seven-field corrective Save nor an identity or
+// evidence-custody boundary. Existing legacy API remains separately callable.
+pub fn create_initial_workpaper_revision(
+    database_path: &Path,
+    workpaper_id: &str,
+    content: NewWorkpaperRevision<'_>,
+) -> Result<WorkpaperRevisionRecord, PersistenceError> {
+    create_workpaper_revision_legacy_scoped(database_path, workpaper_id, content, true)
+}
+
+fn create_workpaper_revision_legacy_scoped(
+    database_path: &Path,
+    workpaper_id: &str,
+    content: NewWorkpaperRevision<'_>,
+    initial_only: bool,
 ) -> Result<WorkpaperRevisionRecord, PersistenceError> {
     let mut connection = open_configured_connection(database_path)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -14309,6 +14331,14 @@ pub fn create_workpaper_revision(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
+    // Checked while BEGIN IMMEDIATE owns the writer reservation. A fresh UI
+    // list/read followed by create alone would have a time-of-check/use race.
+    if initial_only && previous.is_some() {
+        return Err(PersistenceError::Configuration(
+            "LEGACY_INITIAL_REVISION_ONLY: the three-field draft form cannot append to an existing workpaper revision"
+                .to_string(),
+        ));
+    }
     let next_revision = previous
         .as_ref()
         .map(|(_, number)| number.saturating_add(1))
