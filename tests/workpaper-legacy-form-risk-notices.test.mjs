@@ -60,7 +60,8 @@ test("legacy revision form prominently warns before existing three-field submit"
 });
 
 test("legacy warning names all four vulnerable hidden canonical fields", () => {
-  const form = legacyForm("submitWorkpaperRevision");
+  // JSX line-wrapping is not a semantic difference in the visible warning.
+  const form = legacyForm("submitWorkpaperRevision").replace(/\s+/g, " ");
   for (const field of [
     "Population", "Sample", "Exceptions", "Management explanation",
   ]) {
