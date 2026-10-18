@@ -154,3 +154,41 @@ test("matrix review-tripwire rejects fictitious security approval or fake passin
       ? { ...item, execution: "IMPLEMENTED", result: "PASSED" } : item),
   }), /FALSE_CLAIM_DIRECT_NATIVE_TEST_IMPLEMENTED/);
 });
+
+
+test("native writer-lock denial probe stays test-only and unregistered", () => {
+  const moduleName = "workpaper_legacy_command_denial_candidate";
+  const declaration = "#[cfg(test)]\nmod " + moduleName + ";";
+  assert.equal(lib.split(declaration).length - 1, 1,
+    "UNREVIEWED_NATIVE_DENIAL_PROBE_PROMOTION");
+  const candidate = readFileSync(
+    "src-tauri/src/" + moduleName + ".rs", "utf8",
+  );
+  assert.match(candidate, /struct DenyAllLegacyWriter;/);
+  assert.match(candidate, /TransactionBehavior::Immediate/);
+  assert.match(candidate, /check_under_immediate_lock\(&tx, workpaper_id, intent\)/);
+  assert.match(candidate, /NATIVE_LEGACY_WRITE_AUTHORITY_NOT_IMPLEMENTED/);
+  assert.match(candidate, /#\[cfg\(test\)\]\s*mod tests/);
+  const registry = commandRegistry(lib);
+  assert.ok(!registry.has("test_only_under_lock_write_probe"),
+    "UNREVIEWED_PRODUCTION_NATIVE_DENIAL_PROBE_ROUTE");
+  assert.ok(!registry.has("workpaper_legacy_command_denial_candidate"),
+    "UNREVIEWED_PRODUCTION_NATIVE_DENIAL_MODULE_ROUTE");
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.ok(matrix.cases.every(item => item.result === "NOT_RUN"),
+    "UNEXECUTED_TAURI_SCENARIOS_MUST_NOT_BE_MARKED_GREEN");
+});
+
+test("test-only denial gate must not accept caller actor, role or claimed identity", () => {
+  const candidate = readFileSync(
+    "src-tauri/src/workpaper_legacy_command_denial_candidate.rs", "utf8",
+  );
+  const start = candidate.indexOf("trait LegacyNativeWriteAuthority");
+  const end = candidate.indexOf("/// There is no real issuer", start);
+  assert.ok(start >= 0 && end > start);
+  const signature = candidate.slice(start, end);
+  assert.doesNotMatch(signature,
+    /caller_claimed_actor|actor_id|actor_role|frontend_claimed_identity/);
+  assert.match(candidate, /let _untrusted_actor = caller_claimed_actor;/);
+  assert.match(candidate, /Err\("NATIVE_LEGACY_WRITE_AUTHORITY_NOT_IMPLEMENTED"\)/);
+});
