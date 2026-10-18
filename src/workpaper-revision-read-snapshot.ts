@@ -300,7 +300,10 @@ export function openStoredWorkpaperRevisionReadSnapshot(
     if (onBase && (
       !Object.prototype.hasOwnProperty.call(signoff, "supersededAtMs") ||
       !Object.prototype.hasOwnProperty.call(signoff, "supersededReason") ||
-      !Object.prototype.hasOwnProperty.call(signoff, "supersededByRevisionId")
+      !Object.prototype.hasOwnProperty.call(signoff, "supersededByRevisionId") ||
+      signoff.supersededAtMs === undefined ||
+      signoff.supersededReason === undefined ||
+      signoff.supersededByRevisionId === undefined
     )) {
       throw new TypeError("Incomplete base sign-off supersession metadata");
     }
