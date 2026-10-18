@@ -6,7 +6,11 @@ import {
   editWorkpaperRevisionSessionField,
   projectWorkpaperRevisionDraftContent,
 } from "../src/workpaper-revision-edit-draft.ts";
-import { inspectWorkpaperRevisionObservedText } from "../src/workpaper-revision-conflict-inspection.ts";
+import {
+  inspectWorkpaperRevisionObservedText,
+  inspectWorkpaperRevisionReadObservationChanges,
+} from "../src/workpaper-revision-conflict-inspection.ts";
+import { openStoredWorkpaperRevisionReadSnapshot } from "../src/workpaper-revision-read-snapshot.ts";
 
 function base() {
   return {
@@ -169,4 +173,189 @@ test("same revision ID with divergent content is a consistency error even withou
   assert.throws(() => inspectWorkpaperRevisionObservedText(
     session, observed({ sample: "Inconsistent source" }, "revision-4"),
   ), /Inconsistent text.*same immutable revision/);
+});
+
+function evidenceLink(overrides = {}) {
+  return {
+    evidenceLinkId: "source-a", workpaperRevisionId: "revision-4",
+    documentId: "document-a", contentVersionId: "version-a",
+    controlledEvidenceVersionId: null, relationshipType: "SUPPORTING",
+    description: "Exact observed source", ...overrides,
+  };
+}
+function observedSignoff(overrides = {}) {
+  return {
+    signoffId: "signoff-a", workpaperId: "workpaper-1",
+    workpaperRevisionId: "revision-4", supersededAtMs: null,
+    supersededReason: null, supersededByRevisionId: null,
+    ...overrides,
+  };
+}
+function readSnapshot({
+  revisionId = "revision-4", content = base().content,
+  evidence = [evidenceLink({workpaperRevisionId: revisionId})],
+  signoffs = [observedSignoff({workpaperRevisionId: revisionId})],
+} = {}) {
+  const baseline = base();
+  return openStoredWorkpaperRevisionReadSnapshot({
+    workpaperId: "workpaper-1",
+    revisions: [{
+      workpaperId: "workpaper-1",
+      workpaperRevisionId: revisionId,
+      revisionNumber: revisionId === "revision-4" ? 4 : 5,
+      ...content,
+    }],
+    evidenceLinks: evidence,
+    signoffs,
+  });
+}
+
+test("same-base reordered evidence and active sign-offs are not false conflicts", () => {
+  const links = [
+    evidenceLink({ evidenceLinkId: "z-source" }),
+    evidenceLink({ evidenceLinkId: "a-source", documentId: "document-b" }),
+  ];
+  const signoffs = [
+    observedSignoff({ signoffId: "z-sign" }),
+    observedSignoff({ signoffId: "a-sign" }),
+  ];
+  const opening = readSnapshot({ evidence: links, signoffs });
+  const later = readSnapshot({ evidence: [...links].reverse(), signoffs: [...signoffs].reverse() });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Keep my unsaved change",
+  );
+  const report = inspectWorkpaperRevisionReadObservationChanges(session, opening, later);
+  assert.equal(report.scope, "client-read-observation-diff-only");
+  assert.equal(report.comparisonScope, "same-revision");
+  assert.equal(report.differentRevisionObserved, false);
+  assert.deepEqual(report.evidenceChanges, []);
+  assert.deepEqual(report.activeSignoffChanges, []);
+  assert.equal(session.draft.content.conclusion, "Keep my unsaved change");
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-4");
+});
+
+test("same-base link metadata drift and added or removed link IDs are visible independently", () => {
+  const original = evidenceLink();
+  const opening = readSnapshot({ evidence: [original], signoffs: [] });
+  const later = readSnapshot({
+    evidence: [
+      evidenceLink({ relationshipType: "CORROBORATES", description: null }),
+      evidenceLink({ evidenceLinkId: "source-new", documentId: "document-new" }),
+    ],
+    signoffs: [],
+  });
+  const report = inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later);
+  assert.deepEqual(report.evidenceChanges, [
+    { evidenceLinkId: "source-a", change: "metadata-changed" },
+    { evidenceLinkId: "source-new", change: "added" },
+  ]);
+  const removed = inspectWorkpaperRevisionReadObservationChanges(
+    opening.session, opening, readSnapshot({ evidence: [], signoffs: [] }),
+  );
+  assert.deepEqual(removed.evidenceChanges, [{ evidenceLinkId: "source-a", change: "removed" }]);
+  assert.ok(Object.isFrozen(report));
+  assert.ok(Object.isFrozen(report.evidenceChanges));
+  assert.ok(Object.isFrozen(report.evidenceChanges[0]));
+  assert.equal(opening.observedSourceEvidence[0].relationshipType, "SUPPORTING");
+});
+
+test("same-base late sign-off and supersession become ID changes, not inherited approval", () => {
+  const opening = readSnapshot();
+  const late = readSnapshot({
+    signoffs: [observedSignoff(), observedSignoff({ signoffId: "signoff-new" })],
+  });
+  const added = inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, late);
+  assert.deepEqual(added.activeSignoffChanges, [
+    { signoffId: "signoff-new", change: "added" },
+  ]);
+  assert.deepEqual(added.evidenceChanges, []);
+  const superseded = readSnapshot({
+    signoffs: [observedSignoff({
+      supersededAtMs: 39,
+      supersededReason: "History linked to newer revision",
+      supersededByRevisionId: "revision-5",
+    })],
+  });
+  const removed = inspectWorkpaperRevisionReadObservationChanges(
+    opening.session, opening, superseded,
+  );
+  assert.deepEqual(removed.activeSignoffChanges, [
+    { signoffId: "signoff-a", change: "removed" },
+  ]);
+  assert.equal("maySave" in added, false);
+  assert.equal("approved" in added, false);
+  assert.equal("grant" in removed, false);
+});
+
+test("successor revision comparisons never claim evidence custody or sign-off carry-forward", () => {
+  const opening = readSnapshot();
+  const later = readSnapshot({
+    revisionId: "revision-5",
+    content: { ...base().content, population: "New population" },
+    evidence: [evidenceLink({
+      evidenceLinkId: "new-source-link", workpaperRevisionId: "revision-5",
+    })],
+    signoffs: [],
+  });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Unsaved local conclusion",
+  );
+  const report = inspectWorkpaperRevisionReadObservationChanges(session, opening, later);
+  assert.equal(report.comparisonScope, "across-revisions");
+  assert.equal(report.differentRevisionObserved, true);
+  assert.deepEqual(report.evidenceChanges, [
+    { evidenceLinkId: "new-source-link", change: "added" },
+    { evidenceLinkId: "source-a", change: "removed" },
+  ]);
+  assert.deepEqual(report.activeSignoffChanges, [
+    { signoffId: "signoff-a", change: "removed" },
+  ]);
+  assert.equal(statusFor(report.text, "population"), "observed-only");
+  assert.equal(statusFor(report.text, "conclusion"), "local-only");
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-4");
+  assert.equal(session.draft.content.conclusion, "Unsaved local conclusion");
+});
+
+test("tampered opening base, foreign or incomplete observation, or divergent immutable text fails closed", () => {
+  const opening = readSnapshot();
+  const later = readSnapshot();
+  const foreign = { ...later, session: {
+    ...later.session, base: { ...later.session.base, workpaperId: "foreign" },
+  } };
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, foreign),
+    /same workpaper/,
+  );
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, {
+      ...later, observedBaseActiveSignoffIds: undefined,
+    }),
+    /Incomplete later revision read observation/,
+  );
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, {
+      ...later, observedBaseActiveSignoffIds: ["signoff-a", "signoff-a"],
+    }),
+    /Invalid later active sign-off observation/,
+  );
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(
+      opening.session, { ...opening, observedSourceEvidence: [evidenceLink(), evidenceLink()] }, later,
+    ),
+    /Invalid opening evidence observation/,
+  );
+  const wrongSession = openWorkpaperRevisionEditorSession({
+    ...base(), content: { ...base().content, objective: "Different immutable base" },
+  });
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(wrongSession, opening, later),
+    /immutable draft base/,
+  );
+  const sameIdAlteredContent = readSnapshot({
+    content: { ...base().content, sample: "Unexpected divergent persisted text" },
+  });
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, sameIdAlteredContent),
+    /Inconsistent text observed for the same immutable revision/,
+  );
 });
