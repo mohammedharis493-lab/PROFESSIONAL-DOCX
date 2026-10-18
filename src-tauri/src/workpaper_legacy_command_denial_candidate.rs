@@ -102,6 +102,19 @@ mod tests {
     use crate::persistence::initialize_database;
     use uuid::Uuid;
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct FixtureWriteSurface {
+        workpapers: i64,
+        revisions: i64,
+        evidence_links: i64,
+        signoffs: i64,
+        supersessions: i64,
+        workflow_events: i64,
+        review_notes: i64,
+        review_events: i64,
+        audit_events: i64,
+    }
+
     struct Fixture {
         root: std::path::PathBuf,
         path: std::path::PathBuf,
@@ -136,7 +149,7 @@ mod tests {
             Self { root, path }
         }
 
-        fn entire_write_surface(&self) -> (i64, i64, i64, i64, i64, i64, i64, i64, i64) {
+        fn entire_write_surface(&self) -> FixtureWriteSurface {
             let db = Connection::open(&self.path).expect("read fixture");
             db.query_row(
                 "SELECT
@@ -151,17 +164,17 @@ mod tests {
                    (SELECT COUNT(*) FROM audit_events)",
                 [],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                        row.get(8)?,
-                    ))
+                    Ok(FixtureWriteSurface {
+                        workpapers: row.get(0)?,
+                        revisions: row.get(1)?,
+                        evidence_links: row.get(2)?,
+                        signoffs: row.get(3)?,
+                        supersessions: row.get(4)?,
+                        workflow_events: row.get(5)?,
+                        review_notes: row.get(6)?,
+                        review_events: row.get(7)?,
+                        audit_events: row.get(8)?,
+                    })
                 },
             )
             .expect("count all synthetic write-surface records")
