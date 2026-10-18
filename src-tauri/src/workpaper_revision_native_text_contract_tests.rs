@@ -1564,9 +1564,17 @@ fn candidate_transaction_default_deny_preserves_real_native_history() {
         false,
         &DenyAllCandidateAuthority,
     );
-    assert_eq!(result, Err("CANDIDATE_NATIVE_AUTHORITY_UNAVAILABLE".to_string()));
+    assert_eq!(
+        result,
+        Err("CANDIDATE_NATIVE_AUTHORITY_UNAVAILABLE".to_string())
+    );
     assert_eq!(fixture.rows().len(), 1);
-    assert_eq!(list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id).unwrap().len(), 2);
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id)
+            .unwrap()
+            .len(),
+        2
+    );
     let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
     assert_eq!(signoffs.len(), 1);
     assert_eq!(signoffs[0].superseded_by_revision_id, None);
@@ -1576,12 +1584,14 @@ fn candidate_transaction_default_deny_preserves_real_native_history() {
 fn candidate_transaction_cannot_cross_workpaper_scope() {
     let (fixture, base, _signoff, observed) = test_only_signed_two_link_base();
     let connection = Connection::open(&fixture.path).unwrap();
-    connection.execute(
-        "INSERT INTO workpapers
+    connection
+        .execute(
+            "INSERT INTO workpapers
         (workpaper_id, engagement_id, reference, title, workflow_state, created_at_ms)
         VALUES ('other-workpaper', 'engagement-native', 'WP-02', 'Other', 'IN_PROGRESS', 1)",
-        [],
-    ).unwrap();
+            [],
+        )
+        .unwrap();
     let result = candidate_successor_transaction(
         &fixture.path,
         "other-workpaper",
@@ -1594,7 +1604,9 @@ fn candidate_transaction_cannot_cross_workpaper_scope() {
     assert_eq!(result, Err("NO_NATIVE_BASE".to_string()));
     assert_eq!(fixture.rows().len(), 1);
     assert_eq!(
-        list_workpaper_revisions(&fixture.path, "other-workpaper").unwrap().len(),
+        list_workpaper_revisions(&fixture.path, "other-workpaper")
+            .unwrap()
+            .len(),
         0
     );
 }
