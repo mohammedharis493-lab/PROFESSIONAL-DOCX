@@ -44,6 +44,10 @@ The Normal Data permission `MODIFY_WORKPAPER_REVISION` is for **one exact immuta
 
 ## C. Legacy command containment — choose before any rollout
 
+> **Source-pinned command inventory (new companion; NO option selected):** [Callable legacy workpaper command inventory and containment runbook](WORKPAPER_LEGACY_NATIVE_COMMAND_INVENTORY_AND_CONTAINMENT_RUNBOOK_DRAFT.md) traces the registered revision/evidence/sign-off handlers through UI and SQLite at the 2026-10-18 draft head, differentiates the current UI-only `initialOnly` containment from unflagged native calls, inventories adjacent workflow/review-note operations, and proposes nonmutating deployment census, reversible rollout/rollback and direct-native acceptance checks. It is a **decision input**, not proof that any handler was disabled, caller authenticated, deployment surveyed or mitigation approved. The L1–L4 alternatives below remain undecided.
+
+
+
 These commands are currently registered. **Do not claim they are disabled**. Severity and actual exploitability depend on the chosen desktop and threat model; a local webview command is not proof of internet exposure.
 
 | Possible interim disposition | Benefit | Compatibility cost / risk | Preconditions |
