@@ -5696,8 +5696,8 @@ export default function App() {
 
     setWorkspaceBusy(true);
     try {
-      // Re-read on submit so a newly observed predecessor is not overwritten
-      // from an older first-revision screen. This is NOT an atomic native CAS.
+      // Fast-fail after a fresh observation, then enforce initialOnly
+      // independently inside the native IMMEDIATE SQLite transaction.
       const currentRevisions = await invoke<WorkpaperRevision[]>(
         "list_workpaper_revisions",
         { workpaperId: selectedWorkpaperId },
@@ -5706,6 +5706,9 @@ export default function App() {
       await invoke<WorkpaperRevision>("create_workpaper_revision", {
         workpaperId: selectedWorkpaperId,
         revision: {
+          // Protect this legacy UI even when another first-create races the read.
+          // Rust checks initialOnly inside the existing SQLite IMMEDIATE write.
+          initialOnly: true,
           revisionReason: workpaperRevisions.length
             ? "Updated from workpaper workspace"
             : "Initial workpaper documentation",
