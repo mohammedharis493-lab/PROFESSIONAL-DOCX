@@ -88,6 +88,16 @@ export default function WorkpaperRevisionDraftPanel({
   )) {
     throw new TypeError("Conflicting latest revision observations must be reconciled by the caller");
   }
+  // Two separately provided observations of the same immutable revision
+  // cannot silently disagree on text even when their revision ID agrees.
+  if (observedLatestRevision && observedReadSnapshot &&
+    WORKPAPER_REVISION_CONTENT_FIELDS.some(
+      field => observedLatestRevision.content?.[field] !==
+        observedReadSnapshot.session.base.content[field]
+    )
+  ) {
+    throw new TypeError("Conflicting canonical text observations for the same revision");
+  }
   if (
     observedLatestRevision &&
     observedLatestRevisionId != null &&
