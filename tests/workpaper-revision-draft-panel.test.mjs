@@ -430,3 +430,28 @@ test("detached panel rejects reused cross-revision evidence or active sign-off i
   assert.equal(session.draft.content.conclusion, "Preserve my unsaved local wording");
   assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
 });
+
+test("detached panel rejects contradictory signed metadata while preserving unsaved correction", () => {
+  const signed = {
+    signoffId: "sign-a", workpaperId: "synthetic-workpaper",
+    workpaperRevisionId: "revision-7", revisionNumber: 7,
+    signoffType: "PREPARED", actorId: "caller-supplied",
+    actorRole: "Unverified preparer", signedAtMs: 123,
+    comment: "Original statement", evidenceLinkIds: ["link-a"],
+    supersededAtMs: null, supersededReason: null,
+    supersededByRevisionId: null,
+  };
+  const opening = observedRead("revision-7", { signoffs: [signed] });
+  const later = observedRead("revision-7", {
+    signoffs: [{ ...signed, actorRole: "Altered role" }],
+  });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Unsaved professional correction — preserve",
+  );
+  const before = JSON.stringify(session);
+  assert.throws(() => render(session, {
+    openingReadSnapshot: opening, observedReadSnapshot: later,
+  }), /Conflicting immutable sign-off metadata or signed-evidence snapshot/);
+  assert.equal(JSON.stringify(session), before);
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
+});
