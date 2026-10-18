@@ -392,3 +392,143 @@ test("across-revision active sign-off ID reuse fails closed despite fresh eviden
   assert.equal(JSON.stringify(opening.session), before);
   assert.equal(opening.session.draft.content.conclusion, "Prior conclusion");
 });
+
+test("same-base immutable signer metadata contradictions fail closed without mutating edits", () => {
+  const signed = observedSignoff({
+    revisionNumber: 4, signoffType: "PREPARED", actorId: "caller-claimed",
+    actorRole: "unverified-preparer", signedAtMs: 17, comment: "Memo",
+    evidenceLinkIds: ["source-a"],
+  });
+  const opening = readSnapshot({ signoffs: [signed] });
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "My pending typo correction",
+  );
+  const preserved = JSON.stringify(session);
+  for (const overrides of [
+    { signoffType: "REVIEWED" }, { actorId: "different" },
+    { actorRole: "unverified-reviewer" }, { signedAtMs: 18 },
+    { comment: "Altered memo" }, { evidenceLinkIds: undefined },
+  ]) {
+    const later = readSnapshot({ signoffs: [observedSignoff({ ...signed, ...overrides })] });
+    assert.throws(
+      () => inspectWorkpaperRevisionReadObservationChanges(session, opening, later),
+      /Conflicting immutable sign-off metadata or signed-evidence snapshot/,
+      JSON.stringify(overrides),
+    );
+  }
+  assert.equal(JSON.stringify(session), preserved);
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-4");
+});
+
+test("a changed immutable signed-evidence set fails even when each read is internally consistent", () => {
+  const opening = readSnapshot({
+    evidence: [evidenceLink()],
+    signoffs: [observedSignoff({ evidenceLinkIds: ["source-a"] })],
+  });
+  const later = readSnapshot({
+    evidence: [evidenceLink({
+      evidenceLinkId: "source-b", documentId: "document-b",
+    })],
+    signoffs: [observedSignoff({ evidenceLinkIds: ["source-b"] })],
+  });
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later),
+    /Conflicting immutable sign-off metadata or signed-evidence snapshot/,
+  );
+});
+
+test("signed-evidence order differences do not invent conflicts", () => {
+  const evidence = [
+    evidenceLink(), evidenceLink({ evidenceLinkId: "source-b" }),
+  ];
+  const opening = readSnapshot({
+    evidence,
+    signoffs: [observedSignoff({ evidenceLinkIds: ["source-b", "source-a"] })],
+  });
+  const later = readSnapshot({
+    evidence: [...evidence].reverse(),
+    signoffs: [observedSignoff({ evidenceLinkIds: ["source-a", "source-b"] })],
+  });
+  const report = inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later);
+  assert.deepEqual(report.activeSignoffChanges, []);
+  assert.deepEqual(report.evidenceChanges, []);
+  assert.deepEqual(opening.observedBaseSignoffs[0].evidenceLinkIds,
+    later.observedBaseSignoffs[0].evidenceLinkIds);
+});
+
+test("same-revision supersession is monotonic without rewriting historical sign-off", () => {
+  const signed = observedSignoff({ evidenceLinkIds: ["source-a"] });
+  const opening = readSnapshot({ signoffs: [signed] });
+  const superseded = observedSignoff({
+    ...signed, supersededAtMs: 99, supersededReason: "Later revision",
+    supersededByRevisionId: "revision-5",
+  });
+  const after = readSnapshot({ signoffs: [superseded] });
+  const change = inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, after);
+  assert.deepEqual(change.activeSignoffChanges,
+    [{ signoffId: "signoff-a", change: "removed" }]);
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, after, opening),
+    /Contradictory historical sign-off supersession observation/,
+  );
+  const rewritten = readSnapshot({
+    signoffs: [observedSignoff({
+      ...superseded, supersededReason: "Changed history",
+    })],
+  });
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, after, rewritten),
+    /Contradictory historical sign-off supersession observation/,
+  );
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening,
+      readSnapshot({ signoffs: [] })),
+    /Missing previously observed immutable sign-off/,
+  );
+});
+
+test("across-revision reused superseded sign-off ID is rejected, not inherited", () => {
+  const opening = readSnapshot({
+    signoffs: [observedSignoff({
+      supersededAtMs: 8, supersededReason: "Superseded",
+      supersededByRevisionId: "revision-5",
+    })],
+  });
+  const later = readSnapshot({
+    revisionId: "revision-5",
+    evidence: [evidenceLink({
+      evidenceLinkId: "revision-5-source", workpaperRevisionId: "revision-5",
+    })],
+    signoffs: [observedSignoff({
+      workpaperRevisionId: "revision-5",
+      evidenceLinkIds: ["revision-5-source"],
+      supersededAtMs: 11, supersededReason: "Other",
+      supersededByRevisionId: "revision-6",
+    })],
+  });
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later),
+    /Reused historical sign-off ID across different immutable revisions/,
+  );
+});
+
+test("tampered sign-off observation arrays, counts and active membership fail closed", () => {
+  const opening = readSnapshot();
+  for (const malformed of [
+    { ...opening, observedBaseSignoffs: undefined },
+    { ...opening, observedBaseSignoffCount: 2 },
+    { ...opening, observedBaseSignoffs: [
+      opening.observedBaseSignoffs[0], opening.observedBaseSignoffs[0],
+    ], observedBaseSignoffCount: 2 },
+    { ...opening, observedBaseActiveSignoffIds: [] },
+    { ...opening, observedBaseSignoffs: [{
+      ...opening.observedBaseSignoffs[0],
+      evidenceLinkIds: ["unknown-link"],
+    }] },
+  ]) {
+    assert.throws(
+      () => inspectWorkpaperRevisionReadObservationChanges(opening.session, malformed, opening),
+      /Incomplete|Invalid|Inconsistent/,
+    );
+  }
+});
