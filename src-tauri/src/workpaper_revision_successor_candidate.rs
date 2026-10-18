@@ -123,6 +123,56 @@ fn candidate_validate_complete_ancestry_and_hashes(
     Ok(())
 }
 
+/// Check every recorded sign-off (including superseded historical rows)
+/// against the exact evidence links of its own immutable revision. The
+/// existing candidate checked only ACTIVE signatures on the latest base;
+/// a malformed older signed snapshot could otherwise be carried forward
+/// without notice. This checks metadata consistency only, never provenance,
+/// authentic signer identity, byte custody or human approval.
+fn candidate_validate_historical_signed_evidence(
+    tx: &Transaction<'_>,
+    workpaper_id: &str,
+) -> Result<(), String> {
+    // Symmetric set check: both omitted source links and extra/cross-revision
+    // signed links are inconsistent. A truly empty source/snapshot pair is
+    // valid. LEFT JOINs reject orphaned or wrong-workpaper revision metadata.
+    let invalid: i64 = tx
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM workpaper_signoffs s
+               LEFT JOIN workpaper_revisions r
+                 ON r.workpaper_revision_id = s.workpaper_revision_id
+               WHERE s.workpaper_id = ?1 AND (
+                 r.workpaper_id IS NULL OR r.workpaper_id <> s.workpaper_id
+                 OR EXISTS(
+                   SELECT 1 FROM workpaper_evidence_links e
+                   WHERE e.workpaper_revision_id = s.workpaper_revision_id
+                     AND NOT EXISTS(
+                       SELECT 1 FROM workpaper_signoff_evidence se
+                       WHERE se.signoff_id = s.signoff_id
+                         AND se.evidence_link_id = e.evidence_link_id
+                     )
+                 )
+                 OR EXISTS(
+                   SELECT 1 FROM workpaper_signoff_evidence se
+                   LEFT JOIN workpaper_evidence_links e
+                     ON e.evidence_link_id = se.evidence_link_id
+                   WHERE se.signoff_id = s.signoff_id
+                     AND (e.evidence_link_id IS NULL
+                          OR e.workpaper_revision_id <> s.workpaper_revision_id)
+                 )
+               )
+             )",
+            [workpaper_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if invalid != 0 {
+        return Err("INVALID_NATIVE_HISTORICAL_SIGNED_EVIDENCE".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn candidate_successor_transaction(
     path: &Path,
     workpaper_id: &str,
@@ -165,6 +215,9 @@ pub(crate) fn candidate_successor_transaction(
         return Err("STALE_NATIVE_BASE".to_string());
     }
     candidate_validate_complete_ancestry_and_hashes(&tx, workpaper_id)?;
+    // Reject inconsistent historical signed evidence under the same writer
+    // lock, before any successor, link, supersession or audit insert.
+    candidate_validate_historical_signed_evidence(&tx, workpaper_id)?;
 
     let links: Vec<CandidateObservedEvidenceLink> = {
         let mut statement = tx
