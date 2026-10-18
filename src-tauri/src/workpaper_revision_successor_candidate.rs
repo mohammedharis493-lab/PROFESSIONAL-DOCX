@@ -58,6 +58,13 @@ pub(crate) struct CandidateObservedEvidenceLink {
     pub(crate) description: Option<String>,
 }
 
+/// Single, immutable input shape for the editor's opening observations.
+/// This is untrusted metadata, never native authorization or evidence custody.
+pub(crate) struct CandidateObservedSnapshot<'a> {
+    pub(crate) evidence: &'a [CandidateObservedEvidenceLink],
+    pub(crate) active_signoff_ids: &'a [String],
+}
+
 /// Test-only validation of the ENTIRE workpaper revision ancestry and all
 /// non-null SHA-256 content hashes, including historical signed revisions.
 /// Legacy NULL hashes are accepted for compatibility but cannot prove prior
@@ -120,8 +127,7 @@ pub(crate) fn candidate_successor_transaction(
     path: &Path,
     workpaper_id: &str,
     expected_base: &str,
-    observed_links: &[CandidateObservedEvidenceLink],
-    observed_active_signoff_ids: &[String],
+    observed: CandidateObservedSnapshot<'_>,
     fields: [&str; 7],
     fail_after_first_copied_link: bool,
     authority: &dyn CandidateTransactionAuthority,
@@ -185,7 +191,7 @@ pub(crate) fn candidate_successor_transaction(
             .map_err(|error| error.to_string())?;
         collected
     };
-    let mut expected_links = observed_links.to_vec();
+    let mut expected_links = observed.evidence.to_vec();
     expected_links.sort_by(|a, b| a.id.cmp(&b.id));
     if expected_links != links {
         return Err("STALE_NATIVE_EVIDENCE".to_string());
@@ -236,7 +242,7 @@ pub(crate) fn candidate_successor_transaction(
             .map_err(|error| error.to_string())?;
         collected
     };
-    let mut expected_signoff_ids = observed_active_signoff_ids.to_vec();
+    let mut expected_signoff_ids = observed.active_signoff_ids.to_vec();
     expected_signoff_ids.sort();
     if active_signoff_ids != expected_signoff_ids {
         return Err("STALE_NATIVE_SIGNOFFS".to_string());
