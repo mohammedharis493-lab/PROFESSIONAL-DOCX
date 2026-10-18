@@ -2370,9 +2370,18 @@ fn candidate_ignores_consistent_unrelated_workpaper_signoffs_without_inheriting_
 
 /// The migration's audit table is intentionally not treated as a trusted,
 /// tamper-evident journal. Preserve every fixture row on rejected successors.
-fn fixture_all_native_audit_rows(
-    fixture: &NativeRevisionFixture,
-) -> Vec<(String, String, String, String, Option<String>, Option<String>, String)> {
+#[derive(Debug, PartialEq, Eq)]
+struct FixtureAuditRow {
+    audit_event_id: String,
+    event_type: String,
+    entity_type: String,
+    entity_id: String,
+    related_entity_type: Option<String>,
+    related_entity_id: Option<String>,
+    details_json: String,
+}
+
+fn fixture_all_native_audit_rows(fixture: &NativeRevisionFixture) -> Vec<FixtureAuditRow> {
     let db = Connection::open(&fixture.path).expect("open isolated native audit fixture");
     let mut stmt = db
         .prepare(
@@ -2382,15 +2391,15 @@ fn fixture_all_native_audit_rows(
         )
         .expect("prepare exact audit records");
     stmt.query_map([], |row| {
-        Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-            row.get(5)?,
-            row.get(6)?,
-        ))
+        Ok(FixtureAuditRow {
+            audit_event_id: row.get(0)?,
+            event_type: row.get(1)?,
+            entity_type: row.get(2)?,
+            entity_id: row.get(3)?,
+            related_entity_type: row.get(4)?,
+            related_entity_id: row.get(5)?,
+            details_json: row.get(6)?,
+        })
     })
     .expect("read audit rows")
     .collect::<Result<Vec<_>, _>>()
@@ -2411,7 +2420,10 @@ fn fixture_repoint_legacy_audit_related(
             rusqlite::params![event_type, entity_id, related_id],
         )
         .expect("mutate migration-permitted audit relation in fixture");
-    assert_eq!(affected, 1, "fixture must modify one real legacy audit event");
+    assert_eq!(
+        affected, 1,
+        "fixture must modify one real legacy audit event"
+    );
 }
 
 fn fixture_assert_audit_reference_rejected_without_writes(
