@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import NormalDataWorkspace from "./NormalDataWorkspace";
+import { assertLegacyInitialRevisionOnly, LEGACY_REVISION_SUCCESSOR_BLOCKED } from "./workpaper-legacy-revision-guard.ts";
 
 type ApprovedStorageRoot = {
   storageRootId: string;
@@ -5679,6 +5680,12 @@ export default function App() {
   async function submitWorkpaperRevision(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedWorkpaperId) return;
+    // This already-callable legacy path has no native CAS or evidence carry-forward.
+    // Never let its three-field UI append a successor to an existing revision.
+    if (workpaperRevisions.length > 0) {
+      setError(LEGACY_REVISION_SUCCESSOR_BLOCKED);
+      return;
+    }
     if (
       !newRevisionObjective.trim() &&
       !newRevisionProcedure.trim() &&
@@ -5689,6 +5696,13 @@ export default function App() {
 
     setWorkspaceBusy(true);
     try {
+      // Re-read on submit so a newly observed predecessor is not overwritten
+      // from an older first-revision screen. This is NOT an atomic native CAS.
+      const currentRevisions = await invoke<WorkpaperRevision[]>(
+        "list_workpaper_revisions",
+        { workpaperId: selectedWorkpaperId },
+      );
+      assertLegacyInitialRevisionOnly(currentRevisions);
       await invoke<WorkpaperRevision>("create_workpaper_revision", {
         workpaperId: selectedWorkpaperId,
         revision: {
@@ -13213,18 +13227,20 @@ export default function App() {
                       <form className="workspace-card workspace-form" onSubmit={submitWorkpaperRevision}>
                         <p className="evidence-integrity-note" role="note">
                           Legacy local-draft entry only. This three-field form records Objective,
-                          Procedure performed, and Conclusion, but writes Population, Sample,
-                          Exceptions, and Management explanation as empty. The caller is not
-                          authenticated as a workpaper editor.
+                          Procedure performed, and Conclusion. For an initial revision only,
+                          Population, Sample, Exceptions, and Management explanation are written
+                          as empty. The caller is not authenticated as a workpaper editor.
                         </p>
                         {workpaperRevisions.length > 0 ? (
                           <p className="evidence-integrity-note evidence-integrity-strong" role="alert">
-                            Legacy revision warning: creating another revision here can omit existing
-                            Population, Sample, Exceptions, and Management explanation values in the
-                            new successor. Earlier revisions remain immutable, but exact evidence
-                            links are not carried forward, previous sign-offs become historical,
-                            and this form does not detect a stale editor. Do not use this form as a
-                            lossless correction or independently authorized Save.
+                            Legacy revision warning: successor creation is blocked in this
+                            three-field form to prevent silently blanking existing Population,
+                            Sample, Exceptions, and Management explanation values. Earlier revisions
+                            remain immutable, but the native legacy command is still callable:
+                            exact evidence links are not carried forward, previous sign-offs become
+                            historical, and it does not detect a stale editor atomically. Do not use
+                            this form as a lossless correction or independently authorized Save.
+                            This draft UI guard is not native access control.
                           </p>
                         ) : null}
                         <label>
@@ -13259,12 +13275,13 @@ export default function App() {
                           type="submit"
                           disabled={
                             workspaceBusy ||
+                            workpaperRevisions.length > 0 ||
                             (!newRevisionObjective.trim() &&
                               !newRevisionProcedure.trim() &&
                               !newRevisionConclusion.trim())
                           }
                         >
-                          Create next revision
+                          Create first revision (legacy draft)
                         </button>
                       </form>
 
