@@ -36,12 +36,23 @@ function contentLink(overrides = {}) {
     ...overrides,
   };
 }
+function observedSignoff(overrides = {}) {
+  return {
+    signoffId: "sign-1",
+    workpaperId: "wp-1",
+    workpaperRevisionId: "rev-7",
+    supersededAtMs: null,
+    supersededReason: null,
+    supersededByRevisionId: null,
+    ...overrides,
+  };
+}
 function input(overrides = {}) {
   return {
     workpaperId: "wp-1",
     revisions: [revision()],
     evidenceLinks: [contentLink()],
-    signoffs: [{ signoffId: "sign-1", workpaperId: "wp-1", workpaperRevisionId: "rev-7" }],
+    signoffs: [observedSignoff()],
     ...overrides,
   };
 }
@@ -62,6 +73,8 @@ test("opens all seven existing fields exactly rather than starting a three-field
     conclusion: "Signed conclusion",
   });
   assert.equal(read.observedBaseSignoffCount, 1);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["sign-1"]);
+  assert.ok(Object.isFrozen(read.observedBaseActiveSignoffIds));
   assert.equal("signoffs" in session, false);
 });
 
@@ -119,6 +132,7 @@ test("caller mutations after opening cannot rewrite detached text or evidence ob
   assert.equal(read.session.base.content.population, "Population Ⅰ");
   assert.equal(read.observedSourceEvidence[0].contentVersionId, "file-ver-3");
   assert.equal(read.observedBaseSignoffCount, 1);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["sign-1"]);
 });
 
 test("selects maximal revision number even when backend read results are reordered", () => {
@@ -132,6 +146,7 @@ test("selects maximal revision number even when backend read results are reorder
   }));
   assert.equal(read.session.base.workpaperRevisionId, "rev-7");
   assert.equal(read.observedBaseSignoffCount, 0);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, []);
   assert.equal(read.session.draft.content.objective, "Old objective  ");
 });
 
@@ -151,6 +166,7 @@ test("all three read result arrays must be present, even when observations are e
   }));
   assert.equal(read.observedSourceEvidence.length, 0);
   assert.equal(read.observedBaseSignoffCount, 0);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, []);
 });
 
 test("foreign workpaper revisions fail closed", () => {
@@ -224,8 +240,8 @@ test("duplicate source link IDs or missing identities are rejected", () => {
 test("invalid, duplicate or cross-workpaper sign-off observations are rejected", () => {
   assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
     signoffs: [
-      { signoffId: "sign-1", workpaperId: "wp-1", workpaperRevisionId: "rev-7" },
-      { signoffId: "sign-1", workpaperId: "wp-1", workpaperRevisionId: "rev-7" },
+      observedSignoff(),
+      observedSignoff(),
     ],
   })), /sign-off observation/);
   assert.throws(() => openStoredWorkpaperRevisionReadSnapshot(input({
@@ -239,7 +255,8 @@ test("invalid, duplicate or cross-workpaper sign-off observations are rejected",
 test("snapshot observations never produce a persistence command or approval claim", () => {
   const read = openStoredWorkpaperRevisionReadSnapshot(input());
   assert.deepEqual(Object.keys(read).sort(), [
-    "observedBaseSignoffCount", "observedSourceEvidence", "scope", "session",
+    "observedBaseActiveSignoffIds", "observedBaseSignoffCount",
+    "observedSourceEvidence", "scope", "session",
   ]);
   assert.equal("save" in read, false);
   assert.equal("grant" in read, false);
@@ -257,6 +274,7 @@ test("persisted DTO opens a signed unchanged draft that still projects all seven
   assert.equal(projected.content.conclusion, "Signed conclusion");
   assert.equal("observedSourceEvidence" in projected, false);
   assert.equal("observedBaseSignoffCount" in projected, false);
+  assert.equal("observedBaseActiveSignoffIds" in projected, false);
 });
 
 test("persisted DTO projection keeps signed history and exact evidence only as read observations", () => {
@@ -270,6 +288,8 @@ test("persisted DTO projection keeps signed history and exact evidence only as r
   assert.equal(projected.expectedLatestRevisionId, "rev-7");
   assert.equal(observation.observedSourceEvidence[0].contentVersionId, "file-ver-3");
   assert.equal(observation.observedBaseSignoffCount, 1);
+  assert.deepEqual(observation.observedBaseActiveSignoffIds, ["sign-1"]);
+  assert.equal("observedBaseActiveSignoffIds" in projected, false);
   assert.equal("evidenceLinkIds" in projected, false);
   assert.equal("signoffs" in projected, false);
 });
@@ -302,6 +322,7 @@ test("complete current App.tsx evidence and signoff DTOs are observed without au
     signoffs: [completeSignoff()],
   }));
   assert.equal(read.observedBaseSignoffCount, 1);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["sign-1"]);
   assert.deepEqual(read.observedSourceEvidence, [contentLink()]);
   assert.equal("documentName" in read.observedSourceEvidence[0], false);
   assert.equal("evidenceLinkIds" in read.session, false);
@@ -429,3 +450,93 @@ test("metadata validation does not mutate complete source DTOs or change editabl
   assert.equal(read.session.draft.expectedLatestRevisionId, "rev-7");
 });
 
+
+test("active base sign-off IDs form a sorted frozen snapshot, independent of DTO order", () => {
+  const source = input({
+    signoffs: [
+      observedSignoff({ signoffId: "sign-z" }),
+      observedSignoff({ signoffId: "sign-a" }),
+      observedSignoff({ signoffId: "sign-k" }),
+    ],
+  });
+  const read = openStoredWorkpaperRevisionReadSnapshot(source);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["sign-a", "sign-k", "sign-z"]);
+  assert.ok(Object.isFrozen(read.observedBaseActiveSignoffIds));
+  source.signoffs[0].signoffId = "changed-after-opening";
+  source.signoffs.reverse();
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["sign-a", "sign-k", "sign-z"]);
+  assert.throws(() => read.observedBaseActiveSignoffIds.push("forged"));
+  assert.equal(read.observedBaseSignoffCount, 3);
+  assert.equal("observedBaseActiveSignoffIds" in read.session.draft, false);
+});
+
+test("superseded base sign-offs remain counted but are excluded from active ID CAS observation", () => {
+  const read = openStoredWorkpaperRevisionReadSnapshot(input({
+    signoffs: [
+      observedSignoff({ signoffId: "active-z" }),
+      observedSignoff({
+        signoffId: "historical",
+        supersededAtMs: 27,
+        supersededReason: "New workpaper revision created",
+        supersededByRevisionId: "rev-8",
+      }),
+      observedSignoff({ signoffId: "active-a" }),
+    ],
+  }));
+  assert.equal(read.observedBaseSignoffCount, 3);
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["active-a", "active-z"]);
+  assert.equal("actorRole" in read, false);
+});
+
+test("missing and undefined native supersession fields fail closed for base sign-offs", () => {
+  for (const key of ["supersededAtMs", "supersededReason", "supersededByRevisionId"]) {
+    const missing = observedSignoff();
+    delete missing[key];
+    assert.throws(
+      () => openStoredWorkpaperRevisionReadSnapshot(input({ signoffs: [missing] })),
+      /Incomplete base sign-off supersession metadata/,
+    );
+    assert.throws(
+      () => openStoredWorkpaperRevisionReadSnapshot(input({
+        signoffs: [observedSignoff({ [key]: undefined })],
+      })),
+      /Incomplete base sign-off supersession metadata/,
+    );
+  }
+});
+
+test("partial or contradictory native supersession metadata cannot masquerade as active", () => {
+  for (const overrides of [
+    { supersededAtMs: 17 },
+    { supersededReason: "superseded" },
+    { supersededByRevisionId: "rev-8" },
+    { supersededAtMs: 17, supersededReason: "superseded" },
+    { supersededAtMs: 17, supersededByRevisionId: "rev-8" },
+    { supersededReason: "superseded", supersededByRevisionId: "rev-8" },
+  ]) {
+    assert.throws(
+      () => openStoredWorkpaperRevisionReadSnapshot(input({
+        signoffs: [observedSignoff(overrides)],
+      })),
+      /Inconsistent sign-off supersession metadata/,
+    );
+  }
+});
+
+test("older revision sign-offs are not classified as active base sign-offs", () => {
+  const read = openStoredWorkpaperRevisionReadSnapshot(input({
+    revisions: [revision(), revision({ workpaperRevisionId: "rev-6", revisionNumber: 6 })],
+    signoffs: [
+      observedSignoff({
+        signoffId: "historical-signed",
+        workpaperRevisionId: "rev-6",
+        supersededAtMs: 21,
+        supersededReason: "New workpaper revision created",
+        supersededByRevisionId: "rev-7",
+      }),
+      observedSignoff({ signoffId: "current" }),
+    ],
+  }));
+  assert.deepEqual(read.observedBaseActiveSignoffIds, ["current"]);
+  assert.equal(read.observedBaseSignoffCount, 1);
+});
