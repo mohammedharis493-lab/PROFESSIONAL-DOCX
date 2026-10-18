@@ -1,4 +1,6 @@
-//! Proposed native authoring preflight. NOT WIRED to any Tauri command.
+//! TEST-ONLY proposed native authoring preflight. NOT IN SHIPPING BINARIES.
+//! The module declaration itself is behind #[cfg(test)] in lib.rs.
+//! No normal cargo build/check/release can reference or instantiate it.
 //! No production verified-session constructor, grant issuer, grant schema,
 //! Save method, evidence copier or sign-off authority exists here.
 //! A positive preflight is NEVER sufficient to authorize a write:
@@ -36,7 +38,7 @@ pub(crate) trait WorkpaperAuthoringPolicy {
     ) -> bool;
 }
 
-/// The only shipping adapter. Fails closed regardless of local SQLite rows.
+/// The only built-in test policy. Fails closed regardless of local SQLite rows.
 pub(crate) struct DenyAllWorkpaperAuthoringPolicy;
 
 impl WorkpaperAuthoringPolicy for DenyAllWorkpaperAuthoringPolicy {
@@ -153,7 +155,7 @@ mod non_authorizing_contract_tests {
     }
 
     #[test]
-    fn only_shipping_deny_all_policy_refuses_fixture_verified_session() {
+    fn built_in_deny_all_policy_refuses_fixture_verified_session() {
         let session = fixture_session(Uuid::new_v4(), 500);
         assert_eq!(
             check_workpaper_revision_authoring_preflight(

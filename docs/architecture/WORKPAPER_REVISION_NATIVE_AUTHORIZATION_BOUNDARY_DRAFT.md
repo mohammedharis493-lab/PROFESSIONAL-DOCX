@@ -4,9 +4,9 @@
 
 ## Delivered in this incremental draft
 
-The private native Rust module workpaper_revision_authorization_contract.rs is compiled into the crate but is **not registered as a Tauri command and is not called by production Save, read, evidence-link or sign-off code**. No source-version or immutable history data is modified. The sole shipping policy adapter is **DenyAllWorkpaperAuthoringPolicy**, which cannot grant anything. A verified native session contains private fields and has **no production constructor**. Its only constructor exists inside cfg(test) fixture code. The module has no native credential issuer, session persistence, workpaper-grant table, grant administrator, evidence carry-forward, UI route or sign-off. All positive test cases use isolated test-only fixture grants.
+The native Rust prototype workpaper_revision_authorization_contract.rs is now **gated behind `#[cfg(test)]` in `src-tauri/src/lib.rs`**, so it is compiled **only for native tests** and is absent from normal builds and release binaries. It is not registered as a Tauri command or called by production Save, read, evidence-link or sign-off code. No source-version or immutable history data is modified. Its built-in test policy is **DenyAllWorkpaperAuthoringPolicy**, which cannot grant anything. A verified native session contains private fields and has **no production constructor**. Its only constructor exists inside cfg(test) fixture code. The module has no native credential issuer, session persistence, workpaper-grant table, grant administrator, evidence carry-forward, UI route or sign-off. All positive test cases use isolated test-only fixture grants.
 
-This is a compile-checked interface candidate, **not a genuine verified session, authentication gateway, issuer, authorization grant, or defense against privileged local malware/database owners**. Preflight success using a hypothetical policy does not authorize a write.
+This is a **test-target-compiled** interface candidate, enforced by a temporary source boundary regression, **not a genuine verified session, authentication gateway, issuer, authorization grant, or defense against privileged local malware/database owners**. Preflight success using a hypothetical policy does not authorize a write.
 
 ## Proposed distinct authorities — human approval required
 
@@ -30,6 +30,8 @@ These proposed READ_WORKPAPER / REVISE_WORKPAPER scope names are **not** existin
 
 ## Regression scope and hard stops
 
-The candidate module's five tests prove only fail-closed **contract** behavior: absent session, default deny, read-vs-revise/workpaper mismatch, expired/revoked fixture session, and malformed or role-shaped target IDs. They do not verify real SQLite grants or signers, hostile-local adversaries, formal evidence custody, or in-transaction revocation. Existing native transaction tests in PR #137 test SQLite mechanics separately; the two layers are deliberately **not wired together**.
+The candidate module's five Rust tests prove only fail-closed **contract** behavior: absent session, default deny, read-vs-revise/workpaper mismatch, expired/revoked fixture session, and malformed or role-shaped target IDs. They do not verify real SQLite grants or signers, hostile-local adversaries, formal evidence custody, or in-transaction revocation. Existing native transaction tests in PR #137 test SQLite mechanics separately; the two layers are deliberately **not wired together**.
+
+The CI `tests/workpaper-revision-native-boundary.test.mjs` guard fails if the prototype's Rust module declaration is no longer under `#[cfg(test)]`, if any other Rust source names that module, or if the testing module is absent. This is a **regression tripwire**, not a formal Rust parser, runtime sandbox or substitute for independent review. A future production implementation must deliberately replace it in a separate reviewed native authorization PR.
 
 **Hard stops:** do not merge PR #137, connect prototype Save, register this module in generate_handler!, create a production verified-session constructor, seed the first admin, reuse a caller-provided actor/role, or treat success of any fixture policy as authorization. Human DEC-03/04/06/08 decisions and independent native security review are prerequisites for production integration.
