@@ -47,14 +47,15 @@ impl CandidateTransactionAuthority for FixtureOnlyCandidateAuthority {
 // The following logic was extracted from the prior tested inline reference.
 // It is parameterized by exact workpaper and enforces the candidate gate.
 
-#[derive(Clone)]
-struct TestOnlySourceLink {
-    id: String,
-    document_id: String,
-    content_version_id: Option<String>,
-    controlled_version_id: Option<String>,
-    relationship_type: String,
-    description: Option<String>,
+/// Exact editor-observed tuple. IDs alone cannot detect altered metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateObservedEvidenceLink {
+    pub(crate) id: String,
+    pub(crate) document_id: String,
+    pub(crate) content_version_id: Option<String>,
+    pub(crate) controlled_version_id: Option<String>,
+    pub(crate) relationship_type: String,
+    pub(crate) description: Option<String>,
 }
 
 /// Test-only validation of the ENTIRE workpaper revision ancestry and all
@@ -119,7 +120,8 @@ pub(crate) fn candidate_successor_transaction(
     path: &Path,
     workpaper_id: &str,
     expected_base: &str,
-    observed_link_ids: &[String],
+    observed_links: &[CandidateObservedEvidenceLink],
+    observed_active_signoff_ids: &[String],
     fields: [&str; 7],
     fail_after_first_copied_link: bool,
     authority: &dyn CandidateTransactionAuthority,
@@ -158,7 +160,7 @@ pub(crate) fn candidate_successor_transaction(
     }
     candidate_validate_complete_ancestry_and_hashes(&tx, workpaper_id)?;
 
-    let links: Vec<TestOnlySourceLink> = {
+    let links: Vec<CandidateObservedEvidenceLink> = {
         let mut statement = tx
             .prepare(
                 "SELECT evidence_link_id, document_id, content_version_id,
@@ -169,7 +171,7 @@ pub(crate) fn candidate_successor_transaction(
             .map_err(|error| error.to_string())?;
         let collected = statement
             .query_map([expected_base], |row| {
-                Ok(TestOnlySourceLink {
+                Ok(CandidateObservedEvidenceLink {
                     id: row.get(0)?,
                     document_id: row.get(1)?,
                     content_version_id: row.get(2)?,
@@ -183,15 +185,18 @@ pub(crate) fn candidate_successor_transaction(
             .map_err(|error| error.to_string())?;
         collected
     };
-    let mut expected_ids = observed_link_ids.to_vec();
-    expected_ids.sort();
-    let actual_ids: Vec<String> = links.iter().map(|link| link.id.clone()).collect();
-    if expected_ids != actual_ids {
+    let mut expected_links = observed_links.to_vec();
+    expected_links.sort_by(|a, b| a.id.cmp(&b.id));
+    if expected_links != links {
         return Err("STALE_NATIVE_EVIDENCE".to_string());
     }
+    let actual_ids: Vec<String> = links.iter().map(|link| link.id.clone()).collect();
     // Actual document-to-version checks in this test-only schema oracle.
     // These are NOT source-byte retention or formal controlled-custody checks.
     for link in &links {
+        if link.content_version_id.is_some() == link.controlled_version_id.is_some() {
+            return Err("INVALID_NATIVE_EVIDENCE_VERSION".to_string());
+        }
         let valid: i64 = tx
             .query_row(
                 "SELECT CASE
@@ -231,6 +236,11 @@ pub(crate) fn candidate_successor_transaction(
             .map_err(|error| error.to_string())?;
         collected
     };
+    let mut expected_signoff_ids = observed_active_signoff_ids.to_vec();
+    expected_signoff_ids.sort();
+    if active_signoff_ids != expected_signoff_ids {
+        return Err("STALE_NATIVE_SIGNOFFS".to_string());
+    }
     for signoff_id in &active_signoff_ids {
         let signed_ids: Vec<String> = {
             let mut statement = tx
