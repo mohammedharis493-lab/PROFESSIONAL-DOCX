@@ -10,10 +10,10 @@
 //! legacy command; a test fixture's PREPARED row is not professional approval.
 
 use crate::persistence::{
-    create_initial_workpaper_revision, create_workpaper_evidence_link,
-    create_workpaper_revision, create_workpaper_signoff, initialize_database,
-    list_workpaper_evidence_links, list_workpaper_revisions,
-    list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff, WorkpaperRevisionRecord,
+    create_initial_workpaper_revision, create_workpaper_evidence_link, create_workpaper_revision,
+    create_workpaper_signoff, initialize_database, list_workpaper_evidence_links,
+    list_workpaper_revisions, list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff,
+    WorkpaperRevisionRecord,
 };
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -1705,15 +1705,21 @@ fn native_initial_only_entry_rejects_existing_revision_without_mutation() {
     let saved = fixture.rows();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].workpaper_revision_id, first.workpaper_revision_id);
-    assert_eq!(as_fields(&saved[0]), [
-        "First", "Procedure", "", "", "", "", "Initial conclusion"
-    ]);
+    assert_eq!(
+        as_fields(&saved[0]),
+        ["First", "Procedure", "", "", "", "", "Initial conclusion"]
+    );
 
     // Existing callable legacy API is intentionally backward-compatible;
     // this fixture outcome is a known untrusted bypass, NOT a security proof.
     let legacy_successor = fixture.insert([
-        "Legacy successor", "Procedure", "Historic", "Sample", "Exception",
-        "Explanation", "Conclusion"
+        "Legacy successor",
+        "Procedure",
+        "Historic",
+        "Sample",
+        "Exception",
+        "Explanation",
+        "Conclusion",
     ]);
     assert_eq!(fixture.rows().len(), 2);
     assert_eq!(legacy_successor.revision_number, 2);
@@ -1750,7 +1756,10 @@ fn native_initial_only_two_independent_writers_accept_only_one() {
     let mut accepted = 0;
     let mut refused = 0;
     for worker in workers {
-        match worker.join().expect("native first-create worker must not panic") {
+        match worker
+            .join()
+            .expect("native first-create worker must not panic")
+        {
             Ok(revision) => {
                 accepted += 1;
                 assert_eq!(revision.revision_number, 1);
