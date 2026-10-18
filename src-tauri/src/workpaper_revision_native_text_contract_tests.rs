@@ -1980,7 +1980,6 @@ fn candidate_rejects_historical_signoff_with_extra_foreign_revision_link_atomica
         .contains(&foreign_link.evidence_link_id));
 }
 
- 
 /// Direct fixture INSERTs exercise migration-permitted inconsistencies that
 /// immutable UPDATE/DELETE triggers cannot repair after they are recorded.
 /// These labels are untrusted and convey no sign-off authority.
@@ -2082,11 +2081,16 @@ fn candidate_accepts_two_correct_immediate_historical_supersessions() {
         (second_signoff.signoff_id, third.workpaper_revision_id),
     ] {
         let signoff = history.iter().find(|item| item.signoff_id == id).unwrap();
-        assert_eq!(signoff.superseded_by_revision_id.as_deref(), Some(target.as_str()));
+        assert_eq!(
+            signoff.superseded_by_revision_id.as_deref(),
+            Some(target.as_str())
+        );
     }
     assert_eq!(fixture.rows().len(), 4);
     assert_eq!(fixture.rows()[0].workpaper_revision_id, successor);
-    assert!(history.iter().all(|entry| entry.workpaper_revision_id != successor));
+    assert!(history
+        .iter()
+        .all(|entry| entry.workpaper_revision_id != successor));
 }
 
 #[test]
@@ -2111,12 +2115,22 @@ fn candidate_rejects_skipped_historical_supersession_target_atomically() {
     let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
     fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
     let latest = fixture.insert(["Third", "Procedure", "", "", "", "", "Conclusion"]);
-    fixture_insert_unverified_signoff(&fixture, "skipped-supersession", &first.workpaper_revision_id);
-    fixture_insert_unverified_supersession(&fixture, "skipped-supersession", &latest.workpaper_revision_id);
+    fixture_insert_unverified_signoff(
+        &fixture,
+        "skipped-supersession",
+        &first.workpaper_revision_id,
+    );
+    fixture_insert_unverified_supersession(
+        &fixture,
+        "skipped-supersession",
+        &latest.workpaper_revision_id,
+    );
     fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
     let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
-    assert_eq!(history[0].superseded_by_revision_id.as_deref(),
-               Some(latest.workpaper_revision_id.as_str()));
+    assert_eq!(
+        history[0].superseded_by_revision_id.as_deref(),
+        Some(latest.workpaper_revision_id.as_str())
+    );
 }
 
 #[test]
@@ -2124,8 +2138,16 @@ fn candidate_rejects_latest_signoff_already_superseded_to_older_revision() {
     let fixture = NativeRevisionFixture::new();
     let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
     let latest = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
-    fixture_insert_unverified_signoff(&fixture, "premature-latest-supersession", &latest.workpaper_revision_id);
-    fixture_insert_unverified_supersession(&fixture, "premature-latest-supersession", &first.workpaper_revision_id);
+    fixture_insert_unverified_signoff(
+        &fixture,
+        "premature-latest-supersession",
+        &latest.workpaper_revision_id,
+    );
+    fixture_insert_unverified_supersession(
+        &fixture,
+        "premature-latest-supersession",
+        &first.workpaper_revision_id,
+    );
     fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
 }
 
@@ -2159,8 +2181,21 @@ fn candidate_rejects_historical_supersession_to_foreign_workpaper() {
         },
     )
     .expect("fixture separate-workpaper revision");
-    fixture_insert_unverified_signoff(&fixture, "foreign-supersession", &first.workpaper_revision_id);
-    fixture_insert_unverified_supersession(&fixture, "foreign-supersession", &foreign.workpaper_revision_id);
+    fixture_insert_unverified_signoff(
+        &fixture,
+        "foreign-supersession",
+        &first.workpaper_revision_id,
+    );
+    fixture_insert_unverified_supersession(
+        &fixture,
+        "foreign-supersession",
+        &foreign.workpaper_revision_id,
+    );
     fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
-    assert_eq!(list_workpaper_revisions(&fixture.path, "foreign-workpaper").unwrap().len(), 1);
+    assert_eq!(
+        list_workpaper_revisions(&fixture.path, "foreign-workpaper")
+            .unwrap()
+            .len(),
+        1
+    );
 }
