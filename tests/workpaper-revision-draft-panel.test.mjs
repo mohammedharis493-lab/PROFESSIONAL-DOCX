@@ -394,3 +394,31 @@ test("missing or mutually contradictory observation pairs fail closed", () => {
     openingReadSnapshot: opening, observedReadSnapshot: later,
   }), /immutable draft base/);
 });
+
+test("detached panel rejects reused cross-revision evidence or active sign-off identities", () => {
+  const opening = observedRead();
+  const session = editWorkpaperRevisionSessionField(
+    opening.session, "conclusion", "Preserve my unsaved local wording",
+  );
+  const reusedEvidence = observedRead("revision-8", {
+    evidence: [{
+      ...opening.observedSourceEvidence[0], workpaperRevisionId: "revision-8",
+    }],
+    signoffs: [],
+  });
+  assert.throws(() => render(session, {
+    openingReadSnapshot: opening, observedReadSnapshot: reusedEvidence,
+  }), /Reused evidence-link ID across different immutable revisions/);
+
+  const reusedSignoff = observedRead("revision-8", {
+    evidence: [{
+      ...opening.observedSourceEvidence[0], evidenceLinkId: "new-link",
+      workpaperRevisionId: "revision-8",
+    }],
+  });
+  assert.throws(() => render(session, {
+    openingReadSnapshot: opening, observedReadSnapshot: reusedSignoff,
+  }), /Reused active sign-off ID across different immutable revisions/);
+  assert.equal(session.draft.content.conclusion, "Preserve my unsaved local wording");
+  assert.equal(session.draft.expectedLatestRevisionId, "revision-7");
+});
