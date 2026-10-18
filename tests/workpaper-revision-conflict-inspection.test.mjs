@@ -196,7 +196,6 @@ function readSnapshot({
   evidence = [evidenceLink({workpaperRevisionId: revisionId})],
   signoffs = [observedSignoff({workpaperRevisionId: revisionId})],
 } = {}) {
-  const baseline = base();
   return openStoredWorkpaperRevisionReadSnapshot({
     workpaperId: "workpaper-1",
     revisions: [{
@@ -324,7 +323,7 @@ test("tampered opening base, foreign or incomplete observation, or divergent imm
   } };
   assert.throws(
     () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, foreign),
-    /same workpaper/,
+    /immutable draft base and workpaper/,
   );
   assert.throws(
     () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, {
