@@ -839,8 +839,8 @@ fn fixture_observed_links(
     revision_id: &str,
     observed_ids: &[String],
 ) -> Result<Vec<CandidateObservedEvidenceLink>, String> {
-    let stored = list_workpaper_evidence_links(path, revision_id)
-        .map_err(|error| error.to_string())?;
+    let stored =
+        list_workpaper_evidence_links(path, revision_id).map_err(|error| error.to_string())?;
     Ok(observed_ids
         .iter()
         .filter_map(|id| stored.iter().find(|row| row.evidence_link_id == *id))
@@ -1663,7 +1663,9 @@ fn candidate_rejects_same_evidence_ids_with_changed_tuple_without_writes() {
     let mut stale = fixture_observed_links(&fixture.path, &base.workpaper_revision_id, &ids)
         .expect("capture full exact evidence snapshot");
     // Only relationship text differs; merely comparing IDs would accept it.
-    stale[0].relationship_type.push_str("-old-client-observation");
+    stale[0]
+        .relationship_type
+        .push_str("-old-client-observation");
     let signoffs =
         fixture_observed_active_signoffs(&fixture.path, &base.workpaper_revision_id).unwrap();
     let refused = candidate_successor_transaction(
