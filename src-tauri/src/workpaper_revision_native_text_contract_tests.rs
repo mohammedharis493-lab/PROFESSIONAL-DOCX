@@ -15,6 +15,9 @@ use crate::persistence::{
     list_workpaper_revisions, list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff,
     WorkpaperRevisionRecord,
 };
+use crate::workpaper_revision_successor_candidate::{
+    candidate_successor_transaction, DenyAllCandidateAuthority, FixtureOnlyCandidateAuthority,
+};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -826,71 +829,8 @@ fn native_signed_evidence_snapshot_is_immutable_and_late_attachment_is_rejected(
 /// that arbitrary metadata-only links may be copied in a real engagement.
 /// Production must supply DEC-03/04 authenticated authority, DEC-05 custody
 /// and DEC-08 carry-forward approval before any implementation.
-#[derive(Clone)]
-struct TestOnlySourceLink {
-    id: String,
-    document_id: String,
-    content_version_id: Option<String>,
-    controlled_version_id: Option<String>,
-    relationship_type: String,
-    description: Option<String>,
-}
-
-/// Test-only validation of the ENTIRE workpaper revision ancestry and all
-/// non-null SHA-256 content hashes, including historical signed revisions.
-/// Legacy NULL hashes are accepted for compatibility but cannot prove prior
-/// content identity. This is NOT a production native trust/custody check.
-fn test_only_validate_complete_ancestry_and_hashes(
-    tx: &rusqlite::Transaction<'_>,
-) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-
-    let mut statement = tx
-        .prepare(
-            "SELECT workpaper_revision_id, revision_number, supersedes_revision_id,
-                    objective, procedure_performed, population, sample, exceptions,
-                    management_explanation, conclusion, content_hash
-             FROM workpaper_revisions
-             WHERE workpaper_id='workpaper-native'
-             ORDER BY revision_number ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let mut rows = statement.query([]).map_err(|error| error.to_string())?;
-    let mut expected_number = 1_i64;
-    let mut expected_parent: Option<String> = None;
-    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let revision_id: String = row.get(0).map_err(|error| error.to_string())?;
-        let revision_number: i64 = row.get(1).map_err(|error| error.to_string())?;
-        let parent: Option<String> = row.get(2).map_err(|error| error.to_string())?;
-        if revision_number != expected_number || parent.as_deref() != expected_parent.as_deref() {
-            return Err("INVALID_NATIVE_REVISION_ANCESTRY".to_string());
-        }
-        let fields: [String; 7] = [
-            row.get(3).map_err(|error| error.to_string())?,
-            row.get(4).map_err(|error| error.to_string())?,
-            row.get(5).map_err(|error| error.to_string())?,
-            row.get(6).map_err(|error| error.to_string())?,
-            row.get(7).map_err(|error| error.to_string())?,
-            row.get(8).map_err(|error| error.to_string())?,
-            row.get(9).map_err(|error| error.to_string())?,
-        ];
-        let recorded_hash: Option<Vec<u8>> = row.get(10).map_err(|error| error.to_string())?;
-        if let Some(recorded) = recorded_hash {
-            let mut digest = Sha256::new();
-            for field in &fields {
-                digest.update((field.len() as u64).to_le_bytes());
-                digest.update(field.as_bytes());
-            }
-            if recorded.as_slice() != digest.finalize().as_slice() {
-                return Err("INVALID_NATIVE_IMMUTABLE_CONTENT_HASH".to_string());
-            }
-        }
-        expected_parent = Some(revision_id);
-        expected_number += 1;
-    }
-    Ok(())
-}
-
+// Thin adapter: existing real-migration regression tests now exercise the
+// parameterized candidate, instead of a copied transaction in this test file.
 fn test_only_checked_successor(
     path: &std::path::Path,
     expected_base: &str,
@@ -898,199 +838,15 @@ fn test_only_checked_successor(
     fields: [&str; 7],
     fail_after_first_copied_link: bool,
 ) -> Result<String, String> {
-    use rusqlite::{params, OptionalExtension, TransactionBehavior};
-    use sha2::{Digest, Sha256};
-
-    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|error| error.to_string())?;
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| error.to_string())?;
-    let latest: Option<(String, i64)> = tx
-        .query_row(
-            "SELECT workpaper_revision_id, revision_number
-             FROM workpaper_revisions WHERE workpaper_id='workpaper-native'
-             ORDER BY revision_number DESC LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    let Some((latest_id, latest_number)) = latest else {
-        return Err("NO_NATIVE_BASE".to_string());
-    };
-    if latest_id != expected_base {
-        return Err("STALE_NATIVE_BASE".to_string());
-    }
-    test_only_validate_complete_ancestry_and_hashes(&tx)?;
-
-    let links: Vec<TestOnlySourceLink> = {
-        let mut statement = tx
-            .prepare(
-                "SELECT evidence_link_id, document_id, content_version_id,
-                        controlled_evidence_version_id, relationship_type, description
-                 FROM workpaper_evidence_links
-                 WHERE workpaper_revision_id=?1 ORDER BY evidence_link_id",
-            )
-            .map_err(|error| error.to_string())?;
-        let collected = statement
-            .query_map([expected_base], |row| {
-                Ok(TestOnlySourceLink {
-                    id: row.get(0)?,
-                    document_id: row.get(1)?,
-                    content_version_id: row.get(2)?,
-                    controlled_version_id: row.get(3)?,
-                    relationship_type: row.get(4)?,
-                    description: row.get(5)?,
-                })
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
-        collected
-    };
-    let mut expected_ids = observed_link_ids.to_vec();
-    expected_ids.sort();
-    let actual_ids: Vec<String> = links.iter().map(|link| link.id.clone()).collect();
-    if expected_ids != actual_ids {
-        return Err("STALE_NATIVE_EVIDENCE".to_string());
-    }
-    // Actual document-to-version checks in this test-only schema oracle.
-    // These are NOT source-byte retention or formal controlled-custody checks.
-    for link in &links {
-        let valid: i64 = tx
-            .query_row(
-                "SELECT CASE
-                   WHEN ?2 IS NOT NULL THEN
-                     EXISTS(SELECT 1 FROM content_versions
-                            WHERE content_version_id=?2 AND document_id=?1)
-                   WHEN ?3 IS NOT NULL THEN
-                     EXISTS(SELECT 1 FROM controlled_evidence_versions
-                            WHERE controlled_evidence_version_id=?3 AND document_id=?1)
-                   ELSE 0 END",
-                params![
-                    &link.document_id,
-                    link.content_version_id.as_deref(),
-                    link.controlled_version_id.as_deref()
-                ],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if valid != 1 {
-            return Err("INVALID_NATIVE_EVIDENCE_VERSION".to_string());
-        }
-    }
-
-    let active_signoff_ids: Vec<String> = {
-        let mut statement = tx
-            .prepare(
-                "SELECT s.signoff_id FROM workpaper_signoffs s
-                 LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id=s.signoff_id
-                 WHERE s.workpaper_revision_id=?1 AND ss.signoff_id IS NULL
-                 ORDER BY s.signoff_id",
-            )
-            .map_err(|error| error.to_string())?;
-        let collected = statement
-            .query_map([expected_base], |row| row.get(0))
-            .map_err(|error| error.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
-        collected
-    };
-    for signoff_id in &active_signoff_ids {
-        let signed_ids: Vec<String> = {
-            let mut statement = tx
-                .prepare(
-                    "SELECT evidence_link_id FROM workpaper_signoff_evidence
-                     WHERE signoff_id=?1 ORDER BY evidence_link_id",
-                )
-                .map_err(|error| error.to_string())?;
-            let collected = statement
-                .query_map([signoff_id], |row| row.get(0))
-                .map_err(|error| error.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?;
-            collected
-        };
-        if signed_ids != actual_ids {
-            return Err("INVALID_NATIVE_SIGNED_EVIDENCE_SNAPSHOT".to_string());
-        }
-    }
-
-    let mut digest = Sha256::new();
-    for field in fields {
-        digest.update((field.len() as u64).to_le_bytes());
-        digest.update(field.as_bytes());
-    }
-    let hash = digest.finalize();
-    let successor_id = Uuid::new_v4().to_string();
-    tx.execute(
-        "INSERT INTO workpaper_revisions
-         (workpaper_revision_id, workpaper_id, revision_number, created_at_ms,
-          revision_reason, supersedes_revision_id, objective, procedure_performed,
-          population, sample, exceptions, management_explanation, conclusion, content_hash)
-         VALUES (?1, 'workpaper-native', ?2, 2, 'test-only native CAS reference',
-                 ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            &successor_id,
-            latest_number + 1,
-            expected_base,
-            fields[0],
-            fields[1],
-            fields[2],
-            fields[3],
-            fields[4],
-            fields[5],
-            fields[6],
-            hash.as_slice()
-        ],
+    candidate_successor_transaction(
+        path,
+        "workpaper-native",
+        expected_base,
+        observed_link_ids,
+        fields,
+        fail_after_first_copied_link,
+        &FixtureOnlyCandidateAuthority,
     )
-    .map_err(|error| error.to_string())?;
-    for (index, link) in links.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO workpaper_evidence_links
-             (evidence_link_id, workpaper_revision_id, document_id, content_version_id,
-              controlled_evidence_version_id, relationship_type, description, created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 3)",
-            params![
-                Uuid::new_v4().to_string(),
-                &successor_id,
-                &link.document_id,
-                link.content_version_id.as_deref(),
-                link.controlled_version_id.as_deref(),
-                &link.relationship_type,
-                link.description.as_deref()
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-        if index == 0 && fail_after_first_copied_link {
-            return Err("INJECTED_NATIVE_COPY_FAILURE".to_string());
-        }
-    }
-    for signoff_id in &active_signoff_ids {
-        tx.execute(
-            "INSERT INTO workpaper_signoff_supersessions
-             (signoff_supersession_id, signoff_id, superseded_by_revision_id,
-              superseded_at_ms, superseded_reason)
-             VALUES (?1, ?2, ?3, 4, 'test-only native successor')",
-            params![Uuid::new_v4().to_string(), signoff_id, &successor_id],
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    tx.execute(
-        "INSERT INTO audit_events
-         (audit_event_id, event_type, entity_type, entity_id, occurred_at_ms, details_json)
-         VALUES (?1, 'TEST_ONLY_REFERENCE_SUCCESSOR', 'WORKPAPER_REVISION', ?2, 4, '{}')",
-        params![Uuid::new_v4().to_string(), &successor_id],
-    )
-    .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())?;
-    Ok(successor_id)
 }
 
 fn test_only_signed_two_link_base() -> (
@@ -1794,4 +1550,51 @@ fn native_legacy_initial_only_dto_defaults_off_for_installed_callers() {
     let guarded: crate::WorkpaperRevisionInputDto =
         serde_json::from_value(guarded_payload).expect("new frontend DTO must parse");
     assert!(guarded.initial_only);
+}
+
+#[test]
+fn candidate_transaction_default_deny_preserves_real_native_history() {
+    let (fixture, base, _signoff, observed) = test_only_signed_two_link_base();
+    let result = candidate_successor_transaction(
+        &fixture.path,
+        "workpaper-native",
+        &base.workpaper_revision_id,
+        &observed,
+        as_fields(&base),
+        false,
+        &DenyAllCandidateAuthority,
+    );
+    assert_eq!(result, Err("CANDIDATE_NATIVE_AUTHORITY_UNAVAILABLE".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    assert_eq!(list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id).unwrap().len(), 2);
+    let signoffs = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(signoffs.len(), 1);
+    assert_eq!(signoffs[0].superseded_by_revision_id, None);
+}
+
+#[test]
+fn candidate_transaction_cannot_cross_workpaper_scope() {
+    let (fixture, base, _signoff, observed) = test_only_signed_two_link_base();
+    let connection = Connection::open(&fixture.path).unwrap();
+    connection.execute(
+        "INSERT INTO workpapers
+        (workpaper_id, engagement_id, reference, title, workflow_state, created_at_ms)
+        VALUES ('other-workpaper', 'engagement-native', 'WP-02', 'Other', 'IN_PROGRESS', 1)",
+        [],
+    ).unwrap();
+    let result = candidate_successor_transaction(
+        &fixture.path,
+        "other-workpaper",
+        &base.workpaper_revision_id,
+        &observed,
+        as_fields(&base),
+        false,
+        &FixtureOnlyCandidateAuthority,
+    );
+    assert_eq!(result, Err("NO_NATIVE_BASE".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    assert_eq!(
+        list_workpaper_revisions(&fixture.path, "other-workpaper").unwrap().len(),
+        0
+    );
 }
