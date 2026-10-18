@@ -358,3 +358,37 @@ test("tampered opening base, foreign or incomplete observation, or divergent imm
     /Inconsistent text observed for the same immutable revision/,
   );
 });
+
+test("across-revision source evidence ID reuse fails closed even when exact metadata matches", () => {
+  const opening = readSnapshot({ signoffs: [] });
+  const later = readSnapshot({
+    revisionId: "revision-5",
+    evidence: [evidenceLink({ workpaperRevisionId: "revision-5" })],
+    signoffs: [],
+  });
+  const before = JSON.stringify(opening.session);
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later),
+    /Reused evidence-link ID across different immutable revisions/,
+  );
+  assert.equal(JSON.stringify(opening.session), before);
+  assert.equal(opening.session.draft.expectedLatestRevisionId, "revision-4");
+});
+
+test("across-revision active sign-off ID reuse fails closed despite fresh evidence IDs", () => {
+  const opening = readSnapshot();
+  const later = readSnapshot({
+    revisionId: "revision-5",
+    evidence: [evidenceLink({
+      evidenceLinkId: "new-source-link", workpaperRevisionId: "revision-5",
+    })],
+    signoffs: [observedSignoff({ workpaperRevisionId: "revision-5" })],
+  });
+  const before = JSON.stringify(opening.session);
+  assert.throws(
+    () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, later),
+    /Reused active sign-off ID across different immutable revisions/,
+  );
+  assert.equal(JSON.stringify(opening.session), before);
+  assert.equal(opening.session.draft.content.conclusion, "Prior conclusion");
+});
