@@ -2067,6 +2067,10 @@ impl From<persistence::WorkpaperRecord> for WorkpaperDto {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkpaperRevisionInputDto {
+    // Defaults to false to preserve existing native callers and their
+    // separately triaged legacy behavior; this is NOT authorization.
+    #[serde(default)]
+    initial_only: bool,
     revision_reason: Option<String>,
     objective: String,
     procedure_performed: String,
@@ -4254,22 +4258,25 @@ fn create_workpaper_revision(
     database: State<'_, persistence::DatabaseState>,
 ) -> Result<WorkpaperRevisionDto, String> {
     validate_uuid(&workpaper_id, "workpaper")?;
-    persistence::create_workpaper_revision(
-        database.path(),
-        &workpaper_id,
-        persistence::NewWorkpaperRevision {
-            revision_reason: revision.revision_reason.as_deref(),
-            objective: &revision.objective,
-            procedure_performed: &revision.procedure_performed,
-            population: &revision.population,
-            sample: &revision.sample,
-            exceptions: &revision.exceptions,
-            management_explanation: &revision.management_explanation,
-            conclusion: &revision.conclusion,
-        },
-    )
-    .map(Into::into)
-    .map_err(|error| error.to_string())
+    let content = persistence::NewWorkpaperRevision {
+        revision_reason: revision.revision_reason.as_deref(),
+        objective: &revision.objective,
+        procedure_performed: &revision.procedure_performed,
+        population: &revision.population,
+        sample: &revision.sample,
+        exceptions: &revision.exceptions,
+        management_explanation: &revision.management_explanation,
+        conclusion: &revision.conclusion,
+    };
+    // New initial-only containment is atomic in persistence. Omitted/false
+    // flag retains the installed legacy command semantics; no verified
+    // native author identity, CAS successor Save or evidence carry-forward.
+    let result = if revision.initial_only {
+        persistence::create_initial_workpaper_revision(database.path(), &workpaper_id, content)
+    } else {
+        persistence::create_workpaper_revision(database.path(), &workpaper_id, content)
+    };
+    result.map(Into::into).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
