@@ -51,6 +51,8 @@ mod word;
 mod workpaper_revision_authorization_contract;
 #[cfg(test)]
 mod workpaper_revision_native_text_contract_tests;
+#[cfg(test)]
+mod workpaper_revision_successor_candidate;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
