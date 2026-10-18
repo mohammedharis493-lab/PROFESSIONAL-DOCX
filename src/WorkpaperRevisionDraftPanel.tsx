@@ -14,7 +14,11 @@ import {
   inspectWorkpaperRevisionEditorFreshness,
   previewWorkpaperRevisionEditorSession,
 } from "./workpaper-revision-edit-draft";
-import { inspectWorkpaperRevisionObservedText } from "./workpaper-revision-conflict-inspection";
+import {
+  inspectWorkpaperRevisionObservedText,
+  inspectWorkpaperRevisionReadObservationChanges,
+} from "./workpaper-revision-conflict-inspection";
+import type { WorkpaperRevisionReadSnapshot } from "./workpaper-revision-read-snapshot";
 import type {
   WorkpaperRevisionContentField,
   WorkpaperRevisionEditBase,
@@ -45,6 +49,13 @@ export type WorkpaperRevisionDraftPanelProps = Readonly<{
    */
   observedLatestRevision?: WorkpaperRevisionEditBase;
   /**
+   * Optional PAIR of independently validated, detached read observations.
+   * The opening snapshot must match the draft's immutable base. Differences
+   * are display-only, never completeness, custody, approval or Save authority.
+   */
+  openingReadSnapshot?: WorkpaperRevisionReadSnapshot;
+  observedReadSnapshot?: WorkpaperRevisionReadSnapshot;
+  /**
    * Display-only hint from historical records, not an authorization flag
    * or proof of sign-off validity for the current exact revision.
    */
@@ -56,9 +67,27 @@ export default function WorkpaperRevisionDraftPanel({
   onSessionChange,
   observedLatestRevisionId,
   observedLatestRevision,
+  openingReadSnapshot,
+  observedReadSnapshot,
   hasHistoricalSignoff = false,
 }: WorkpaperRevisionDraftPanelProps) {
   const prefix = useId();
+  if ((openingReadSnapshot === undefined) !== (observedReadSnapshot === undefined)) {
+    throw new TypeError("Evidence/sign-off comparison needs both complete read observations");
+  }
+  const observedChanges = openingReadSnapshot && observedReadSnapshot
+    ? inspectWorkpaperRevisionReadObservationChanges(
+        session, openingReadSnapshot, observedReadSnapshot,
+      )
+    : null;
+  const snapshotLatestId = observedReadSnapshot?.session.base.workpaperRevisionId;
+  if (snapshotLatestId && (
+    (observedLatestRevisionId != null && observedLatestRevisionId !== snapshotLatestId) ||
+    (observedLatestRevision &&
+      observedLatestRevision.workpaperRevisionId !== snapshotLatestId)
+  )) {
+    throw new TypeError("Conflicting latest revision observations must be reconciled by the caller");
+  }
   if (
     observedLatestRevision &&
     observedLatestRevisionId != null &&
@@ -69,7 +98,8 @@ export default function WorkpaperRevisionDraftPanel({
   const comparedText = observedLatestRevision
     ? inspectWorkpaperRevisionObservedText(session, observedLatestRevision)
     : null;
-  const latestId = observedLatestRevision?.workpaperRevisionId ?? observedLatestRevisionId;
+  const latestId = snapshotLatestId ??
+    observedLatestRevision?.workpaperRevisionId ?? observedLatestRevisionId;
   const preview = previewWorkpaperRevisionEditorSession(session);
   const changed = new Set<string>(preview.changedFields);
   const freshness =
@@ -135,6 +165,49 @@ export default function WorkpaperRevisionDraftPanel({
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+      {observedChanges ? (
+        <div className="evidence-integrity-note" aria-label="Observed evidence and sign-off comparison">
+          <p>
+            Read-only client comparison. No evidence custody, professional
+            approval, revision permission or Save has been verified.
+            {observedChanges.comparisonScope === "across-revisions"
+              ? " A different revision is observed: link and sign-off IDs refer to different bases, not inherited approvals or proven evidence carry-forward."
+              : " The same revision is observed: changes may have occurred after the draft was opened."}
+          </p>
+          <p>
+            {observedChanges.evidenceChanges.length} evidence-link observation change(s);
+            {" "}{observedChanges.activeSignoffChanges.length} active sign-off ID change(s).
+          </p>
+          {observedChanges.evidenceChanges.length > 0 ? (
+            <ul aria-label="Evidence link observation changes">
+              {observedChanges.evidenceChanges.map(entry => (
+                <li key={entry.evidenceLinkId}>
+                  Source link {entry.evidenceLinkId}: {
+                    entry.change === "metadata-changed"
+                      ? "Observed source relationship or version metadata differs"
+                      : entry.change === "added"
+                        ? "Present only in the later observation"
+                        : "Present only in the opening observation"
+                  }
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {observedChanges.activeSignoffChanges.length > 0 ? (
+            <ul aria-label="Active sign-off observation changes">
+              {observedChanges.activeSignoffChanges.map(entry => (
+                <li key={entry.signoffId}>
+                  Sign-off {entry.signoffId}: {
+                    entry.change === "added"
+                      ? "Active only in the later observation"
+                      : "Active only in the opening observation"
+                  }
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       ) : null}
       <div className="workspace-grid workspace-grid-two">
