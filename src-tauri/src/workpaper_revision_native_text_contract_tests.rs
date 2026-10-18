@@ -10,8 +10,9 @@
 //! legacy command; a test fixture's PREPARED row is not professional approval.
 
 use crate::persistence::{
-    create_workpaper_evidence_link, create_workpaper_revision, create_workpaper_signoff,
-    initialize_database, list_workpaper_evidence_links, list_workpaper_revisions,
+    create_initial_workpaper_revision, create_workpaper_evidence_link,
+    create_workpaper_revision, create_workpaper_signoff, initialize_database,
+    list_workpaper_evidence_links, list_workpaper_revisions,
     list_workpaper_signoffs, NewWorkpaperRevision, NewWorkpaperSignoff, WorkpaperRevisionRecord,
 };
 use rusqlite::Connection;
@@ -1665,4 +1666,123 @@ fn reference_native_rejects_malformed_contiguous_revision_ancestry() {
         fixture.rows()[1].workpaper_revision_id,
         first.workpaper_revision_id
     );
+}
+
+#[test]
+fn native_initial_only_entry_rejects_existing_revision_without_mutation() {
+    let fixture = NativeRevisionFixture::new();
+    let first = create_initial_workpaper_revision(
+        &fixture.path,
+        "workpaper-native",
+        NewWorkpaperRevision {
+            revision_reason: Some("Unverified initial legacy draft"),
+            objective: "First",
+            procedure_performed: "Procedure",
+            population: "",
+            sample: "",
+            exceptions: "",
+            management_explanation: "",
+            conclusion: "Initial conclusion",
+        },
+    )
+    .expect("initial-only native entry should accept an empty workpaper");
+    let refused = create_initial_workpaper_revision(
+        &fixture.path,
+        "workpaper-native",
+        NewWorkpaperRevision {
+            revision_reason: Some("Must be refused"),
+            objective: "Would erase existing content",
+            procedure_performed: "",
+            population: "",
+            sample: "",
+            exceptions: "",
+            management_explanation: "",
+            conclusion: "",
+        },
+    )
+    .expect_err("initial-only native entry must reject a successor");
+    assert!(refused.to_string().contains("LEGACY_INITIAL_REVISION_ONLY"));
+    let saved = fixture.rows();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].workpaper_revision_id, first.workpaper_revision_id);
+    assert_eq!(as_fields(&saved[0]), [
+        "First", "Procedure", "", "", "", "", "Initial conclusion"
+    ]);
+
+    // Existing callable legacy API is intentionally backward-compatible;
+    // this fixture outcome is a known untrusted bypass, NOT a security proof.
+    let legacy_successor = fixture.insert([
+        "Legacy successor", "Procedure", "Historic", "Sample", "Exception",
+        "Explanation", "Conclusion"
+    ]);
+    assert_eq!(fixture.rows().len(), 2);
+    assert_eq!(legacy_successor.revision_number, 2);
+}
+
+#[test]
+fn native_initial_only_two_independent_writers_accept_only_one() {
+    use std::sync::{Arc, Barrier};
+    let fixture = NativeRevisionFixture::new();
+    let ready = Arc::new(Barrier::new(3));
+    let mut workers = Vec::new();
+    for objective in ["First writer", "Second writer"] {
+        let path = fixture.path.clone();
+        let barrier = Arc::clone(&ready);
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            create_initial_workpaper_revision(
+                &path,
+                "workpaper-native",
+                NewWorkpaperRevision {
+                    revision_reason: Some("Fixture initial-only race"),
+                    objective,
+                    procedure_performed: "Trace",
+                    population: "",
+                    sample: "",
+                    exceptions: "",
+                    management_explanation: "",
+                    conclusion: "Unverified local draft",
+                },
+            )
+        }));
+    }
+    ready.wait();
+    let mut accepted = 0;
+    let mut refused = 0;
+    for worker in workers {
+        match worker.join().expect("native first-create worker must not panic") {
+            Ok(revision) => {
+                accepted += 1;
+                assert_eq!(revision.revision_number, 1);
+            }
+            Err(error) => {
+                assert!(error.to_string().contains("LEGACY_INITIAL_REVISION_ONLY"));
+                refused += 1;
+            }
+        }
+    }
+    assert_eq!((accepted, refused), (1, 1));
+    assert_eq!(fixture.rows().len(), 1);
+}
+
+#[test]
+fn native_legacy_initial_only_dto_defaults_off_for_installed_callers() {
+    use serde_json::json;
+    let payload = json!({
+        "objective": "Objective",
+        "procedurePerformed": "Procedure",
+        "population": "",
+        "sample": "",
+        "exceptions": "",
+        "managementExplanation": "",
+        "conclusion": ""
+    });
+    let installed: crate::WorkpaperRevisionInputDto =
+        serde_json::from_value(payload.clone()).expect("old caller DTO must parse");
+    assert!(!installed.initial_only);
+    let mut guarded_payload = payload;
+    guarded_payload["initialOnly"] = json!(true);
+    let guarded: crate::WorkpaperRevisionInputDto =
+        serde_json::from_value(guarded_payload).expect("new frontend DTO must parse");
+    assert!(guarded.initial_only);
 }
