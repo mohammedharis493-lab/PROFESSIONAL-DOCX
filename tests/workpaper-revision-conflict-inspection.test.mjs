@@ -318,9 +318,14 @@ test("successor revision comparisons never claim evidence custody or sign-off ca
 test("tampered opening base, foreign or incomplete observation, or divergent immutable text fails closed", () => {
   const opening = readSnapshot();
   const later = readSnapshot();
-  const foreign = { ...later, session: {
-    ...later.session, base: { ...later.session.base, workpaperId: "foreign" },
-  } };
+  const foreign = { ...later,
+    session: {
+      ...later.session, base: { ...later.session.base, workpaperId: "foreign" },
+    },
+    observedBaseSignoffs: later.observedBaseSignoffs.map(signoff => ({
+      ...signoff, workpaperId: "foreign",
+    })),
+  };
   assert.throws(
     () => inspectWorkpaperRevisionReadObservationChanges(opening.session, opening, foreign),
     /immutable draft base and workpaper/,
