@@ -2200,7 +2200,6 @@ fn candidate_rejects_historical_supersession_to_foreign_workpaper() {
     );
 }
 
-
 /// A completely separate real workpaper and revision, seeded only in this
 /// disposable SQLite fixture. Its signer identities are never authoritative.
 fn fixture_create_other_workpaper_revision(
@@ -2245,7 +2244,10 @@ fn fixture_assert_signoff_scope_rejected_without_writes(
         ["Correction", "Procedure", "", "", "", "", "Conclusion"],
         false,
     );
-    assert_eq!(result, Err("INVALID_NATIVE_SIGNOFF_REVISION_SCOPE".to_string()));
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_SIGNOFF_REVISION_SCOPE".to_string())
+    );
     assert_eq!(fixture_candidate_write_counts(&fixture.path), before);
     assert_eq!(fixture.rows()[0].workpaper_revision_id, latest_revision_id);
 }
@@ -2253,12 +2255,8 @@ fn fixture_assert_signoff_scope_rejected_without_writes(
 #[test]
 fn candidate_rejects_signoff_claiming_other_workpaper_on_our_historical_revision() {
     let fixture = NativeRevisionFixture::new();
-    let signed_revision = fixture.insert([
-        "First", "Procedure", "", "", "", "", "Conclusion",
-    ]);
-    let latest = fixture.insert([
-        "Second", "Procedure", "", "", "", "", "Conclusion",
-    ]);
+    let signed_revision = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
     fixture_create_other_workpaper_revision(&fixture);
     let db = Connection::open(&fixture.path).expect("open SQLite for fixture corruption");
     db.execute(
@@ -2271,17 +2269,16 @@ fn candidate_rejects_signoff_claiming_other_workpaper_on_our_historical_revision
     )
     .expect("current migration allows individually valid but contradictory FKs");
     drop(db);
-    fixture_assert_signoff_scope_rejected_without_writes(
-        &fixture,
-        &latest.workpaper_revision_id,
-    );
+    fixture_assert_signoff_scope_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
     let db = Connection::open(&fixture.path).unwrap();
-    let observed: (String, String) = db.query_row(
-        "SELECT workpaper_id, workpaper_revision_id FROM workpaper_signoffs
+    let observed: (String, String) = db
+        .query_row(
+            "SELECT workpaper_id, workpaper_revision_id FROM workpaper_signoffs
          WHERE signoff_id = 'foreign-claimed-local-revision'",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap();
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(observed.0, "other-scope-workpaper");
     assert_eq!(observed.1, signed_revision.workpaper_revision_id);
 }
@@ -2289,9 +2286,7 @@ fn candidate_rejects_signoff_claiming_other_workpaper_on_our_historical_revision
 #[test]
 fn candidate_rejects_our_claimed_signoff_on_other_workpaper_revision() {
     let fixture = NativeRevisionFixture::new();
-    let latest = fixture.insert([
-        "Current", "Procedure", "", "", "", "", "Conclusion",
-    ]);
+    let latest = fixture.insert(["Current", "Procedure", "", "", "", "", "Conclusion"]);
     let foreign_revision = fixture_create_other_workpaper_revision(&fixture);
     let db = Connection::open(&fixture.path).expect("open SQLite for fixture corruption");
     db.execute(
@@ -2304,10 +2299,7 @@ fn candidate_rejects_our_claimed_signoff_on_other_workpaper_revision() {
     )
     .expect("insert migration-permitted mismatch");
     drop(db);
-    fixture_assert_signoff_scope_rejected_without_writes(
-        &fixture,
-        &latest.workpaper_revision_id,
-    );
+    fixture_assert_signoff_scope_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
     assert_eq!(
         list_workpaper_revisions(&fixture.path, "other-scope-workpaper")
             .unwrap()
@@ -2319,9 +2311,7 @@ fn candidate_rejects_our_claimed_signoff_on_other_workpaper_revision() {
 #[test]
 fn candidate_rejects_orphaned_claimed_signoff_revision_before_any_writes() {
     let fixture = NativeRevisionFixture::new();
-    let latest = fixture.insert([
-        "Current", "Procedure", "", "", "", "", "Conclusion",
-    ]);
+    let latest = fixture.insert(["Current", "Procedure", "", "", "", "", "Conclusion"]);
     // An intentionally corrupted SQLite fixture can contain orphaned legacy
     // references if inserted with foreign-key enforcement disabled. The
     // candidate re-enables foreign keys and must reject the existing row.
@@ -2337,18 +2327,13 @@ fn candidate_rejects_orphaned_claimed_signoff_revision_before_any_writes() {
     )
     .expect("seed deliberately orphaned row with SQLite FKs off");
     drop(db);
-    fixture_assert_signoff_scope_rejected_without_writes(
-        &fixture,
-        &latest.workpaper_revision_id,
-    );
+    fixture_assert_signoff_scope_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
 }
 
 #[test]
 fn candidate_ignores_consistent_unrelated_workpaper_signoffs_without_inheriting_them() {
     let fixture = NativeRevisionFixture::new();
-    let latest = fixture.insert([
-        "Current", "Procedure", "", "", "", "", "Conclusion",
-    ]);
+    let latest = fixture.insert(["Current", "Procedure", "", "", "", "", "Conclusion"]);
     let other = fixture_create_other_workpaper_revision(&fixture);
     let foreign_signoff = create_workpaper_signoff(
         &fixture.path,
@@ -2377,8 +2362,7 @@ fn candidate_ignores_consistent_unrelated_workpaper_signoffs_without_inheriting_
     assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
         .unwrap()
         .is_empty());
-    let foreign_history =
-        list_workpaper_signoffs(&fixture.path, "other-scope-workpaper").unwrap();
+    let foreign_history = list_workpaper_signoffs(&fixture.path, "other-scope-workpaper").unwrap();
     assert_eq!(foreign_history.len(), 1);
     assert_eq!(foreign_history[0].signoff_id, foreign_signoff.signoff_id);
     assert_eq!(foreign_history[0].superseded_by_revision_id, None);
