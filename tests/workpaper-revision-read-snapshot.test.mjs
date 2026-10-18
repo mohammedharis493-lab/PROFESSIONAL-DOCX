@@ -540,3 +540,48 @@ test("older revision sign-offs are not classified as active base sign-offs", () 
   assert.deepEqual(read.observedBaseActiveSignoffIds, ["current"]);
   assert.equal(read.observedBaseSignoffCount, 1);
 });
+
+test("base sign-off observations freeze immutable metadata and signed link IDs without granting approval", () => {
+  const signoff = observedSignoff({
+    revisionNumber: 7, signoffType: "PREPARED", actorId: "unverified-actor",
+    actorRole: "Unverified role", signedAtMs: 129, comment: "Signed  \r\n",
+    evidenceLinkIds: ["link-2", "link-1"],
+  });
+  const source = input({
+    evidenceLinks: [contentLink(), contentLink({
+      evidenceLinkId: "link-2", documentId: "doc-2",
+    })],
+    signoffs: [signoff],
+  });
+  const read = openStoredWorkpaperRevisionReadSnapshot(source);
+  assert.ok(Object.isFrozen(read.observedBaseSignoffs));
+  assert.ok(Object.isFrozen(read.observedBaseSignoffs[0]));
+  assert.ok(Object.isFrozen(read.observedBaseSignoffs[0].evidenceLinkIds));
+  assert.deepEqual(read.observedBaseSignoffs[0].evidenceLinkIds, ["link-1", "link-2"]);
+  assert.equal(read.observedBaseSignoffs[0].actorId, "unverified-actor");
+  assert.equal(read.observedBaseSignoffs[0].comment, "Signed  \r\n");
+  source.signoffs[0].actorRole = "tampered";
+  source.signoffs[0].evidenceLinkIds.splice(0, 1);
+  assert.equal(read.observedBaseSignoffs[0].actorRole, "Unverified role");
+  assert.deepEqual(read.observedBaseSignoffs[0].evidenceLinkIds, ["link-1", "link-2"]);
+  assert.equal("observedBaseSignoffs" in read.session.draft, false);
+  assert.equal("actorId" in read.session.draft, false);
+});
+
+test("base sign-off read includes superseded history but not other revision sign-offs", () => {
+  const old = openStoredWorkpaperRevisionReadSnapshot(input({
+    revisions: [revision(), revision({
+      workpaperRevisionId: "rev-3", revisionNumber: 3,
+    })],
+    signoffs: [
+      observedSignoff({ signoffId: "z", supersededAtMs: 100,
+        supersededReason: "Historical", supersededByRevisionId: "rev-8" }),
+      observedSignoff({ signoffId: "a", evidenceLinkIds: ["link-1"] }),
+      observedSignoff({ signoffId: "past", workpaperRevisionId: "rev-3" }),
+    ],
+  }));
+  assert.deepEqual(old.observedBaseSignoffs.map(s => s.signoffId), ["a", "z"]);
+  assert.deepEqual(old.observedBaseActiveSignoffIds, ["a"]);
+  assert.equal(old.observedBaseSignoffCount, 2);
+  assert.equal(old.observedBaseSignoffs[1].supersededByRevisionId, "rev-8");
+});
