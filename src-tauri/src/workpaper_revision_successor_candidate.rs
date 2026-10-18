@@ -251,6 +251,91 @@ fn candidate_validate_historical_signoff_supersessions(
     Ok(())
 }
 
+/// Inspect ONLY existing legacy workpaper audit references; the early
+/// migration gives audit_events no foreign keys for entity/related IDs.
+/// Scope each check by EITHER side (stored entity owner or related revision)
+/// to avoid hiding a cross-workpaper audit row behind its incorrect label.
+///
+/// This does not require old audit events to exist: legacy rows and test-only
+/// transactions may not have a complete native event series. No source-byte
+/// custody, tamper-evident audit storage or signer authentication is proven.
+fn candidate_validate_existing_workpaper_audit_references(
+    tx: &Transaction<'_>,
+    workpaper_id: &str,
+) -> Result<(), String> {
+    let invalid: i64 = tx
+        .query_row(
+            "SELECT
+               EXISTS(
+                 SELECT 1 FROM audit_events a
+                 LEFT JOIN workpaper_revisions r
+                   ON r.workpaper_revision_id = a.entity_id
+                 WHERE a.event_type = 'WORKPAPER_REVISION_CREATED'
+                   AND (r.workpaper_id = ?1 OR a.related_entity_id = ?1)
+                   AND (a.entity_type IS NOT 'WORKPAPER_REVISION'
+                     OR a.related_entity_type IS NOT 'WORKPAPER'
+                     OR r.workpaper_revision_id IS NULL
+                     OR r.workpaper_id IS NOT a.related_entity_id)
+               )
+               OR EXISTS(
+                 SELECT 1 FROM audit_events a
+                 LEFT JOIN workpaper_evidence_links e
+                   ON e.evidence_link_id = a.entity_id
+                 LEFT JOIN workpaper_revisions owner
+                   ON owner.workpaper_revision_id = e.workpaper_revision_id
+                 LEFT JOIN workpaper_revisions claimed
+                   ON claimed.workpaper_revision_id = a.related_entity_id
+                 WHERE a.event_type = 'WORKPAPER_EVIDENCE_LINK_ADDED'
+                   AND (owner.workpaper_id = ?1 OR claimed.workpaper_id = ?1)
+                   AND (a.entity_type IS NOT 'WORKPAPER_EVIDENCE_LINK'
+                     OR a.related_entity_type IS NOT 'WORKPAPER_REVISION'
+                     OR e.evidence_link_id IS NULL
+                     OR e.workpaper_revision_id IS NOT a.related_entity_id)
+               )
+               OR EXISTS(
+                 SELECT 1 FROM audit_events a
+                 LEFT JOIN workpaper_signoffs s
+                   ON s.signoff_id = a.entity_id
+                 LEFT JOIN workpaper_revisions owner
+                   ON owner.workpaper_revision_id = s.workpaper_revision_id
+                 LEFT JOIN workpaper_revisions claimed
+                   ON claimed.workpaper_revision_id = a.related_entity_id
+                 WHERE a.event_type = 'WORKPAPER_SIGNOFF_CREATED'
+                   AND (s.workpaper_id = ?1 OR owner.workpaper_id = ?1
+                        OR claimed.workpaper_id = ?1)
+                   AND (a.entity_type IS NOT 'WORKPAPER_SIGNOFF'
+                     OR a.related_entity_type IS NOT 'WORKPAPER_REVISION'
+                     OR s.signoff_id IS NULL
+                     OR s.workpaper_revision_id IS NOT a.related_entity_id)
+               )
+               OR EXISTS(
+                 SELECT 1 FROM audit_events a
+                 LEFT JOIN workpaper_signoffs s
+                   ON s.signoff_id = a.entity_id
+                 LEFT JOIN workpaper_revisions owner
+                   ON owner.workpaper_revision_id = s.workpaper_revision_id
+                 LEFT JOIN workpaper_revisions claimed
+                   ON claimed.workpaper_revision_id = a.related_entity_id
+                 LEFT JOIN workpaper_signoff_supersessions ss
+                   ON ss.signoff_id = a.entity_id
+                 WHERE a.event_type = 'WORKPAPER_SIGNOFF_SUPERSEDED'
+                   AND (s.workpaper_id = ?1 OR owner.workpaper_id = ?1
+                        OR claimed.workpaper_id = ?1)
+                   AND (a.entity_type IS NOT 'WORKPAPER_SIGNOFF'
+                     OR a.related_entity_type IS NOT 'WORKPAPER_REVISION'
+                     OR ss.signoff_id IS NULL
+                     OR ss.superseded_by_revision_id IS NOT a.related_entity_id)
+               )",
+            [workpaper_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if invalid != 0 {
+        return Err("INVALID_NATIVE_HISTORICAL_AUDIT_REFERENCE".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn candidate_successor_transaction(
     path: &Path,
     workpaper_id: &str,
@@ -300,6 +385,7 @@ pub(crate) fn candidate_successor_transaction(
     // lock, before any successor, link, supersession or audit insert.
     candidate_validate_historical_signed_evidence(&tx, workpaper_id)?;
     candidate_validate_historical_signoff_supersessions(&tx, workpaper_id, &latest_id)?;
+    candidate_validate_existing_workpaper_audit_references(&tx, workpaper_id)?;
 
     let links: Vec<CandidateObservedEvidenceLink> = {
         let mut statement = tx
