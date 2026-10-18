@@ -1979,3 +1979,188 @@ fn candidate_rejects_historical_signoff_with_extra_foreign_revision_link_atomica
         .evidence_link_ids
         .contains(&foreign_link.evidence_link_id));
 }
+
+ 
+/// Direct fixture INSERTs exercise migration-permitted inconsistencies that
+/// immutable UPDATE/DELETE triggers cannot repair after they are recorded.
+/// These labels are untrusted and convey no sign-off authority.
+fn fixture_insert_unverified_signoff(
+    fixture: &NativeRevisionFixture,
+    signoff_id: &str,
+    revision_id: &str,
+) {
+    let db = Connection::open(&fixture.path).expect("open fixture for sign-off injection");
+    db.execute(
+        "INSERT INTO workpaper_signoffs
+         (signoff_id, workpaper_id, workpaper_revision_id, signoff_type,
+          actor_id, actor_role, signed_at_ms, comment)
+         VALUES (?1, 'workpaper-native', ?2, 'PREPARED',
+                 'unverified-fixture', 'UNVERIFIED', 2, NULL)",
+        rusqlite::params![signoff_id, revision_id],
+    )
+    .expect("insert synthetic sign-off row");
+}
+
+fn fixture_insert_unverified_supersession(
+    fixture: &NativeRevisionFixture,
+    signoff_id: &str,
+    target_revision_id: &str,
+) {
+    let db = Connection::open(&fixture.path).expect("open fixture for supersession injection");
+    db.execute(
+        "INSERT INTO workpaper_signoff_supersessions
+         (signoff_supersession_id, signoff_id, superseded_by_revision_id,
+          superseded_at_ms, superseded_reason)
+         VALUES (?1, ?2, ?3, 3, 'unverified fixture supersession')",
+        rusqlite::params![Uuid::new_v4().to_string(), signoff_id, target_revision_id],
+    )
+    .expect("inject supersession relationship allowed by current migration");
+}
+
+fn fixture_assert_supersession_rejected_without_writes(
+    fixture: &NativeRevisionFixture,
+    latest_revision_id: &str,
+) {
+    let prior = fixture_candidate_write_counts(&fixture.path);
+    let result = test_only_checked_successor(
+        &fixture.path,
+        latest_revision_id,
+        &[],
+        ["Corrected", "Procedure", "", "", "", "", "Conclusion"],
+        false,
+    );
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_HISTORICAL_SIGNOFF_SUPERSESSION".to_string())
+    );
+    assert_eq!(fixture_candidate_write_counts(&fixture.path), prior);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest_revision_id);
+}
+
+#[test]
+fn candidate_accepts_two_correct_immediate_historical_supersessions() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let first_signoff = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "unverified-fixture-one",
+            actor_role: "UNVERIFIED",
+            comment: None,
+        },
+    )
+    .expect("synthetic first sign-off");
+    let second = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
+    let second_signoff = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &second.workpaper_revision_id,
+            signoff_type: "REVIEWED",
+            actor_id: "unverified-fixture-two",
+            actor_role: "UNVERIFIED",
+            comment: None,
+        },
+    )
+    .expect("synthetic second sign-off");
+    let third = fixture.insert(["Third", "Procedure", "", "", "", "", "Conclusion"]);
+    let successor = test_only_checked_successor(
+        &fixture.path,
+        &third.workpaper_revision_id,
+        &[],
+        ["Fourth", "Procedure", "", "", "", "", "Conclusion"],
+        false,
+    )
+    .expect("valid historical supersessions must not bar the test-only successor");
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history.len(), 2);
+    for (id, target) in [
+        (first_signoff.signoff_id, second.workpaper_revision_id),
+        (second_signoff.signoff_id, third.workpaper_revision_id),
+    ] {
+        let signoff = history.iter().find(|item| item.signoff_id == id).unwrap();
+        assert_eq!(signoff.superseded_by_revision_id.as_deref(), Some(target.as_str()));
+    }
+    assert_eq!(fixture.rows().len(), 4);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, successor);
+    assert!(history.iter().all(|entry| entry.workpaper_revision_id != successor));
+}
+
+#[test]
+fn candidate_rejects_historical_signoff_missing_supersession_atomically() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_insert_unverified_signoff(
+        &fixture,
+        "missing-historical-supersession",
+        &first.workpaper_revision_id,
+    );
+    fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].superseded_by_revision_id, None);
+}
+
+#[test]
+fn candidate_rejects_skipped_historical_supersession_target_atomically() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Third", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_insert_unverified_signoff(&fixture, "skipped-supersession", &first.workpaper_revision_id);
+    fixture_insert_unverified_supersession(&fixture, "skipped-supersession", &latest.workpaper_revision_id);
+    fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history[0].superseded_by_revision_id.as_deref(),
+               Some(latest.workpaper_revision_id.as_str()));
+}
+
+#[test]
+fn candidate_rejects_latest_signoff_already_superseded_to_older_revision() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_insert_unverified_signoff(&fixture, "premature-latest-supersession", &latest.workpaper_revision_id);
+    fixture_insert_unverified_supersession(&fixture, "premature-latest-supersession", &first.workpaper_revision_id);
+    fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
+}
+
+#[test]
+fn candidate_rejects_historical_supersession_to_foreign_workpaper() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Second", "Procedure", "", "", "", "", "Conclusion"]);
+    let db = Connection::open(&fixture.path).unwrap();
+    db.execute(
+        "INSERT INTO workpapers
+         (workpaper_id, engagement_id, reference, title, workflow_state, created_at_ms)
+         VALUES ('foreign-workpaper', 'engagement-native', 'WP-FOREIGN',
+                 'Synthetic other workpaper', 'IN_PROGRESS', 1)",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let foreign = create_workpaper_revision(
+        &fixture.path,
+        "foreign-workpaper",
+        NewWorkpaperRevision {
+            revision_reason: Some("Synthetic foreign revision"),
+            objective: "Unrelated",
+            procedure_performed: "",
+            population: "",
+            sample: "",
+            exceptions: "",
+            management_explanation: "",
+            conclusion: "",
+        },
+    )
+    .expect("fixture separate-workpaper revision");
+    fixture_insert_unverified_signoff(&fixture, "foreign-supersession", &first.workpaper_revision_id);
+    fixture_insert_unverified_supersession(&fixture, "foreign-supersession", &foreign.workpaper_revision_id);
+    fixture_assert_supersession_rejected_without_writes(&fixture, &latest.workpaper_revision_id);
+    assert_eq!(list_workpaper_revisions(&fixture.path, "foreign-workpaper").unwrap().len(), 1);
+}
