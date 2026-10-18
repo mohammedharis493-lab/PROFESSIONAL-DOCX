@@ -210,6 +210,16 @@ export function inspectWorkpaperRevisionReadObservationChanges(
   const text = inspectWorkpaperRevisionObservedText(session, current);
   const first = new Map(opening.observedSourceEvidence.map(link => [link.evidenceLinkId, link]));
   const second = new Map(later.observedSourceEvidence.map(link => [link.evidenceLinkId, link]));
+  // Link identity belongs to one immutable revision. Matching source IDs
+  // on different bases are a corrupt/ambiguous observation, not evidence
+  // carry-forward, even if version metadata happens to match byte-for-byte.
+  if (text.differentRevisionObserved) {
+    for (const id of first.keys()) {
+      if (second.has(id)) {
+        throw new TypeError("Reused evidence-link ID across different immutable revisions");
+      }
+    }
+  }
   const evidenceChanges: WorkpaperObservedEvidenceChange[] = [];
   for (const [id, link] of first) {
     const now = second.get(id);
@@ -229,6 +239,13 @@ export function inspectWorkpaperRevisionReadObservationChanges(
   );
   const oldSignoffs = new Set(opening.observedBaseActiveSignoffIds);
   const nextSignoffs = new Set(later.observedBaseActiveSignoffIds);
+  // A professional sign-off row is never transferable to another revision.
+  // This checks the active-ID observations only; it makes no assertion about
+  // historical sign-offs outside these detached read snapshots.
+  if (text.differentRevisionObserved &&
+      [...oldSignoffs].some(id => nextSignoffs.has(id))) {
+    throw new TypeError("Reused active sign-off ID across different immutable revisions");
+  }
   const activeSignoffChanges: WorkpaperObservedSignoffChange[] = [
     ...[...oldSignoffs].filter(id => !nextSignoffs.has(id))
       .map(signoffId => Object.freeze({ signoffId, change: "removed" as const })),
