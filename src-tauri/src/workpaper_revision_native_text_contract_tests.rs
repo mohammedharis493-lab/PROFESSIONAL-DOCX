@@ -1826,7 +1826,11 @@ fn candidate_accepts_consistent_superseded_historical_signed_evidence_without_in
         signed[0].workpaper_revision_id,
         original.workpaper_revision_id
     );
-    assert_eq!(signed[0].evidence_link_ids, source_links);
+    let mut signed_ids = signed[0].evidence_link_ids.clone();
+    signed_ids.sort();
+    // SQLite exposes the native sign-off snapshot in creation order; UUIDs
+    // are nondeterministic. Compare exact IDs as a set, not their row order.
+    assert_eq!(signed_ids, source_links);
     assert_eq!(
         signed[0].superseded_by_revision_id.as_deref(),
         Some(current.workpaper_revision_id.as_str())
