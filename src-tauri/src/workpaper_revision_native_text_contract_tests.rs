@@ -1786,7 +1786,13 @@ fn fixture_candidate_write_counts(path: &std::path::Path) -> (i64, i64, i64, i64
 fn candidate_accepts_consistent_superseded_historical_signed_evidence_without_inheritance() {
     let (fixture, original, old_signoff_id, source_links) = test_only_signed_two_link_base();
     let current = fixture.insert([
-        "Next objective", "Trace", "Full population", "Sample", "", "", "Next",
+        "Next objective",
+        "Trace",
+        "Full population",
+        "Sample",
+        "",
+        "",
+        "Next",
     ]);
     // The callable legacy append does NOT carry forward source evidence.
     assert_eq!(
@@ -1799,20 +1805,36 @@ fn candidate_accepts_consistent_superseded_historical_signed_evidence_without_in
         &fixture.path,
         &current.workpaper_revision_id,
         &[],
-        ["Small fix", "Trace", "Full population", "Sample", "", "", "Next"],
+        [
+            "Small fix",
+            "Trace",
+            "Full population",
+            "Sample",
+            "",
+            "",
+            "Next",
+        ],
         false,
-    ).expect("valid older signed snapshots are checked, not inherited");
+    )
+    .expect("valid older signed snapshots are checked, not inherited");
     assert_eq!(fixture.rows().len(), 3);
     assert_eq!(fixture.rows()[0].workpaper_revision_id, next);
     let signed = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
     assert_eq!(signed.len(), 1);
     assert_eq!(signed[0].signoff_id, old_signoff_id);
-    assert_eq!(signed[0].workpaper_revision_id, original.workpaper_revision_id);
+    assert_eq!(
+        signed[0].workpaper_revision_id,
+        original.workpaper_revision_id
+    );
     assert_eq!(signed[0].evidence_link_ids, source_links);
-    assert_eq!(signed[0].superseded_by_revision_id.as_deref(),
-               Some(current.workpaper_revision_id.as_str()));
-    assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap()
-        .iter().all(|entry| entry.workpaper_revision_id != next));
+    assert_eq!(
+        signed[0].superseded_by_revision_id.as_deref(),
+        Some(current.workpaper_revision_id.as_str())
+    );
+    assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .unwrap()
+        .iter()
+        .all(|entry| entry.workpaper_revision_id != next));
 }
 
 #[test]
@@ -1821,9 +1843,15 @@ fn candidate_rejects_missing_historical_signed_link_snapshot_before_any_write() 
     fixture.seed_unverified_linked_content_version();
     let original = fixture.insert(["O", "P", "Population", "Sample", "E", "M", "C"]);
     let link = create_workpaper_evidence_link(
-        &fixture.path, &original.workpaper_revision_id, "doc-native",
-        Some("version-native"), None, "SUPPORTING", Some("Exact fixture source"),
-    ).expect("source link on first revision");
+        &fixture.path,
+        &original.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Exact fixture source"),
+    )
+    .expect("source link on first revision");
     // The actual migration allows a directly inserted sign-off without
     // snapshot rows. This is fixture corruption, NOT an authenticated sign-off.
     let db = Connection::open(&fixture.path).unwrap();
@@ -1834,42 +1862,64 @@ fn candidate_rejects_missing_historical_signed_link_snapshot_before_any_write() 
          VALUES ('historical-missing-snapshot', 'workpaper-native', ?1,
                  'PREPARED', 'fixture-unverified', 'UNVERIFIED', 2, NULL)",
         [&original.workpaper_revision_id],
-    ).expect("seed migration-permitted malformed sign-off without signed links");
+    )
+    .expect("seed migration-permitted malformed sign-off without signed links");
     drop(db);
     let current = fixture.insert(["O", "P", "Population", "Sample", "E", "M", "C2"]);
     let counts = fixture_candidate_write_counts(&fixture.path);
     let result = test_only_checked_successor(
-        &fixture.path, &current.workpaper_revision_id, &[],
-        ["O", "P", "Population", "Sample", "E", "M", "C3"], false,
+        &fixture.path,
+        &current.workpaper_revision_id,
+        &[],
+        ["O", "P", "Population", "Sample", "E", "M", "C3"],
+        false,
     );
-    assert_eq!(result, Err("INVALID_NATIVE_HISTORICAL_SIGNED_EVIDENCE".to_string()));
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_HISTORICAL_SIGNED_EVIDENCE".to_string())
+    );
     assert_eq!(fixture_candidate_write_counts(&fixture.path), counts);
-    assert_eq!(fixture.rows()[0].workpaper_revision_id, current.workpaper_revision_id);
+    assert_eq!(
+        fixture.rows()[0].workpaper_revision_id,
+        current.workpaper_revision_id
+    );
     let signed = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
     assert_eq!(signed.len(), 1);
     assert_eq!(signed[0].signoff_id, "historical-missing-snapshot");
     assert!(signed[0].evidence_link_ids.is_empty());
-    assert_eq!(signed[0].superseded_by_revision_id.as_deref(),
-               Some(current.workpaper_revision_id.as_str()));
     assert_eq!(
-        list_workpaper_evidence_links(&fixture.path, &original.workpaper_revision_id)
-            .unwrap()[0].evidence_link_id,
+        signed[0].superseded_by_revision_id.as_deref(),
+        Some(current.workpaper_revision_id.as_str())
+    );
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &original.workpaper_revision_id).unwrap()[0]
+            .evidence_link_id,
         link.evidence_link_id
     );
 }
 
 #[test]
 fn candidate_rejects_historical_signoff_with_extra_foreign_revision_link_atomically() {
-    let (fixture, original, old_signoff_id, original_link_ids) =
-        test_only_signed_two_link_base();
+    let (fixture, original, old_signoff_id, original_link_ids) = test_only_signed_two_link_base();
     let current = fixture.insert([
-        "Second objective", "Trace", "Full population", "Sample", "", "", "Second",
+        "Second objective",
+        "Trace",
+        "Full population",
+        "Sample",
+        "",
+        "",
+        "Second",
     ]);
     let foreign_link = create_workpaper_evidence_link(
-        &fixture.path, &current.workpaper_revision_id, "doc-native",
-        Some("version-native"), None, "SUPPORTING",
+        &fixture.path,
+        &current.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
         Some("Belongs to the second revision, not old signature"),
-    ).expect("add legitimate independently identified link to unsigned latest");
+    )
+    .expect("add legitimate independently identified link to unsigned latest");
     // The immutable UPDATE/DELETE triggers do not forbid an extra INSERT
     // into workpaper_signoff_evidence. Directly model damaged history.
     let db = Connection::open(&fixture.path).unwrap();
@@ -1878,26 +1928,50 @@ fn candidate_rejects_historical_signoff_with_extra_foreign_revision_link_atomica
           (signoff_evidence_id, signoff_id, evidence_link_id, created_at_ms)
          VALUES ('malformed-extra-historical-snapshot', ?1, ?2, 6)",
         rusqlite::params![old_signoff_id, foreign_link.evidence_link_id],
-    ).expect("inject migration-allowed cross-revision signed-link corruption");
+    )
+    .expect("inject migration-allowed cross-revision signed-link corruption");
     drop(db);
     let counts = fixture_candidate_write_counts(&fixture.path);
     let opened = vec![foreign_link.evidence_link_id.clone()];
     let result = test_only_checked_successor(
-        &fixture.path, &current.workpaper_revision_id, &opened,
-        ["Small correction", "Trace", "Full population", "Sample", "", "", "Second"],
+        &fixture.path,
+        &current.workpaper_revision_id,
+        &opened,
+        [
+            "Small correction",
+            "Trace",
+            "Full population",
+            "Sample",
+            "",
+            "",
+            "Second",
+        ],
         false,
     );
-    assert_eq!(result, Err("INVALID_NATIVE_HISTORICAL_SIGNED_EVIDENCE".to_string()));
+    assert_eq!(
+        result,
+        Err("INVALID_NATIVE_HISTORICAL_SIGNED_EVIDENCE".to_string())
+    );
     assert_eq!(fixture_candidate_write_counts(&fixture.path), counts);
     assert_eq!(fixture.rows().len(), 2);
-    assert_eq!(fixture.rows()[0].workpaper_revision_id, current.workpaper_revision_id);
+    assert_eq!(
+        fixture.rows()[0].workpaper_revision_id,
+        current.workpaper_revision_id
+    );
     let historical = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
     assert_eq!(historical.len(), 1);
-    assert_eq!(historical[0].workpaper_revision_id, original.workpaper_revision_id);
-    assert_eq!(historical[0].superseded_by_revision_id.as_deref(),
-               Some(current.workpaper_revision_id.as_str()));
+    assert_eq!(
+        historical[0].workpaper_revision_id,
+        original.workpaper_revision_id
+    );
+    assert_eq!(
+        historical[0].superseded_by_revision_id.as_deref(),
+        Some(current.workpaper_revision_id.as_str())
+    );
     for id in &original_link_ids {
         assert!(historical[0].evidence_link_ids.contains(id));
     }
-    assert!(historical[0].evidence_link_ids.contains(&foreign_link.evidence_link_id));
+    assert!(historical[0]
+        .evidence_link_ids
+        .contains(&foreign_link.evidence_link_id));
 }
