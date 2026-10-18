@@ -219,10 +219,10 @@ function checkReadObservation(
     }
     if (signoff.evidenceLinkIds !== undefined) {
       if (!Array.isArray(signoff.evidenceLinkIds) ||
-          signoff.evidenceLinkIds.some(id => typeof id !== "string" || !id.trim()) ||
+          signoff.evidenceLinkIds.some((id: string) => typeof id !== "string" || !id.trim()) ||
           new Set(signoff.evidenceLinkIds).size !== signoff.evidenceLinkIds.length ||
           signoff.evidenceLinkIds.length !== linkIds.size ||
-          signoff.evidenceLinkIds.some(id => !linkIds.has(id))) {
+          signoff.evidenceLinkIds.some((id: string) => !linkIds.has(id))) {
         throw new TypeError("Invalid " + label + " signed-evidence snapshot observation");
       }
     }
