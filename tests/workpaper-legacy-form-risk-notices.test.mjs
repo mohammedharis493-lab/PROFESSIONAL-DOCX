@@ -1,13 +1,16 @@
 /**
- * Read-only disclosure tests for existing callable legacy workpaper UI paths.
- * Do not interpret passing notices as a repair of three-field data loss,
- * missing CAS, evidence carry-forward, or caller-asserted sign-off.
- * UI wording is a draft, not an approved compatibility/release decision.
+ * Legacy workpaper form tests. Existing successors are temporarily blocked
+ * in the UI; the native commands remain callable, without CAS, trusted author
+ * identity or evidence carry-forward. Not production security authorization.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import {
+  assertLegacyInitialRevisionOnly,
+  LEGACY_REVISION_SUCCESSOR_BLOCKED,
+} from "../src/workpaper-legacy-revision-guard.ts";
 
 const source = readFileSync("src/App.tsx", "utf8");
 const tree = ts.createSourceFile(
@@ -47,8 +50,11 @@ test("legacy revision form prominently warns before existing three-field submit"
   assert.match(form, /workpaperRevisions\.length > 0/);
   assert.match(form, /role="alert"/);
   assert.match(form, /Legacy revision warning:/);
+  assert.match(form, /successor creation is blocked/);
+  const button = form.slice(form.indexOf("<button"), form.indexOf("</button>") + 9);
+  assert.match(button, /workpaperRevisions\.length > 0/);
   assert.ok(
-    form.indexOf("Legacy revision warning:") < form.indexOf("Create next revision"),
+    form.indexOf("Legacy revision warning:") < form.indexOf("Create first revision"),
     "successor risk disclosure must be before submit control",
   );
 });
@@ -67,7 +73,7 @@ test("legacy warning names all four vulnerable hidden canonical fields", () => {
   assert.match(form, /not use this form as a\s+lossless correction/);
 });
 
-test("risk notice remains consistent with unmodified callable legacy payload", () => {
+test("legacy first-create payload remains unchanged behind successor UI guard", () => {
   const start = source.indexOf("async function submitWorkpaperRevision(");
   const end = source.indexOf("\n  function openClientEngagements", start);
   assert.ok(start >= 0 && end > start, "legacy revision handler disappeared");
@@ -106,4 +112,32 @@ test("risk disclosure regression detects removed signer authenticity warning", (
   const altered = source.replace("Legacy unverified sign-off record:", "Signing record:");
   const form = legacyForm("submitWorkpaperSignoff", altered);
   assert.doesNotMatch(form, /Legacy unverified sign-off record:/);
+});
+
+test("legacy guard permits only first revision and fails closed for malformed native data", () => {
+  assert.doesNotThrow(() => assertLegacyInitialRevisionOnly([]));
+  for (const current of [[{}], [{}, {}], null, undefined, {}, "bad"]) {
+    assert.throws(
+      () => assertLegacyInitialRevisionOnly(current),
+      error => error instanceof Error &&
+        error.message === LEGACY_REVISION_SUCCESSOR_BLOCKED,
+    );
+  }
+});
+
+test("legacy submit re-reads native revisions and checks the guard before the write", () => {
+  const start = source.indexOf("async function submitWorkpaperRevision(");
+  const end = source.indexOf("\n  function openClientEngagements", start);
+  assert.ok(start >= 0 && end > start, "missing legacy create handler");
+  const handler = source.slice(start, end);
+  const uiGuard = handler.indexOf("if (workpaperRevisions.length > 0)");
+  const freshRead = handler.indexOf('invoke<WorkpaperRevision[]>("list_workpaper_revisions"');
+  // The call is intentionally multiline in the App for readability.
+  const freshReadMulti = handler.indexOf('"list_workpaper_revisions"');
+  const verify = handler.indexOf("assertLegacyInitialRevisionOnly(currentRevisions)");
+  const write = handler.indexOf('invoke<WorkpaperRevision>("create_workpaper_revision"');
+  assert.ok(uiGuard >= 0 && freshReadMulti > uiGuard && verify > freshReadMulti && write > verify,
+    "both loaded-state guard and fresh native read must precede legacy write");
+  assert.equal(freshRead, -1, "expected multiline fresh-read invocation in App");
+  assert.match(handler, /setError\(LEGACY_REVISION_SUCCESSOR_BLOCKED\);\s*return;/);
 });
