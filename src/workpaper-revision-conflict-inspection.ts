@@ -142,7 +142,10 @@ function checkReadObservation(
     !candidate || candidate.scope !== "client-read-snapshot-only" ||
     !candidate.session?.base ||
     !Array.isArray(candidate.observedSourceEvidence) ||
-    !Array.isArray(candidate.observedBaseActiveSignoffIds)
+    !Array.isArray(candidate.observedBaseActiveSignoffIds) ||
+    !Array.isArray(candidate.observedBaseSignoffs) ||
+    !Number.isSafeInteger(candidate.observedBaseSignoffCount) ||
+    candidate.observedBaseSignoffCount !== candidate.observedBaseSignoffs.length
   ) {
     throw new TypeError("Incomplete " + label + " revision read observation");
   }
@@ -180,7 +183,67 @@ function checkReadObservation(
     }
     ids.add(id);
   }
+  const observedSignoffIds = new Set<string>();
+  const activeInRows = new Set<string>();
+  for (const signoff of candidate.observedBaseSignoffs) {
+    if (!signoff || typeof signoff.signoffId !== "string" ||
+        signoff.signoffId.trim() === "" || observedSignoffIds.has(signoff.signoffId) ||
+        signoff.workpaperId !== base.workpaperId ||
+        signoff.workpaperRevisionId !== base.workpaperRevisionId ||
+        (signoff.revisionNumber !== undefined &&
+          (!Number.isSafeInteger(signoff.revisionNumber) || signoff.revisionNumber < 1)) ||
+        (signoff.signedAtMs !== undefined &&
+          (!Number.isSafeInteger(signoff.signedAtMs) || signoff.signedAtMs < 0)) ||
+        (signoff.signoffType !== undefined &&
+          (typeof signoff.signoffType !== "string" || !signoff.signoffType.trim())) ||
+        (signoff.actorId !== undefined &&
+          (typeof signoff.actorId !== "string" || !signoff.actorId.trim())) ||
+        (signoff.actorRole !== undefined &&
+          (typeof signoff.actorRole !== "string" || !signoff.actorRole.trim())) ||
+        (signoff.comment !== undefined && signoff.comment !== null &&
+          typeof signoff.comment !== "string") ||
+        (signoff.supersededAtMs !== null &&
+          (!Number.isSafeInteger(signoff.supersededAtMs) || signoff.supersededAtMs < 0)) ||
+        (signoff.supersededReason !== null &&
+          typeof signoff.supersededReason !== "string") ||
+        (signoff.supersededByRevisionId !== null &&
+          (typeof signoff.supersededByRevisionId !== "string" ||
+           !signoff.supersededByRevisionId.trim())) ||
+        Object.keys(signoff).some(field => !SIGNOFF_OBSERVED_FIELDS.includes(field))) {
+      throw new TypeError("Invalid " + label + " base sign-off observation");
+    }
+    const superseded = signoff.supersededAtMs !== null;
+    if (superseded !== (signoff.supersededReason !== null) ||
+        superseded !== (signoff.supersededByRevisionId !== null)) {
+      throw new TypeError("Inconsistent " + label + " sign-off supersession observation");
+    }
+    if (signoff.evidenceLinkIds !== undefined) {
+      if (!Array.isArray(signoff.evidenceLinkIds) ||
+          signoff.evidenceLinkIds.some(id => typeof id !== "string" || !id.trim()) ||
+          new Set(signoff.evidenceLinkIds).size !== signoff.evidenceLinkIds.length ||
+          signoff.evidenceLinkIds.length !== linkIds.size ||
+          signoff.evidenceLinkIds.some(id => !linkIds.has(id))) {
+        throw new TypeError("Invalid " + label + " signed-evidence snapshot observation");
+      }
+    }
+    observedSignoffIds.add(signoff.signoffId);
+    if (!superseded) activeInRows.add(signoff.signoffId);
+  }
+  if (activeInRows.size !== ids.size || [...activeInRows].some(id => !ids.has(id))) {
+    throw new TypeError("Inconsistent " + label + " active sign-off ID set");
+  }
 }
+
+const SIGNOFF_OBSERVED_FIELDS: readonly string[] = [
+  "signoffId", "workpaperId", "workpaperRevisionId", "revisionNumber",
+  "signoffType", "actorId", "actorRole", "signedAtMs", "comment",
+  "evidenceLinkIds", "supersededAtMs", "supersededReason",
+  "supersededByRevisionId",
+];
+const SIGNOFF_IMMUTABLE_FIELDS = [
+  "workpaperId", "workpaperRevisionId", "revisionNumber", "signoffType",
+  "actorId", "actorRole", "signedAtMs", "comment",
+] as const;
 
 const EVIDENCE_OBSERVED_FIELDS = [
   "documentId", "contentVersionId", "controlledEvidenceVersionId",
@@ -245,6 +308,42 @@ export function inspectWorkpaperRevisionReadObservationChanges(
   if (text.differentRevisionObserved &&
       [...oldSignoffs].some(id => nextSignoffs.has(id))) {
     throw new TypeError("Reused active sign-off ID across different immutable revisions");
+  }
+  const oldBaseSignoffs = new Map(opening.observedBaseSignoffs.map(row => [row.signoffId, row]));
+  const nextBaseSignoffs = new Map(later.observedBaseSignoffs.map(row => [row.signoffId, row]));
+  if (text.differentRevisionObserved) {
+    // Even a formerly superseded row belongs to its original immutable base.
+    if ([...oldBaseSignoffs.keys()].some(id => nextBaseSignoffs.has(id))) {
+      throw new TypeError("Reused historical sign-off ID across different immutable revisions");
+    }
+  } else {
+    for (const [id, before] of oldBaseSignoffs) {
+      const after = nextBaseSignoffs.get(id);
+      // A historical signed row must not disappear from a later observation
+      // of the same base. Partial reads are errors, never approval evidence.
+      if (!after) throw new TypeError("Missing previously observed immutable sign-off");
+      const signedLinksBefore = before.evidenceLinkIds;
+      const signedLinksAfter = after.evidenceLinkIds;
+      const signedLinksDiffer = signedLinksBefore === undefined ||
+        signedLinksAfter === undefined
+          ? signedLinksBefore !== signedLinksAfter
+          : signedLinksBefore.length !== signedLinksAfter.length ||
+            [...signedLinksBefore].sort().some((linkId, index) =>
+              linkId !== [...signedLinksAfter].sort()[index]);
+      if (SIGNOFF_IMMUTABLE_FIELDS.some(field => before[field] !== after[field]) ||
+          signedLinksDiffer) {
+        throw new TypeError("Conflicting immutable sign-off metadata or signed-evidence snapshot");
+      }
+      // Supersession is monotonic: active -> superseded is observable; a
+      // rewritten/deleted supersession is not a legitimate revision change.
+      if (before.supersededAtMs !== null && (
+        before.supersededAtMs !== after.supersededAtMs ||
+        before.supersededReason !== after.supersededReason ||
+        before.supersededByRevisionId !== after.supersededByRevisionId
+      )) {
+        throw new TypeError("Contradictory historical sign-off supersession observation");
+      }
+    }
   }
   const activeSignoffChanges: WorkpaperObservedSignoffChange[] = [
     ...[...oldSignoffs].filter(id => !nextSignoffs.has(id))
