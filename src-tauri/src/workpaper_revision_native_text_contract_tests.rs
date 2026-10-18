@@ -16,7 +16,8 @@ use crate::persistence::{
     WorkpaperRevisionRecord,
 };
 use crate::workpaper_revision_successor_candidate::{
-    candidate_successor_transaction, DenyAllCandidateAuthority, FixtureOnlyCandidateAuthority,
+    candidate_successor_transaction, CandidateObservedEvidenceLink, DenyAllCandidateAuthority,
+    FixtureOnlyCandidateAuthority,
 };
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -831,6 +832,46 @@ fn native_signed_evidence_snapshot_is_immutable_and_late_attachment_is_rejected(
 /// and DEC-08 carry-forward approval before any implementation.
 // Thin adapter: existing real-migration regression tests now exercise the
 // parameterized candidate, instead of a copied transaction in this test file.
+// Test-only opening state maps native DTO metadata to an exact comparison
+// tuple; this is not verification of physical evidence bytes or authority.
+fn fixture_observed_links(
+    path: &std::path::Path,
+    revision_id: &str,
+    observed_ids: &[String],
+) -> Result<Vec<CandidateObservedEvidenceLink>, String> {
+    let stored = list_workpaper_evidence_links(path, revision_id)
+        .map_err(|error| error.to_string())?;
+    Ok(observed_ids
+        .iter()
+        .filter_map(|id| stored.iter().find(|row| row.evidence_link_id == *id))
+        .map(|link| CandidateObservedEvidenceLink {
+            id: link.evidence_link_id.clone(),
+            document_id: link.document_id.clone(),
+            content_version_id: link.content_version_id.clone(),
+            controlled_version_id: link.controlled_evidence_version_id.clone(),
+            relationship_type: link.relationship_type.clone(),
+            description: link.description.clone(),
+        })
+        .collect())
+}
+
+fn fixture_observed_active_signoffs(
+    path: &std::path::Path,
+    revision_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut ids: Vec<String> = list_workpaper_signoffs(path, "workpaper-native")
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|signoff| {
+            signoff.workpaper_revision_id == revision_id
+                && signoff.superseded_by_revision_id.is_none()
+        })
+        .map(|signoff| signoff.signoff_id)
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
 fn test_only_checked_successor(
     path: &std::path::Path,
     expected_base: &str,
@@ -838,11 +879,14 @@ fn test_only_checked_successor(
     fields: [&str; 7],
     fail_after_first_copied_link: bool,
 ) -> Result<String, String> {
+    let observed_links = fixture_observed_links(path, expected_base, observed_link_ids)?;
+    let observed_signoffs = fixture_observed_active_signoffs(path, expected_base)?;
     candidate_successor_transaction(
         path,
         "workpaper-native",
         expected_base,
-        observed_link_ids,
+        &observed_links,
+        &observed_signoffs,
         fields,
         fail_after_first_copied_link,
         &FixtureOnlyCandidateAuthority,
@@ -1554,12 +1598,13 @@ fn native_legacy_initial_only_dto_defaults_off_for_installed_callers() {
 
 #[test]
 fn candidate_transaction_default_deny_preserves_real_native_history() {
-    let (fixture, base, _signoff, observed) = test_only_signed_two_link_base();
+    let (fixture, base, _signoff, _observed) = test_only_signed_two_link_base();
     let result = candidate_successor_transaction(
         &fixture.path,
         "workpaper-native",
         &base.workpaper_revision_id,
-        &observed,
+        &[],
+        &[],
         as_fields(&base),
         false,
         &DenyAllCandidateAuthority,
@@ -1582,7 +1627,7 @@ fn candidate_transaction_default_deny_preserves_real_native_history() {
 
 #[test]
 fn candidate_transaction_cannot_cross_workpaper_scope() {
-    let (fixture, base, _signoff, observed) = test_only_signed_two_link_base();
+    let (fixture, base, _signoff, _observed) = test_only_signed_two_link_base();
     let connection = Connection::open(&fixture.path).unwrap();
     connection
         .execute(
@@ -1596,7 +1641,8 @@ fn candidate_transaction_cannot_cross_workpaper_scope() {
         &fixture.path,
         "other-workpaper",
         &base.workpaper_revision_id,
-        &observed,
+        &[],
+        &[],
         as_fields(&base),
         false,
         &FixtureOnlyCandidateAuthority,
