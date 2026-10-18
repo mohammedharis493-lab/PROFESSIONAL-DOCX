@@ -173,6 +173,53 @@ fn candidate_validate_historical_signed_evidence(
     Ok(())
 }
 
+/// Fail closed when a signed revision's supersession record disagrees
+/// with the exact immutable one-step ancestry. For a historical signed
+/// revision, every sign-off must be superseded by its IMMEDIATE successor;
+/// sign-offs on the currently latest revision must remain unsuperseded
+/// until the candidate's own transaction supersedes them atomically.
+///
+/// This is a consistency gate over stored metadata, not verified human
+/// authority, custody approval or an authenticated professional signature.
+fn candidate_validate_historical_signoff_supersessions(
+    tx: &Transaction<'_>,
+    workpaper_id: &str,
+    latest_revision_id: &str,
+) -> Result<(), String> {
+    let invalid: i64 = tx
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM workpaper_signoffs s
+               LEFT JOIN workpaper_revisions signed
+                 ON signed.workpaper_revision_id = s.workpaper_revision_id
+               LEFT JOIN workpaper_signoff_supersessions ss
+                 ON ss.signoff_id = s.signoff_id
+               LEFT JOIN workpaper_revisions successor
+                 ON successor.workpaper_revision_id = ss.superseded_by_revision_id
+               WHERE s.workpaper_id = ?1 AND (
+                 signed.workpaper_id IS NULL
+                 OR signed.workpaper_id <> ?1
+                 OR (s.workpaper_revision_id = ?2 AND ss.signoff_id IS NOT NULL)
+                 OR (s.workpaper_revision_id <> ?2 AND (
+                   ss.signoff_id IS NULL
+                   OR successor.workpaper_id IS NULL
+                   OR successor.workpaper_id <> ?1
+                   OR successor.revision_number <> signed.revision_number + 1
+                   OR successor.supersedes_revision_id IS NULL
+                   OR successor.supersedes_revision_id <> signed.workpaper_revision_id
+                 ))
+               )
+             )",
+            rusqlite::params![workpaper_id, latest_revision_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if invalid != 0 {
+        return Err("INVALID_NATIVE_HISTORICAL_SIGNOFF_SUPERSESSION".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn candidate_successor_transaction(
     path: &Path,
     workpaper_id: &str,
@@ -218,6 +265,7 @@ pub(crate) fn candidate_successor_transaction(
     // Reject inconsistent historical signed evidence under the same writer
     // lock, before any successor, link, supersession or audit insert.
     candidate_validate_historical_signed_evidence(&tx, workpaper_id)?;
+    candidate_validate_historical_signoff_supersessions(&tx, workpaper_id, &latest_id)?;
 
     let links: Vec<CandidateObservedEvidenceLink> = {
         let mut statement = tx
