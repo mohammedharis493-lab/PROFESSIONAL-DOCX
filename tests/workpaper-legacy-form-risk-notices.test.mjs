@@ -80,6 +80,14 @@ test("legacy first-create payload remains unchanged behind successor UI guard", 
   assert.ok(start >= 0 && end > start, "legacy revision handler disappeared");
   const handler = source.slice(start, end);
   assert.match(handler, /invoke<WorkpaperRevision>\("create_workpaper_revision"/);
+  assert.match(handler, /initialOnly: true/);
+  const native = readFileSync("src-tauri/src/lib.rs", "utf8");
+  const persistence = readFileSync("src-tauri/src/persistence.rs", "utf8");
+  assert.match(native, /initial_only: bool/);
+  assert.match(native, /if revision\.initial_only/);
+  assert.match(native, /persistence::create_initial_workpaper_revision/);
+  assert.match(persistence, /if initial_only && previous\.is_some\(\)/);
+  assert.match(persistence, /transaction_with_behavior\(TransactionBehavior::Immediate\)/);
   for (const field of [
     "population", "sample", "exceptions", "managementExplanation",
   ]) {
@@ -126,7 +134,7 @@ test("legacy guard permits only first revision and fails closed for malformed na
   }
 });
 
-test("legacy submit re-reads native revisions and checks the guard before the write", () => {
+test("legacy submit re-reads native revisions and checks the guard before atomic initial-only create", () => {
   const start = source.indexOf("async function submitWorkpaperRevision(");
   const end = source.indexOf("\n  function openClientEngagements", start);
   assert.ok(start >= 0 && end > start, "missing legacy create handler");
