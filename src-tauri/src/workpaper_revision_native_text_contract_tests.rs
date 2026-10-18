@@ -2367,3 +2367,240 @@ fn candidate_ignores_consistent_unrelated_workpaper_signoffs_without_inheriting_
     assert_eq!(foreign_history[0].signoff_id, foreign_signoff.signoff_id);
     assert_eq!(foreign_history[0].superseded_by_revision_id, None);
 }
+
+/// The migration's audit table is intentionally not treated as a trusted,
+/// tamper-evident journal. Preserve every fixture row on rejected successors.
+fn fixture_all_native_audit_rows(
+    fixture: &NativeRevisionFixture,
+) -> Vec<(String, String, String, String, Option<String>, Option<String>, String)> {
+    let db = Connection::open(&fixture.path).expect("open isolated native audit fixture");
+    let mut stmt = db
+        .prepare(
+            "SELECT audit_event_id, event_type, entity_type, entity_id,
+                    related_entity_type, related_entity_id, details_json
+             FROM audit_events ORDER BY audit_event_id",
+        )
+        .expect("prepare exact audit records");
+    stmt.query_map([], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+        ))
+    })
+    .expect("read audit rows")
+    .collect::<Result<Vec<_>, _>>()
+    .expect("collect exact audit rows")
+}
+
+fn fixture_repoint_legacy_audit_related(
+    fixture: &NativeRevisionFixture,
+    event_type: &str,
+    entity_id: &str,
+    related_id: &str,
+) {
+    let db = Connection::open(&fixture.path).expect("open isolated fixture");
+    let affected = db
+        .execute(
+            "UPDATE audit_events SET related_entity_id=?3
+             WHERE event_type=?1 AND entity_id=?2",
+            rusqlite::params![event_type, entity_id, related_id],
+        )
+        .expect("mutate migration-permitted audit relation in fixture");
+    assert_eq!(affected, 1, "fixture must modify one real legacy audit event");
+}
+
+fn fixture_assert_audit_reference_rejected_without_writes(
+    fixture: &NativeRevisionFixture,
+    latest_revision_id: &str,
+    observed_link_ids: &[String],
+) {
+    let counts = fixture_candidate_write_counts(&fixture.path);
+    let audits = fixture_all_native_audit_rows(fixture);
+    let refused = test_only_checked_successor(
+        &fixture.path,
+        latest_revision_id,
+        observed_link_ids,
+        ["Amended", "Procedure", "", "", "", "", "Conclusion"],
+        false,
+    );
+    assert_eq!(
+        refused,
+        Err("INVALID_NATIVE_HISTORICAL_AUDIT_REFERENCE".to_string())
+    );
+    assert_eq!(fixture_candidate_write_counts(&fixture.path), counts);
+    assert_eq!(fixture_all_native_audit_rows(fixture), audits);
+    assert_eq!(fixture.rows()[0].workpaper_revision_id, latest_revision_id);
+}
+
+#[test]
+fn candidate_rejects_revision_creation_audit_pointing_to_wrong_workpaper() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let latest = fixture.insert(["Next", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_repoint_legacy_audit_related(
+        &fixture,
+        "WORKPAPER_REVISION_CREATED",
+        &first.workpaper_revision_id,
+        "not-original-workpaper",
+    );
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+}
+
+#[test]
+fn candidate_rejects_foreign_revision_audit_falsely_claiming_local_workpaper() {
+    let fixture = NativeRevisionFixture::new();
+    let latest = fixture.insert(["Local", "Procedure", "", "", "", "", "Conclusion"]);
+    let foreign = fixture_create_other_workpaper_revision(&fixture);
+    fixture_repoint_legacy_audit_related(
+        &fixture,
+        "WORKPAPER_REVISION_CREATED",
+        &foreign.workpaper_revision_id,
+        "workpaper-native",
+    );
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+    assert_eq!(
+        list_workpaper_revisions(&fixture.path, "other-scope-workpaper")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn candidate_rejects_evidence_audit_pointing_to_wrong_source_revision() {
+    let fixture = NativeRevisionFixture::new();
+    fixture.seed_unverified_linked_content_version();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let link = create_workpaper_evidence_link(
+        &fixture.path,
+        &first.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Metadata-only fixture source"),
+    )
+    .expect("create native evidence event");
+    let latest = fixture.insert(["Next", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_repoint_legacy_audit_related(
+        &fixture,
+        "WORKPAPER_EVIDENCE_LINK_ADDED",
+        &link.evidence_link_id,
+        &latest.workpaper_revision_id,
+    );
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &first.workpaper_revision_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn candidate_rejects_signoff_created_audit_targeting_wrong_revision() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "unverified-audit-fixture",
+            actor_role: "UNVERIFIED",
+            comment: None,
+        },
+    )
+    .expect("create synthetic sign-off with legacy audit event");
+    let latest = fixture.insert(["Next", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_repoint_legacy_audit_related(
+        &fixture,
+        "WORKPAPER_SIGNOFF_CREATED",
+        &signed.signoff_id,
+        &latest.workpaper_revision_id,
+    );
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].superseded_by_revision_id.as_deref(),
+        Some(latest.workpaper_revision_id.as_str())
+    );
+}
+
+#[test]
+fn candidate_rejects_supersession_audit_pointing_back_to_signed_revision() {
+    let fixture = NativeRevisionFixture::new();
+    let first = fixture.insert(["First", "Procedure", "", "", "", "", "Conclusion"]);
+    let signed = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &first.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "unverified-audit-fixture",
+            actor_role: "UNVERIFIED",
+            comment: None,
+        },
+    )
+    .expect("create synthetic sign-off");
+    let latest = fixture.insert(["Next", "Procedure", "", "", "", "", "Conclusion"]);
+    fixture_repoint_legacy_audit_related(
+        &fixture,
+        "WORKPAPER_SIGNOFF_SUPERSEDED",
+        &signed.signoff_id,
+        &first.workpaper_revision_id,
+    );
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+}
+
+#[test]
+fn candidate_rejects_orphan_signoff_creation_audit_with_local_revision_target() {
+    let fixture = NativeRevisionFixture::new();
+    let latest = fixture.insert(["Local", "Procedure", "", "", "", "", "Conclusion"]);
+    // Audit event entity references have no foreign key in the production
+    // migration. The candidate must detect this deliberately orphaned row.
+    let db = Connection::open(&fixture.path).expect("open real SQLite fixture");
+    db.execute(
+        "INSERT INTO audit_events
+         (audit_event_id, event_type, entity_type, entity_id,
+          related_entity_type, related_entity_id, occurred_at_ms, details_json)
+         VALUES ('orphan-signer-audit', 'WORKPAPER_SIGNOFF_CREATED',
+                 'WORKPAPER_SIGNOFF', 'absent-signoff', 'WORKPAPER_REVISION',
+                 ?1, 3, '{}')",
+        [&latest.workpaper_revision_id],
+    )
+    .expect("insert syntactically permitted orphan audit event");
+    drop(db);
+    fixture_assert_audit_reference_rejected_without_writes(
+        &fixture,
+        &latest.workpaper_revision_id,
+        &[],
+    );
+}
