@@ -369,7 +369,15 @@ test("successor read preview warns of different revision without inheriting sign
 
 test("missing or mutually contradictory observation pairs fail closed", () => {
   const opening = observedRead();
-  const later = observedRead("revision-8");
+  // These are distinct immutable revisions: use fresh link IDs so that
+  // observation-prop contradictions, not ID reuse, are under test here.
+  const later = observedRead("revision-8", {
+    evidence: [{
+      ...opening.observedSourceEvidence[0], evidenceLinkId: "link-new",
+      workpaperRevisionId: "revision-8",
+    }],
+    signoffs: [],
+  });
   assert.throws(() => render(opening.session, {
     openingReadSnapshot: opening,
   }), /needs both complete read observations/);
