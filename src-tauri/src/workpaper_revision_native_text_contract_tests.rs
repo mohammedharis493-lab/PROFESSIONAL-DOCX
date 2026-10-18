@@ -1656,3 +1656,97 @@ fn candidate_transaction_cannot_cross_workpaper_scope() {
         0
     );
 }
+
+#[test]
+fn candidate_rejects_same_evidence_ids_with_changed_tuple_without_writes() {
+    let (fixture, base, signoff_id, ids) = test_only_signed_two_link_base();
+    let mut stale = fixture_observed_links(&fixture.path, &base.workpaper_revision_id, &ids)
+        .expect("capture full exact evidence snapshot");
+    // Only relationship text differs; merely comparing IDs would accept it.
+    stale[0].relationship_type.push_str("-old-client-observation");
+    let signoffs =
+        fixture_observed_active_signoffs(&fixture.path, &base.workpaper_revision_id).unwrap();
+    let refused = candidate_successor_transaction(
+        &fixture.path,
+        "workpaper-native",
+        &base.workpaper_revision_id,
+        &stale,
+        &signoffs,
+        as_fields(&base),
+        false,
+        &FixtureOnlyCandidateAuthority,
+    );
+    assert_eq!(refused, Err("STALE_NATIVE_EVIDENCE".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].signoff_id, signoff_id);
+    assert_eq!(history[0].superseded_by_revision_id, None);
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn candidate_rejects_signoff_added_after_opening_without_supersession() {
+    let fixture = NativeRevisionFixture::new();
+    fixture.seed_unverified_linked_content_version();
+    let base = fixture.insert(["O", "P", "Population", "Sample", "E", "M", "C"]);
+    let link = create_workpaper_evidence_link(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        "doc-native",
+        Some("version-native"),
+        None,
+        "SUPPORTING",
+        Some("Fixture evidence"),
+    )
+    .expect("add unsigned source evidence");
+    let opening_links = fixture_observed_links(
+        &fixture.path,
+        &base.workpaper_revision_id,
+        &[link.evidence_link_id],
+    )
+    .unwrap();
+    let opening_signoffs =
+        fixture_observed_active_signoffs(&fixture.path, &base.workpaper_revision_id).unwrap();
+    assert!(opening_signoffs.is_empty());
+    // Another native caller creates a PREPARED record after the editor read.
+    let late_signoff = create_workpaper_signoff(
+        &fixture.path,
+        NewWorkpaperSignoff {
+            workpaper_id: "workpaper-native",
+            workpaper_revision_id: &base.workpaper_revision_id,
+            signoff_type: "PREPARED",
+            actor_id: "fixture-unverified-signer",
+            actor_role: "PREPARER",
+            comment: None,
+        },
+    )
+    .expect("legacy signer added after snapshot");
+    let refused = candidate_successor_transaction(
+        &fixture.path,
+        "workpaper-native",
+        &base.workpaper_revision_id,
+        &opening_links,
+        &opening_signoffs,
+        ["O", "P", "Population", "Sample", "E", "M", "C."],
+        false,
+        &FixtureOnlyCandidateAuthority,
+    );
+    assert_eq!(refused, Err("STALE_NATIVE_SIGNOFFS".to_string()));
+    assert_eq!(fixture.rows().len(), 1);
+    let history = list_workpaper_signoffs(&fixture.path, "workpaper-native").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].signoff_id, late_signoff.signoff_id);
+    assert_eq!(history[0].superseded_by_revision_id, None);
+    assert_eq!(
+        list_workpaper_evidence_links(&fixture.path, &base.workpaper_revision_id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
