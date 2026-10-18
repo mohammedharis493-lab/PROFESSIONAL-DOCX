@@ -733,13 +733,22 @@ function readFixtureIntoEditor(db, workpaperId = "wp-1") {
     relationshipType: link.relationship_type,
     description: link.description,
   }));
+  // Mirror the real Rust list_workpaper_signoffs LEFT JOIN: all three
+  // nullable supersession columns are present, never silently defaulted
+  // from missing fixture values. This remains test-only and untrusted.
   const signoffs = db.prepare(
-    "SELECT signoff_id,workpaper_id,workpaper_revision_id " +
-    "FROM workpaper_signoffs WHERE workpaper_id=?"
+    "SELECT s.signoff_id,s.workpaper_id,s.workpaper_revision_id," +
+    "ss.superseded_at_ms,ss.superseded_reason,ss.superseded_by_revision_id " +
+    "FROM workpaper_signoffs s " +
+    "LEFT JOIN workpaper_signoff_supersessions ss ON ss.signoff_id=s.signoff_id " +
+    "WHERE s.workpaper_id=?"
   ).all(workpaperId).map(row => ({
     signoffId: row.signoff_id,
     workpaperId: row.workpaper_id,
     workpaperRevisionId: row.workpaper_revision_id,
+    supersededAtMs: row.superseded_at_ms,
+    supersededReason: row.superseded_reason,
+    supersededByRevisionId: row.superseded_by_revision_id,
     evidenceLinkIds: db.prepare(
       "SELECT evidence_link_id id FROM workpaper_signoff_evidence " +
       "WHERE signoff_id=? ORDER BY evidence_link_id"
@@ -786,6 +795,7 @@ test("cross-layer signed typo correction preserves all seven stored fields and e
   const db = fixture(t);
   const opened = readFixtureIntoEditor(db);
   assert.equal(opened.read.observedBaseSignoffCount, 1);
+  assert.deepEqual(opened.read.observedBaseActiveSignoffIds, ["sign-1"]);
   assert.deepEqual(opened.read.session.draft.content, {
     objective: "Objective\r\noriginal ",
     procedurePerformed: "Trace approvals",
@@ -1031,6 +1041,7 @@ test("cross-layer second open after successor targets latest and retains exact e
   const current = readFixtureIntoEditor(db);
   assert.equal(current.read.session.base.workpaperRevisionId, second);
   assert.equal(current.read.observedBaseSignoffCount, 0);
+  assert.deepEqual(current.read.observedBaseActiveSignoffIds, []);
   const third = submitToSyntheticSuccessor(db, current,
     editWorkpaperRevisionSessionField(current.read.session,
       "conclusion", "Third conclusion"));
