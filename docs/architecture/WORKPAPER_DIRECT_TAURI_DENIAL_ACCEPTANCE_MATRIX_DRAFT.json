@@ -19,6 +19,12 @@
   ],
   "routes": [
     {
+      "name": "create_workpaper",
+      "class": "workpaper_creation",
+      "actorInputs": [],
+      "requiredGrant": "CREATE_WORKPAPER_IN_ENGAGEMENT"
+    },
+    {
       "name": "create_workpaper_revision",
       "class": "revision_writer",
       "actorInputs": [],
@@ -83,13 +89,51 @@
     }
   ],
   "globalAtomicityInvariants": [
+    "New workpaper creation requires independently verified CREATE_WORKPAPER_IN_ENGAGEMENT authority scoped to its parent engagement; no preexisting workpaper ID or its own newly created grant can bootstrap creation",
     "Refusal must not change revision text or counters, evidence references, signoffs, supersessions, review note state/event history, workflow state/events or audit events",
     "Refusal cannot fall back to the old unflagged create_workpaper_revision path or another registered write command",
     "Read-only historical list/export views must remain available under separately approved preservation policy",
     "Trusted actor identity must be resolved natively, never from actorId, actorRole, raisedBy or ownerId alone",
-    "Test fixtures must not create a real issuer, workpaper grants or a fake human security approver"
+    "Test fixtures must not create a real issuer, workpaper grants or a fake human security approver",
+    "A newly created workpaper cannot be born REVIEWED or professionally approved solely from a caller-supplied workflowState, and creation grants do not implicitly grant its owner review or approval rights"
   ],
   "cases": [
+    {
+      "id": "create_workpaper/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_workpaper",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native creator/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/WRONG_ENGAGEMENT_GRANT",
+      "command": "create_workpaper",
+      "scenario": "WRONG_ENGAGEMENT_GRANT",
+      "precondition": "The verified creator has no effective create-workpaper grant on the chosen engagement",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_workpaper",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "The creator's engagement-scoped grant was revoked, expired or changed under the writer lock",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/CALLER_CONTROLLED_INITIAL_WORKFLOW_STATE",
+      "command": "create_workpaper",
+      "scenario": "CALLER_CONTROLLED_INITIAL_WORKFLOW_STATE",
+      "precondition": "A caller requests an initial reviewed, approved or other authority-implying workflow state rather than the approved server-derived initial state",
+      "expected": "DENY_OR_SERVER_OVERRIDE_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
     {
       "id": "create_workpaper_revision/MISSING_TRUSTED_PRINCIPAL",
       "command": "create_workpaper_revision",
@@ -360,5 +404,6 @@
       "execution": "NOT_IMPLEMENTED",
       "result": "NOT_RUN"
     }
-  ]
+  ],
+  "creationAuthorityStatus": "UNDECIDED_ENGAGEMENT_SCOPED_GRANT_DESIGN"
 }
