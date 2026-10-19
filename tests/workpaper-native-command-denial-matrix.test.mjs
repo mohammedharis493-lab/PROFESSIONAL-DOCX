@@ -17,6 +17,7 @@ const matrix = JSON.parse(readFileSync(
   "utf8",
 ));
 const expected = [
+  "create_workpaper",
   "create_workpaper_revision",
   "create_workpaper_evidence_link",
   "create_workpaper_signoff",
@@ -65,6 +66,8 @@ function assertUnexecutedMatrix(plan) {
   assert.equal(plan.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
   assert.equal(plan.principalIssuer, "NOT_IMPLEMENTED");
   assert.equal(plan.workpaperGrants, "NOT_IMPLEMENTED");
+  assert.equal(plan.creationAuthorityStatus,
+    "UNDECIDED_ENGAGEMENT_SCOPED_GRANT_DESIGN");
   assert.deepEqual(plan.governanceDecisions,
     Array.from({ length: 8 }, (_, i) => "DEC-0" + (i + 1)));
   assert.ok(plan.globalAtomicityInvariants.length >= 4);
@@ -75,9 +78,19 @@ function assertUnexecutedMatrix(plan) {
     assert.ok(route.requiredGrant, "MISSING_UNDECIDED_GRANT_CATEGORY: " + route.name);
     assert.ok(Array.isArray(route.actorInputs));
     const vectors = plan.cases.filter(item => item.command === route.name);
-    for (const scenario of universalScenarios) {
+    const scenarios = route.name === "create_workpaper"
+      ? ["MISSING_TRUSTED_PRINCIPAL", "WRONG_ENGAGEMENT_GRANT",
+        "REVOKED_OR_EXPIRED_GRANT"]
+      : universalScenarios;
+    for (const scenario of scenarios) {
       assert.equal(vectors.filter(item => item.scenario === scenario).length, 1,
         "MISSING_DEFERRED_DENIAL_VECTOR: " + route.name + "/" + scenario);
+    }
+    if (route.name === "create_workpaper") {
+      assert.equal(vectors.filter(item =>
+        item.scenario === "CALLER_CONTROLLED_INITIAL_WORKFLOW_STATE").length, 1,
+      "MISSING_UNVERIFIED_INITIAL_WORKFLOW_STATE_VECTOR");
+      assert.equal(route.requiredGrant, "CREATE_WORKPAPER_IN_ENGAGEMENT");
     }
     const spoof = vectors.filter(item =>
       item.scenario === "SPOOFED_PAYLOAD_ATTRIBUTION");
@@ -93,14 +106,14 @@ function assertUnexecutedMatrix(plan) {
       "FALSE_CLAIM_DIRECT_NATIVE_TEST_VERIFIED: " + item.id);
     assert.ok(item.precondition, "MISSING_TEST_PRECONDITION: " + item.id);
   }
-  assert.ok(plan.cases.length >= 30);
+  assert.ok(plan.cases.length >= 34);
 }
 
 test("denial matrix is explicit, unapproved and all planned vectors are unrun", () => {
   assertUnexecutedMatrix(matrix);
 });
 
-test("all eight current registered native writers match the documented risk inventory", () => {
+test("all nine in-scope registered native writers match the documented risk inventory", () => {
   const registered = assertExpectedRegistered(lib);
   assert.ok(registered.has("list_workpaper_revisions"));
   assert.ok(registered.has("list_review_notes"));
@@ -109,6 +122,9 @@ test("all eight current registered native writers match the documented risk inve
 
 test("native DTOs and installed frontend still expose the documented caller-attribution gap", () => {
   assert.match(lib, /struct WorkpaperRevisionInputDto\s*\{/);
+  assert.match(lib, /fn create_workpaper\(\s*engagement_id: String,/);
+  assert.match(lib, /workflow_state: Option<String>,\s*database: State/);
+  assert.match(lib, /workflow_state\.as_deref\(\)\.unwrap_or\("NOT_STARTED"\)/);
   assert.match(lib, /#\[serde\(default\)\]\s*initial_only:\s*bool/);
   assert.match(lib, /if revision\.initial_only/);
   assert.match(lib, /persistence::create_initial_workpaper_revision/);
@@ -191,4 +207,28 @@ test("test-only denial gate must not accept caller actor, role or claimed identi
     /caller_claimed_actor|actor_id|actor_role|frontend_claimed_identity/);
   assert.match(candidate, /let _untrusted_actor = caller_claimed_actor;/);
   assert.match(candidate, /Err\("NATIVE_LEGACY_WRITE_AUTHORITY_NOT_IMPLEMENTED"\)/);
+});
+
+test("creation authority cannot bootstrap from a not-yet-created workpaper", () => {
+  const creation = matrix.routes.find(route => route.name === "create_workpaper");
+  assert.ok(creation, "MISSING_WORKPAPER_CREATION_ENTRY");
+  assert.equal(creation.requiredGrant, "CREATE_WORKPAPER_IN_ENGAGEMENT");
+  assert.ok(matrix.globalAtomicityInvariants.some(x =>
+    x.includes("no preexisting workpaper ID")));
+  assert.ok(matrix.globalAtomicityInvariants.some(x =>
+    x.includes("cannot be born REVIEWED")));
+  const vectors = matrix.cases.filter(item =>
+    item.command === "create_workpaper");
+  assert.equal(vectors.length, 4);
+  assert.ok(vectors.every(x =>
+    x.execution === "NOT_IMPLEMENTED" && x.result === "NOT_RUN"));
+});
+
+test("creation-state source tripwire detects a newly hidden native argument", () => {
+  const mutated = lib.replace(
+    "workflow_state: Option<String>,\n    database: State<'_, persistence::DatabaseState>,",
+    "workflow_state: String,\n    database: State<'_, persistence::DatabaseState>,",
+  );
+  assert.notEqual(mutated, lib, "CREATION_PAYLOAD_MUTATION_NOT_APPLIED");
+  assert.doesNotMatch(mutated, /fn create_workpaper\([\s\S]*?workflow_state: Option<String>,\s*database: State/);
 });
