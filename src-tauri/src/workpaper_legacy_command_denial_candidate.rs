@@ -1,7 +1,7 @@
 //! Nonshipping, test-only native transaction-denial reference.
 //! This is NOT a Tauri handler, production issuer, grant database, nor a
 //! test of the currently registered legacy command dispatch. In particular,
-//! the 30 direct-Tauri scenarios in the deferred matrix remain NOT RUN.
+//! the 34 direct-Tauri scenarios in the deferred matrix remain NOT RUN.
 //! This prototype checks that a denial is evaluated while SQLite holds the
 //! writer lock and stops execution BEFORE any proposed state mutation.
 //! Only DenyAllLegacyWriter is provided: no fixture or production allow policy.
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn denied_under_writer_lock_for_each_of_eight_legacy_intents() {
+    fn denied_under_writer_lock_for_each_of_nine_legacy_intents() {
         let fixture = Fixture::new();
         let before = fixture.entire_write_surface();
         for intent in ALL_LEGACY_WRITES {
