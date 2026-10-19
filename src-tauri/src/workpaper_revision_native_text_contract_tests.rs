@@ -2858,3 +2858,88 @@ fn legacy_review_note_invalid_transition_and_empty_response_do_not_write() {
         "OPEN"
     );
 }
+
+/// These are observations of the existing registered legacy persistence
+/// semantics, NOT approval to initialize a professionally reviewed workpaper.
+/// Workpaper creation presently accepts caller-provided workflow_state with
+/// no independently authenticated engagement-scoped creator grant.
+#[test]
+fn legacy_native_create_workpaper_records_unverified_reviewed_initial_state() {
+    let fixture = NativeRevisionFixture::new();
+    let before = fixture_adjacent_write_counts(&fixture.path);
+    let created = crate::persistence::create_workpaper(
+        &fixture.path,
+        "engagement-native",
+        None,
+        None,
+        "WP-UNVERIFIED-STATE",
+        "Unverified fixture creation",
+        "REVIEWED",
+    )
+    .expect("current legacy creation permits caller-selected workflow state");
+    assert_eq!(created.workflow_state, "REVIEWED");
+    assert!(created.latest_revision_number.is_none());
+    assert!(list_workpaper_revisions(&fixture.path, &created.workpaper_id)
+        .unwrap()
+        .is_empty());
+    assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
+        .unwrap()
+        .is_empty());
+    assert!(crate::persistence::list_workpaper_signoffs(&fixture.path, &created.workpaper_id)
+        .unwrap()
+        .is_empty());
+    let current = crate::persistence::list_workpapers(&fixture.path, "engagement-native")
+        .expect("read fixture workpapers");
+    assert!(current.iter().any(|w| w.workpaper_id == created.workpaper_id));
+    let after = fixture_adjacent_write_counts(&fixture.path);
+    assert_eq!(after.0, before.0);
+    assert_eq!(after.1, before.1);
+    assert_eq!(after.2, before.2);
+    assert_eq!(after.3, before.3 + 1);
+}
+
+#[test]
+fn legacy_native_create_workpaper_rejects_foreign_engagement_procedure_atomically() {
+    let fixture = NativeRevisionFixture::new();
+    let db = Connection::open(&fixture.path).expect("open real-migration fixture");
+    db.execute(
+        "INSERT INTO engagements
+         (engagement_id, client_id, service_type_id, name, status, created_at_ms)
+         VALUES ('foreign-engagement', 'client-native', 'service-native',
+                 'Unrelated test engagement', 'ACTIVE', 1)",
+        [],
+    )
+    .expect("seed unrelated engagement");
+    drop(db);
+    let foreign = crate::persistence::create_procedure(
+        &fixture.path,
+        "foreign-engagement",
+        None,
+        Some("P-FOREIGN"),
+        "Synthetic unrelated procedure",
+        None,
+        "ACTIVE",
+    )
+    .expect("seed foreign procedure");
+    let prior_workpapers = crate::persistence::list_workpapers(&fixture.path, "engagement-native")
+        .unwrap()
+        .len();
+    let before = fixture_adjacent_write_counts(&fixture.path);
+    let result = crate::persistence::create_workpaper(
+        &fixture.path,
+        "engagement-native",
+        None,
+        Some(&foreign.procedure_id),
+        "WP-REJECT",
+        "Wrong engagement",
+        "REVIEWED",
+    );
+    assert!(result.is_err(), "foreign procedure must not be accepted");
+    assert_eq!(fixture_adjacent_write_counts(&fixture.path), before);
+    assert_eq!(
+        crate::persistence::list_workpapers(&fixture.path, "engagement-native")
+            .unwrap()
+            .len(),
+        prior_workpapers
+    );
+}
