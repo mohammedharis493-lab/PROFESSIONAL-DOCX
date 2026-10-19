@@ -2879,18 +2879,24 @@ fn legacy_native_create_workpaper_records_unverified_reviewed_initial_state() {
     .expect("current legacy creation permits caller-selected workflow state");
     assert_eq!(created.workflow_state, "REVIEWED");
     assert!(created.latest_revision_number.is_none());
-    assert!(list_workpaper_revisions(&fixture.path, &created.workpaper_id)
-        .unwrap()
-        .is_empty());
+    assert!(
+        list_workpaper_revisions(&fixture.path, &created.workpaper_id)
+            .unwrap()
+            .is_empty()
+    );
     assert!(list_workpaper_signoffs(&fixture.path, "workpaper-native")
         .unwrap()
         .is_empty());
-    assert!(crate::persistence::list_workpaper_signoffs(&fixture.path, &created.workpaper_id)
-        .unwrap()
-        .is_empty());
+    assert!(
+        crate::persistence::list_workpaper_signoffs(&fixture.path, &created.workpaper_id)
+            .unwrap()
+            .is_empty()
+    );
     let current = crate::persistence::list_workpapers(&fixture.path, "engagement-native")
         .expect("read fixture workpapers");
-    assert!(current.iter().any(|w| w.workpaper_id == created.workpaper_id));
+    assert!(current
+        .iter()
+        .any(|w| w.workpaper_id == created.workpaper_id));
     let after = fixture_adjacent_write_counts(&fixture.path);
     assert_eq!(after.0, before.0);
     assert_eq!(after.1, before.1);
