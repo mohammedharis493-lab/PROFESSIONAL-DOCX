@@ -11,6 +11,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LegacyWriteIntent {
+    WorkpaperCreate,
     Revision,
     EvidenceLink,
     Signoff,
@@ -21,7 +22,8 @@ enum LegacyWriteIntent {
     ReviewNoteReopen,
 }
 
-const ALL_LEGACY_WRITES: [LegacyWriteIntent; 8] = [
+const ALL_LEGACY_WRITES: [LegacyWriteIntent; 9] = [
+    LegacyWriteIntent::WorkpaperCreate,
     LegacyWriteIntent::Revision,
     LegacyWriteIntent::EvidenceLink,
     LegacyWriteIntent::Signoff,
