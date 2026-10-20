@@ -16,10 +16,8 @@ struct HierarchyFixture {
 
 impl HierarchyFixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "professional-docx-hierarchy-{}",
-            Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("professional-docx-hierarchy-{}", Uuid::new_v4()));
         let path = root.join("metadata.sqlite");
         initialize_database(&path).expect("apply actual production migrations");
         let client_id = Uuid::new_v4().to_string();
@@ -108,7 +106,11 @@ fn legacy_engagement_creation_checks_live_client_and_service_but_not_an_issuer()
         "ACTIVE",
     );
     assert!(missing_client.is_err());
-    assert_eq!(fixture.counts(), before, "missing client must not mutate rows");
+    assert_eq!(
+        fixture.counts(),
+        before,
+        "missing client must not mutate rows"
+    );
 
     let missing_service = persistence::create_engagement(
         &fixture.path,
@@ -120,7 +122,11 @@ fn legacy_engagement_creation_checks_live_client_and_service_but_not_an_issuer()
         "ACTIVE",
     );
     assert!(missing_service.is_err());
-    assert_eq!(fixture.counts(), before, "missing service must not mutate rows");
+    assert_eq!(
+        fixture.counts(),
+        before,
+        "missing service must not mutate rows"
+    );
 
     let created = fixture.engagement("Authorized-looking label is not a grant");
     assert!(Uuid::parse_str(&created).is_ok());
@@ -172,7 +178,10 @@ fn legacy_area_creation_rejects_cross_engagement_parent_without_writes() {
     )
     .expect("current legacy scope check permits same-engagement child");
     assert_eq!(child.engagement_id, one);
-    assert_eq!(child.parent_area_id.as_deref(), Some(parent.engagement_area_id.as_str()));
+    assert_eq!(
+        child.parent_area_id.as_deref(),
+        Some(parent.engagement_area_id.as_str())
+    );
     let mut expected = before;
     expected[1] += 1;
     assert_eq!(fixture.counts(), expected);
@@ -204,7 +213,10 @@ fn legacy_procedure_creation_rejects_foreign_area_without_writes() {
         None,
         "ACTIVE",
     );
-    assert!(foreign.is_err(), "procedure cannot reference another engagement's area");
+    assert!(
+        foreign.is_err(),
+        "procedure cannot reference another engagement's area"
+    );
     assert_eq!(fixture.counts(), before);
 
     let valid = persistence::create_procedure(
@@ -218,7 +230,10 @@ fn legacy_procedure_creation_rejects_foreign_area_without_writes() {
     )
     .expect("current legacy scope check permits local procedure");
     assert_eq!(valid.engagement_id, one);
-    assert_eq!(valid.engagement_area_id.as_deref(), Some(area.engagement_area_id.as_str()));
+    assert_eq!(
+        valid.engagement_area_id.as_deref(),
+        Some(area.engagement_area_id.as_str())
+    );
     let mut expected = before;
     expected[2] += 1;
     assert_eq!(fixture.counts(), expected);
