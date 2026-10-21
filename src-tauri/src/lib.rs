@@ -52,6 +52,8 @@ mod workpaper_legacy_command_denial_candidate;
 #[cfg(test)]
 mod workpaper_parent_hierarchy_native_tests;
 #[cfg(test)]
+mod workpaper_template_hierarchy_native_tests;
+#[cfg(test)]
 mod workpaper_revision_authorization_contract;
 #[cfg(test)]
 mod workpaper_revision_native_text_contract_tests;
