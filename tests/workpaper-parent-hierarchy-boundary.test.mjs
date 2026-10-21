@@ -90,3 +90,80 @@ test("native hierarchy regressions remain test-only; deferred security is unrun"
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
   assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
 });
+
+const alternativeCreators = [
+  "create_client",
+  "create_service_type",
+  "create_engagement_template_from_engagement",
+  "create_engagement_template_version_from_engagement",
+  "create_engagement_from_template",
+];
+
+test("alternative template-derived parent routes remain registered and unauthenticated", () => {
+  const registry = lib.match(/tauri::generate_handler!\\s*\\[([\\s\\S]*?)\\]/);
+  assert.ok(registry, "TAURI_REGISTRY_MISSING");
+  const names = new Set(registry[1].split(",").map(x => x.trim()));
+  for (const name of alternativeCreators) {
+    assert.ok(names.has(name), "ALTERNATIVE_PARENT_ROUTE_REGISTRATION_DRIFT: " + name);
+    const fn = functionSource(lib, name, false);
+    assert.match(fn, /persistence::create_/,
+      "ALTERNATIVE_PARENT_PERSISTENCE_FORWARDING_DRIFT: " + name);
+    assert.doesNotMatch(fn, /verified_session|trusted_principal|authenticated_grant/,
+      "ALTERNATIVE_PARENT_AUTHORIZATION_REVIEW_REQUIRED: " + name);
+  }
+});
+
+test("template instantiation retains writer lock, live parent checks and orphan rollback", () => {
+  const fn = functionSource(persistence, "create_engagement_from_template", true);
+  assert.match(fn, /TransactionBehavior::Immediate/,
+    "TEMPLATE_INSTANTIATION_WRITER_LOCK_DRIFT");
+  assert.match(fn, /FROM clients[\s\S]*archived_at_ms IS NULL/,
+    "TEMPLATE_DESTINATION_CLIENT_LIVE_CHECK_MISSING");
+  assert.match(fn, /FROM engagement_template_versions v[\s\S]*t\.archived_at_ms IS NULL/,
+    "TEMPLATE_VERSION_LIVE_CHECK_MISSING");
+  assert.match(fn, /FROM service_types[\s\S]*archived_at_ms IS NULL/,
+    "TEMPLATE_SERVICE_LIVE_CHECK_MISSING");
+  assert.match(fn, /next_pending\.len\(\) == pending_count/,
+    "TEMPLATE_PARENT_CYCLE_REJECTION_MISSING");
+  assert.match(fn, /engagement template procedure area is unavailable/,
+    "TEMPLATE_PROCEDURE_PARENT_REJECTION_MISSING");
+  assert.match(fn, /transaction\.commit\(\)\?/,
+    "TEMPLATE_COMMIT_BOUNDARY_DRIFT");
+
+  const mutated = persistence.replace(
+    "if next_pending.len() == pending_count",
+    "if false",
+  );
+  assert.notEqual(mutated, persistence, "TEMPLATE_MUTATION_ANCHOR_MISSING");
+  assert.doesNotMatch(
+    functionSource(mutated, "create_engagement_from_template", true),
+    /next_pending\.len\(\) == pending_count/,
+    "TEMPLATE_MUTATION_TRIPWIRE_DID_NOT_DETECT_REMOVAL",
+  );
+});
+
+test("client/service + template real-migration tests are nonshipping; Tauri denials remain unrun", () => {
+  assert.match(lib,
+    /#\[cfg\(test\)\]\s*mod workpaper_template_hierarchy_native_tests;/);
+  const native = readFileSync(
+    "src-tauri/src/workpaper_template_hierarchy_native_tests.rs", "utf8",
+  );
+  for (const name of [
+    "legacy_client_and_service_provisioning_has_no_issuer_input",
+    "legacy_template_clone_reparents_nested_areas_across_clients_without_copying_workpapers",
+    "legacy_template_clone_rolls_back_staged_engagement_on_invalid_definition",
+    "legacy_template_version_rejects_foreign_service_type_without_new_version",
+  ]) {
+    assert.ok(native.includes("fn " + name + "()"),
+      "ALTERNATIVE_PARENT_NATIVE_TEST_MISSING: " + name);
+  }
+  assert.match(native, /initialize_database\(&path\)/);
+  assert.ok(alternativeCreators.every(name => !matrix.routes.some(r => r.name === name)),
+    "NEW_HIERARCHY_MUTATIONS_ARE_SEPARATE_FROM_WORKPAPER_MATRIX");
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.ok(matrix.cases.every(c =>
+    c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.match(contract, /NOT IMPLEMENTED \/ NOT RUN/);
+});
