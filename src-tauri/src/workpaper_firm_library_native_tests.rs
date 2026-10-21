@@ -25,8 +25,8 @@ impl FirmLibraryFixture {
         let service_id = persistence::create_service_type(&path, "Library fixture audit")
             .expect("test service")
             .service_type_id;
-        let client = persistence::create_client(&path, "Library fixture client")
-            .expect("test client");
+        let client =
+            persistence::create_client(&path, "Library fixture client").expect("test client");
         let engagement_id = persistence::create_engagement(
             &path,
             &client.client_id,
@@ -104,11 +104,9 @@ fn legacy_firm_library_create_preserves_canonical_hash_audit_and_immutable_versi
     assert_eq!(item.name, "Synthetic checklist");
     assert_eq!(item.latest_version_number, 1);
 
-    let versions = persistence::list_firm_library_versions(
-        &fixture.path,
-        &item.firm_library_item_id,
-    )
-    .expect("list immutable versions");
+    let versions =
+        persistence::list_firm_library_versions(&fixture.path, &item.firm_library_item_id)
+            .expect("list immutable versions");
     assert_eq!(versions.len(), 1);
     assert_eq!(versions[0].definition_json, r#"{"a":"exact source","z":1}"#);
     assert_eq!(
@@ -209,11 +207,9 @@ fn legacy_firm_library_rejects_invalid_definition_and_foreign_service_without_wr
 fn legacy_firm_library_publish_appends_version_without_issuer_or_compare_and_swap() {
     let fixture = FirmLibraryFixture::new();
     let item = fixture.requirement(r#"{"content":"same text"}"#);
-    let initial = persistence::list_firm_library_versions(
-        &fixture.path,
-        &item.firm_library_item_id,
-    )
-    .expect("initial version");
+    let initial =
+        persistence::list_firm_library_versions(&fixture.path, &item.firm_library_item_id)
+            .expect("initial version");
     let before = fixture.counts();
     let published = persistence::publish_firm_library_version(
         &fixture.path,
@@ -223,14 +219,18 @@ fn legacy_firm_library_publish_appends_version_without_issuer_or_compare_and_swa
     .expect("legacy publication accepts same bytes as a new version");
     assert_eq!(published.latest_version_number, 2);
     assert_ne!(published.latest_version_id, item.latest_version_id);
-    assert_eq!(published.latest_definition_hash, item.latest_definition_hash);
-    let versions = persistence::list_firm_library_versions(
-        &fixture.path,
-        &item.firm_library_item_id,
-    )
-    .expect("read both exact versions");
+    assert_eq!(
+        published.latest_definition_hash,
+        item.latest_definition_hash
+    );
+    let versions =
+        persistence::list_firm_library_versions(&fixture.path, &item.firm_library_item_id)
+            .expect("read both exact versions");
     assert_eq!(versions.len(), 2);
-    assert_eq!(versions[1].firm_library_version_id, initial[0].firm_library_version_id);
+    assert_eq!(
+        versions[1].firm_library_version_id,
+        initial[0].firm_library_version_id
+    );
     assert_eq!(versions[1].definition_json, initial[0].definition_json);
     assert_eq!(versions[1].definition_hash, initial[0].definition_hash);
     let mut expected = before;
@@ -263,8 +263,9 @@ fn legacy_statutory_consumer_pins_exact_library_version_and_rejects_wrong_scopes
     .is_err());
     assert_eq!(fixture.counts(), before);
 
-    let other_service = persistence::create_service_type(&fixture.path, "Unrelated fixture service")
-        .expect("seed unrelated service");
+    let other_service =
+        persistence::create_service_type(&fixture.path, "Unrelated fixture service")
+            .expect("seed unrelated service");
     let foreign = persistence::create_firm_library_item(
         &fixture.path,
         "STATUTORY_COMPLIANCE_REQUIREMENT",
@@ -289,7 +290,10 @@ fn legacy_statutory_consumer_pins_exact_library_version_and_rejects_wrong_scopes
         &requirement.latest_version_id,
     )
     .expect("legacy command consumes current exact version");
-    assert_eq!(recorded.firm_library_version_id, requirement.latest_version_id);
+    assert_eq!(
+        recorded.firm_library_version_id,
+        requirement.latest_version_id
+    );
     assert_eq!(recorded.definition_hash, requirement.latest_definition_hash);
     let after_record = fixture.counts();
     assert!(persistence::create_statutory_compliance_requirement(
@@ -307,15 +311,22 @@ fn legacy_statutory_consumer_pins_exact_library_version_and_rejects_wrong_scopes
     )
     .expect("publish later library version");
     assert_ne!(later.latest_version_id, requirement.latest_version_id);
-    let existing = persistence::list_statutory_compliance_requirements(
-        &fixture.path,
-        &fixture.engagement_id,
-    )
-    .expect("read pinned requirement");
+    let existing =
+        persistence::list_statutory_compliance_requirements(&fixture.path, &fixture.engagement_id)
+            .expect("read pinned requirement");
     assert_eq!(existing.len(), 1);
-    assert_eq!(existing[0].firm_library_version_id, requirement.latest_version_id);
-    assert_eq!(existing[0].definition_hash, requirement.latest_definition_hash);
-    assert_eq!(existing[0].definition_json, r#"{"text":"initial statutory methodology"}"#);
+    assert_eq!(
+        existing[0].firm_library_version_id,
+        requirement.latest_version_id
+    );
+    assert_eq!(
+        existing[0].definition_hash,
+        requirement.latest_definition_hash
+    );
+    assert_eq!(
+        existing[0].definition_json,
+        r#"{"text":"initial statutory methodology"}"#
+    );
     let now = fixture.counts();
     assert_eq!(now[2], after_record[2]);
     assert_eq!(now[3], after_record[3]);
@@ -368,11 +379,9 @@ fn legacy_statutory_consumer_only_checks_claimed_hash_length_not_recomputed_dige
     expected[3] += 1;
     expected[4] += 1;
     assert_eq!(fixture.counts(), expected);
-    let initial = persistence::list_firm_library_versions(
-        &fixture.path,
-        &item.firm_library_item_id,
-    )
-    .expect("original historic version still exists");
+    let initial =
+        persistence::list_firm_library_versions(&fixture.path, &item.firm_library_item_id)
+            .expect("original historic version still exists");
     assert_eq!(initial[1].firm_library_version_id, item.latest_version_id);
     assert_eq!(initial[1].definition_hash, item.latest_definition_hash);
 }
