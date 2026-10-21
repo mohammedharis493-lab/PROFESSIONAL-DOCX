@@ -760,4 +760,234 @@ mod tests {
             Some("FAILED")
         );
     }
+
+    // Uses real indexed file bytes and production migrations, but injects a
+    // synthetic SQLite trigger only inside the disposable TEST database.
+    // This is the native capture function, NOT registered Tauri IPC or a grant.
+    #[test]
+    fn postrename_metadata_failure_preserves_unindexed_real_bytes_then_retry_succeeds() {
+        let test = TestEvidence::new();
+        let original_bytes = b"real fixture bytes preserved before metadata failure";
+        let file_instance_id = test.index_file("Metadata failure.txt", original_bytes);
+        let db = rusqlite::Connection::open(&test.database_path).expect("open test SQLite");
+        let source_versions_before: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .expect("count original scanned versions");
+        db.execute_batch(
+            "CREATE TRIGGER test_reject_capture_version_insert
+             BEFORE INSERT ON controlled_evidence_versions
+             BEGIN SELECT RAISE(ABORT, 'synthetic metadata insertion failure'); END;",
+        )
+        .expect("inject synthetic post-rename persistence failure");
+        drop(db);
+
+        let err = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect_err("test-only trigger must reject completed metadata");
+        assert!(matches!(err, EvidenceError::Persistence(_)));
+        assert_eq!(
+            persistence::count_controlled_evidence_versions_for_test(&test.database_path)
+                .expect("read persisted capture versions"),
+            0
+        );
+        assert_eq!(
+            persistence::latest_evidence_capture_status_for_test(
+                &test.database_path,
+                &file_instance_id,
+            )
+            .expect("read capture failure state")
+            .as_deref(),
+            Some("FAILED")
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "EVIDENCE_CAPTURE_FAILED",
+                &file_instance_id,
+            )
+            .expect("read failure audit"),
+            0,
+            "failure audit is for the capture job, not file instance"
+        );
+
+        let db = rusqlite::Connection::open(&test.database_path).expect("inspect rollback");
+        let (failed_job_id, document_id): (String, String) = db
+            .query_row(
+                "SELECT evidence_capture_job_id, document_id FROM evidence_capture_jobs
+                 WHERE file_instance_id = ?1 AND status = 'FAILED'",
+                [&file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("failed job remains auditable");
+        let source_versions_after: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .expect("count versions after rollback");
+        assert_eq!(source_versions_after, source_versions_before);
+        let audit_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'EVIDENCE_CAPTURE_FAILED'
+                   AND entity_id = ?1 AND actor_id IS NULL",
+                [&failed_job_id],
+                |row| row.get(0),
+            )
+            .expect("count un-attributed failed capture events");
+        assert_eq!(audit_count, 1);
+
+        let document_dir = test.evidence_state.root.join(&document_id);
+        let entries = fs::read_dir(&document_dir)
+            .expect("controlled directory exists after completed filesystem rename")
+            .map(|entry| entry.expect("enumerate controlled file").path())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let orphan = &entries[0];
+        let orphan_id = orphan
+            .file_name()
+            .expect("controlled file has a name")
+            .to_str()
+            .expect("controlled name is UTF-8");
+        Uuid::parse_str(orphan_id).expect("file was renamed to a controlled-version UUID");
+        assert_eq!(fs::read(orphan).expect("real bytes still on disk"), original_bytes);
+        assert!(fs::metadata(orphan).expect("file metadata").permissions().readonly());
+        assert!(persistence::get_controlled_evidence_read_record(
+            &test.database_path,
+            orphan_id,
+        )
+        .expect("normal read metadata lookup")
+        .is_none());
+
+        db.execute_batch("DROP TRIGGER test_reject_capture_version_insert")
+            .expect("restore fixture database behavior");
+        drop(db);
+
+        let recovered = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect("a new capture may succeed after removing synthetic trigger");
+        let readable = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &recovered.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("new metadata-linked version verifies actual bytes");
+        assert_eq!(readable.bytes, original_bytes);
+        assert_ne!(orphan_id, recovered.controlled_evidence_version_id);
+        assert_eq!(
+            persistence::count_controlled_evidence_versions_for_test(&test.database_path)
+                .expect("new capture version count"),
+            1
+        );
+        assert_eq!(
+            fs::read_dir(&document_dir)
+                .expect("read controlled evidence directory after retry")
+                .count(),
+            2,
+            "the first unindexed file remains after successful retry"
+        );
+
+        // Restore file permissions before cleanup on Windows. No fixture data
+        // or files are retained outside this isolated test directory.
+        for entry in fs::read_dir(&document_dir).expect("cleanup controlled fixture") {
+            let path = entry.expect("enumerate fixture").path();
+            let mut permissions = fs::metadata(&path).expect("fixture metadata").permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&path, permissions).expect("restore disposable file permissions");
+        }
+    }
+
+    #[test]
+    fn postrename_completion_audit_failure_rolls_back_metadata_but_leaves_controlled_file() {
+        let test = TestEvidence::new();
+        let original_bytes = b"actual captured bytes before synthetic completed-audit failure";
+        let file_instance_id = test.index_file("Audit failure.txt", original_bytes);
+        let db = rusqlite::Connection::open(&test.database_path).expect("open fixture SQLite");
+        let content_before: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .expect("count baseline content versions");
+        db.execute_batch(
+            "CREATE TRIGGER test_reject_capture_completion_audit
+             BEFORE INSERT ON audit_events
+             WHEN NEW.event_type = 'EVIDENCE_CAPTURE_COMPLETED'
+             BEGIN SELECT RAISE(ABORT, 'synthetic completion audit failure'); END;",
+        )
+        .expect("inject late, synthetic audit-insertion failure");
+        drop(db);
+
+        let err = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect_err("fixture trigger must abort completion transaction");
+        assert!(matches!(err, EvidenceError::Persistence(_)));
+
+        let db = rusqlite::Connection::open(&test.database_path).expect("inspect rollback");
+        let (job_id, document_id, status): (String, String, String) = db
+            .query_row(
+                "SELECT evidence_capture_job_id, document_id, status
+                 FROM evidence_capture_jobs WHERE file_instance_id = ?1",
+                [&file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("failed job persisted");
+        assert_eq!(status, "FAILED");
+        let remaining_content: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .expect("count content after audit rollback");
+        assert_eq!(remaining_content, content_before);
+        let persisted_versions: i64 = db
+            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0))
+            .expect("count controlled versions");
+        assert_eq!(persisted_versions, 0);
+        let completed_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'EVIDENCE_CAPTURE_COMPLETED'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read nonexistent completion audit");
+        assert_eq!(completed_count, 0);
+        let failure_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE entity_id = ?1 AND event_type = 'EVIDENCE_CAPTURE_FAILED'
+                   AND actor_id IS NULL",
+                [&job_id],
+                |row| row.get(0),
+            )
+            .expect("read expected failure audit");
+        assert_eq!(failure_count, 1);
+
+        let document_dir = test.evidence_state.root.join(&document_id);
+        let paths = fs::read_dir(&document_dir)
+            .expect("controlled filesystem directory remains")
+            .map(|entry| entry.expect("read fixture directory").path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 1);
+        let orphan = &paths[0];
+        assert_eq!(fs::read(orphan).expect("orphan bytes on filesystem"), original_bytes);
+        let orphan_id = orphan
+            .file_name()
+            .expect("controlled orphan filename")
+            .to_str()
+            .expect("UTF-8 UUID");
+        assert!(persistence::get_controlled_evidence_read_record(
+            &test.database_path,
+            orphan_id,
+        )
+        .expect("unindexed file excluded from metadata read")
+        .is_none());
+        drop(db);
+
+        let mut permissions = fs::metadata(orphan).expect("orphan metadata").permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(orphan, permissions).expect("restore disposable fixture permissions");
+    }
 }
