@@ -195,7 +195,10 @@ fn legacy_template_clone_reparents_nested_areas_across_clients_without_copying_w
         .expect("child copied");
     assert_ne!(new_root.engagement_area_id, root.engagement_area_id);
     assert_ne!(new_child.engagement_area_id, child.engagement_area_id);
-    assert_eq!(new_child.parent_area_id.as_deref(), Some(new_root.engagement_area_id.as_str()));
+    assert_eq!(
+        new_child.parent_area_id.as_deref(),
+        Some(new_root.engagement_area_id.as_str())
+    );
 
     let procedures = persistence::list_procedures(&fixture.path, &cloned.engagement_id)
         .expect("read cloned procedures");
