@@ -74,6 +74,9 @@ impl StatutoryFixture {
         .expect("capture requirements/assessments/evidence/audit")
     }
 
+    // Test-only helper mirrors the seven native assessment fields explicitly;
+    // scope this style exception to the disposable fixture, never production.
+    #[allow(clippy::too_many_arguments)]
     fn assess(
         &self,
         applicability: &str,
