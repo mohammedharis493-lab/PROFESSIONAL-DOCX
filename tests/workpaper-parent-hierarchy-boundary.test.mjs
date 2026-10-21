@@ -100,7 +100,7 @@ const alternativeCreators = [
 ];
 
 test("alternative template-derived parent routes remain registered and unauthenticated", () => {
-  const registry = lib.match(/tauri::generate_handler!\\s*\\[([\\s\\S]*?)\\]/);
+  const registry = lib.match(/tauri::generate_handler!\s*\[([\s\S]*?)\]/);
   assert.ok(registry, "TAURI_REGISTRY_MISSING");
   const names = new Set(registry[1].split(",").map(x => x.trim()));
   for (const name of alternativeCreators) {
