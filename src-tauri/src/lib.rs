@@ -48,6 +48,8 @@ mod spreadsheet;
 mod trial_balance;
 mod word;
 #[cfg(test)]
+mod workpaper_controlled_capture_native_tests;
+#[cfg(test)]
 mod workpaper_firm_library_native_tests;
 #[cfg(test)]
 mod workpaper_legacy_command_denial_candidate;
