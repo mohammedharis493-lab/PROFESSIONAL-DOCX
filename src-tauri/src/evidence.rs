@@ -537,6 +537,46 @@ mod tests {
                 .expect("indexed file should exist")
                 .file_instance_id
         }
+
+        fn statutory_requirement(&self) -> String {
+            // The requirement is genuinely created with the installed migrated
+            // library/service/client/engagement persistence helpers. This is
+            // still a disposable native fixture, not an authorized Tauri actor.
+            let service = persistence::create_service_type(
+                &self.database_path,
+                "Real controlled evidence statutory fixture",
+            )
+            .expect("create fixture service");
+            let client =
+                persistence::create_client(&self.database_path, "Real-byte statutory fixture")
+                    .expect("create fixture client");
+            let engagement = persistence::create_engagement(
+                &self.database_path,
+                &client.client_id,
+                &service.service_type_id,
+                "Real-byte metadata attachment fixture",
+                None,
+                None,
+                "ACTIVE",
+            )
+            .expect("create fixture engagement");
+            let item = persistence::create_firm_library_item(
+                &self.database_path,
+                "STATUTORY_COMPLIANCE_REQUIREMENT",
+                "Real-byte statutory requirement",
+                None,
+                Some(&service.service_type_id),
+                r#"{"requirement":"fixture only"}"#,
+            )
+            .expect("create fixture methodology");
+            persistence::create_statutory_compliance_requirement(
+                &self.database_path,
+                &engagement.engagement_id,
+                &item.latest_version_id,
+            )
+            .expect("instantiate real-migration statutory requirement")
+            .statutory_compliance_requirement_id
+        }
     }
 
     impl Drop for TestEvidence {
@@ -1020,5 +1060,165 @@ mod tests {
             fs::set_permissions(orphan, permissions)
                 .expect("restore disposable fixture permissions");
         }
+    }
+
+    fn make_disposable_controlled_file_writable(path: &Path) {
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(path).expect("fixture file metadata").permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)
+                .expect("restore writable Windows test-file permission");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("restore owner-write access only on isolated Unix test file");
+        }
+    }
+
+    // These native tests exercise actual indexed/captured/rehash-verified bytes
+    // then deliberately disturb only disposable controlled files. The metadata
+    // writer is invoked via persistence, NOT a registered authenticated Tauri
+    // command. No independent evidence grant or qualified reviewer exists.
+
+    #[test]
+    fn real_captured_bytes_digest_mismatch_still_allows_legacy_statutory_metadata_attachment() {
+        let test = TestEvidence::new();
+        let original = b"actual statutory evidence bytes, fixture original";
+        let file_id = test.index_file("Statutory integrity.txt", original);
+        let captured = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_id,
+        )
+        .expect("real native capture verifies controlled bytes");
+        let evidence_path = test
+            .evidence_state
+            .root
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
+        let baseline = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("real baseline bytes must pass read-time digest verification");
+        assert_eq!(baseline.bytes, original);
+
+        let requirement_id = test.statutory_requirement();
+        let mut tampered = original.to_vec();
+        tampered[0] ^= 0x01;
+        assert_eq!(tampered.len(), original.len());
+        make_disposable_controlled_file_writable(&evidence_path);
+        fs::write(&evidence_path, &tampered)
+            .expect("alter only disposable fixture bytes at the same length");
+        let denied = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect_err("controlled-byte reader must refuse a hash mismatch");
+        assert!(matches!(denied, EvidenceError::Integrity(_)));
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Caller assertion, not fresh byte verified"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy assessment snapshots retained hash-verified DB metadata");
+        assert_eq!(assessment.version_number, 2);
+        assert_eq!(assessment.status, "COMPLIANT");
+        assert_eq!(assessment.evidence_count, 1);
+        let links = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment.statutory_compliance_assessment_id,
+        )
+        .expect("read attached source metadata snapshot");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].controlled_evidence_version_id, captured.controlled_evidence_version_id);
+        assert_eq!(links[0].document_id, captured.document_id);
+        assert_eq!(links[0].source_content_version_id, captured.source_content_version_id);
+        assert_eq!(links[0].source_sha256, captured.sha256);
+        assert_eq!(fs::read(&evidence_path).expect("read fixture bytes"), tampered);
+    }
+
+    #[test]
+    fn missing_real_controlled_file_does_not_block_legacy_statutory_metadata_attachment() {
+        let test = TestEvidence::new();
+        let original = b"controlled source bytes deleted only inside test fixture";
+        let file_id = test.index_file("Statutory missing bytes.txt", original);
+        let captured = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_id,
+        )
+        .expect("real verified native evidence capture");
+        let evidence_path = test
+            .evidence_state
+            .root
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
+        assert_eq!(
+            read_controlled_evidence_bytes(
+                &test.database_path,
+                &test.evidence_state,
+                &captured.controlled_evidence_version_id,
+                1024,
+            )
+            .expect("controlled bytes initially pass")
+            .bytes,
+            original
+        );
+        let requirement_id = test.statutory_requirement();
+        make_disposable_controlled_file_writable(&evidence_path);
+        fs::remove_file(&evidence_path).expect("remove only isolated test controlled file");
+        assert!(!evidence_path.exists());
+        let rejected = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect_err("normal controlled read must refuse missing managed bytes");
+        assert!(matches!(rejected, EvidenceError::Configuration(_)));
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Metadata-only evidence attachment after fixture file removal"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy DB attachment does not reopen missing managed bytes");
+        assert_eq!(assessment.evidence_count, 1);
+        let links = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment.statutory_compliance_assessment_id,
+        )
+        .expect("verify immutable evidence provenance tuple");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].source_sha256, captured.sha256);
+        assert_eq!(links[0].document_id, captured.document_id);
+        assert!(!evidence_path.exists());
     }
 }
