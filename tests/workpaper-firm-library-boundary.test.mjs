@@ -184,3 +184,44 @@ test("assessment status validation and native real-migration tests stay separate
   assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
 });
+
+
+test("controlled-evidence read/archive guard diverges from statutory metadata attachment", () => {
+  const read = implementation("get_controlled_evidence_read_record");
+  const assess = implementation("create_statutory_compliance_assessment");
+  assert.match(read, /JOIN documents d ON d\.document_id = cev\.document_id/,
+    "CONTROLLED_READ_DOCUMENT_JOIN_DRIFT");
+  assert.match(read, /d\.archived_at_ms IS NULL/,
+    "CONTROLLED_READ_ARCHIVE_GUARD_DRIFT");
+  assert.match(assess, /FROM controlled_evidence_versions/,
+    "STATUTORY_EVIDENCE_METADATA_LOOKUP_DRIFT");
+  assert.doesNotMatch(assess, /JOIN documents|FROM documents/,
+    "STATUTORY_EVIDENCE_SOURCE_ARCHIVE_BEHAVIOR_CHANGED_REQUIRES_REVIEW");
+  assert.doesNotMatch(assess, /controlled_storage_locator|controlled_bytes|read_controlled_evidence_bytes/,
+    "STATUTORY_BYTE_CUSTODY_BOUNDARY_CHANGED_REQUIRES_REVIEW");
+  const simulatedRegression = read.replace("AND d.archived_at_ms IS NULL", "");
+  assert.notEqual(simulatedRegression, read, "READ_ARCHIVE_GUARD_MUTATION_MISSING");
+  assert.doesNotMatch(simulatedRegression, /d\.archived_at_ms IS NULL/,
+    "READ_ARCHIVE_GUARD_MUTATION_NOT_DETECTED");
+});
+
+test("synthetic exact-evidence regressions are native persistence tests, not captured bytes or IPC grants", () => {
+  const native = readFileSync(
+    "src-tauri/src/workpaper_statutory_assessment_native_tests.rs", "utf8",
+  );
+  for (const name of [
+    "legacy_assessment_uses_controlled_metadata_snapshot_without_document_scope_grant",
+    "legacy_assessment_can_attach_archived_document_hidden_by_evidence_read_path",
+    "legacy_assessment_rejects_quarantined_metadata_without_partial_evidence_or_audit",
+  ]) {
+    assert.ok(native.includes("fn " + name + "()"),
+      "STATUTORY_EXACT_EVIDENCE_NATIVE_TEST_MISSING: " + name);
+  }
+  assert.match(native, /fn seed_synthetic_evidence\(/);
+  assert.match(native, /INSERT INTO controlled_evidence_versions/);
+  assert.match(native, /INSERT INTO evidence_capture_jobs/);
+  assert.match(native, /get_controlled_evidence_read_record/);
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+});
