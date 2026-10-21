@@ -1065,7 +1065,9 @@ mod tests {
     fn make_disposable_controlled_file_writable(path: &Path) {
         #[cfg(windows)]
         {
-            let mut permissions = fs::metadata(path).expect("fixture file metadata").permissions();
+            let mut permissions = fs::metadata(path)
+                .expect("fixture file metadata")
+                .permissions();
             permissions.set_readonly(false);
             fs::set_permissions(path, permissions)
                 .expect("restore writable Windows test-file permission");
@@ -1088,12 +1090,9 @@ mod tests {
         let test = TestEvidence::new();
         let original = b"actual statutory evidence bytes, fixture original";
         let file_id = test.index_file("Statutory integrity.txt", original);
-        let captured = capture_controlled_evidence(
-            &test.database_path,
-            &test.evidence_state,
-            &file_id,
-        )
-        .expect("real native capture verifies controlled bytes");
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("real native capture verifies controlled bytes");
         let evidence_path = test
             .evidence_state
             .root
@@ -1148,11 +1147,20 @@ mod tests {
         )
         .expect("read attached source metadata snapshot");
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].controlled_evidence_version_id, captured.controlled_evidence_version_id);
+        assert_eq!(
+            links[0].controlled_evidence_version_id,
+            captured.controlled_evidence_version_id
+        );
         assert_eq!(links[0].document_id, captured.document_id);
-        assert_eq!(links[0].source_content_version_id, captured.source_content_version_id);
+        assert_eq!(
+            links[0].source_content_version_id,
+            captured.source_content_version_id
+        );
         assert_eq!(links[0].source_sha256, captured.sha256);
-        assert_eq!(fs::read(&evidence_path).expect("read fixture bytes"), tampered);
+        assert_eq!(
+            fs::read(&evidence_path).expect("read fixture bytes"),
+            tampered
+        );
     }
 
     #[test]
@@ -1160,12 +1168,9 @@ mod tests {
         let test = TestEvidence::new();
         let original = b"controlled source bytes deleted only inside test fixture";
         let file_id = test.index_file("Statutory missing bytes.txt", original);
-        let captured = capture_controlled_evidence(
-            &test.database_path,
-            &test.evidence_state,
-            &file_id,
-        )
-        .expect("real verified native evidence capture");
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("real verified native evidence capture");
         let evidence_path = test
             .evidence_state
             .root
