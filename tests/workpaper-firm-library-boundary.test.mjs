@@ -249,3 +249,71 @@ test("controlled bytes read path retains independent root, size, and SHA-256 che
   assert.doesNotMatch(assessment, /read_controlled_evidence_bytes/,
     "STATUTORY_ATTACHMENT_BYTE_READ_SEMANTICS_CHANGED_REQUIRES_REVIEW");
 });
+
+
+test("capture completion and terminal failure have transaction, identity, and audit guards", () => {
+  const complete = implementation("complete_evidence_capture");
+  const fail = implementation("finish_evidence_capture_failure");
+  assert.match(complete, /TransactionBehavior::Immediate/,
+    "CAPTURE_COMPLETION_WRITER_LOCK_DRIFT");
+  assert.match(complete, /status != "CAPTURING"/,
+    "CAPTURE_COMPLETION_TERMINAL_REJECTION_DRIFT");
+  assert.match(complete, /job_document_id != completion\.document_id/,
+    "CAPTURE_COMPLETION_DOCUMENT_BINDING_DRIFT");
+  assert.match(complete, /job_file_instance_id != completion\.file_instance_id/,
+    "CAPTURE_COMPLETION_FILE_BINDING_DRIFT");
+  assert.match(complete, /INSERT INTO content_versions/,
+    "CAPTURE_COMPLETION_SOURCE_VERSION_DRIFT");
+  assert.match(complete, /INSERT INTO controlled_evidence_versions/,
+    "CAPTURE_COMPLETION_EXACT_VERSION_DRIFT");
+  assert.match(complete, /EVIDENCE_CAPTURE_COMPLETED/,
+    "CAPTURE_COMPLETION_AUDIT_DRIFT");
+  assert.match(complete, /transaction\.commit\(\)\?/,
+    "CAPTURE_COMPLETION_COMMIT_DRIFT");
+  assert.doesNotMatch(complete, /read_controlled_evidence_bytes|Sha256::digest|hash_file/,
+    "CAPTURE_COMPLETION_BYTE_SCOPE_CHANGED_REQUIRES_REVIEW");
+  assert.doesNotMatch(complete, /archived_at_ms IS NULL/,
+    "CAPTURE_COMPLETION_ARCHIVED_PARENT_GUARD_CHANGED_REQUIRES_REVIEW");
+  assert.match(fail, /status != "FAILED" && status != "QUARANTINED"/);
+  assert.match(fail, /current_status != "CAPTURING"/);
+  assert.match(fail, /EVIDENCE_CAPTURE_QUARANTINED/);
+  assert.match(fail, /EVIDENCE_CAPTURE_FAILED/);
+  assert.match(fail, /transaction\.commit\(\)\?/);
+});
+
+test("actual captured-byte verifier is distinct from synthetic persistence completion tests", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const start = evidence.indexOf("fn perform_capture<F>(");
+  const end = evidence.indexOf("\nfn verify_indexed_source(", start);
+  assert.ok(start >= 0 && end > start, "EVIDENCE_REAL_CAPTURE_PIPELINE_MISSING");
+  const capture = evidence.slice(start, end);
+  assert.match(capture, /verify_indexed_source\(&source|verify_indexed_source\(source/,
+    "EVIDENCE_INDEXED_SOURCE_GUARD_MISSING");
+  assert.match(capture, /before != after_handle \|\| before != after_path/,
+    "EVIDENCE_SOURCE_STABILITY_GUARD_MISSING");
+  assert.match(capture, /verified_sha256 != sha256/,
+    "EVIDENCE_POST_COPY_DIGEST_GUARD_MISSING");
+  assert.match(capture, /permissions\.set_readonly\(true\)/,
+    "EVIDENCE_CONTROLLED_READONLY_GUARD_MISSING");
+  assert.match(capture, /persistence::complete_evidence_capture/,
+    "CAPTURE_PERSISTENCE_COMPLETION_INTEGRATION_MISSING");
+  assert.match(lib,
+    /#\[cfg\(test\)\]\s*mod workpaper_controlled_capture_native_tests;/);
+  const native = readFileSync(
+    "src-tauri/src/workpaper_controlled_capture_native_tests.rs", "utf8",
+  );
+  for (const name of [
+    "legacy_capture_completion_rejects_job_identity_mismatch_without_writes",
+    "legacy_capture_failure_terminal_state_is_idempotent_and_blocks_completion",
+    "legacy_capture_completion_persists_claimed_hash_even_after_document_archive",
+    "legacy_capture_duplicate_version_id_rolls_back_content_and_job_completion",
+  ]) {
+    assert.ok(native.includes("fn " + name + "()"), "CAPTURE_NATIVE_REGRESSION_MISSING: " + name);
+  }
+  assert.match(native, /initialize_database\(&path\)/);
+  assert.match(native, /INSERT INTO evidence_capture_jobs/);
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+});
