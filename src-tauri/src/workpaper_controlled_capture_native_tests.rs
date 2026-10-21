@@ -255,9 +255,11 @@ fn legacy_capture_completion_persists_claimed_hash_even_after_document_archive()
     assert_eq!(recorded.sha256, vec![0xA5_u8; 32]);
     assert_eq!(recorded.verification_state, "HASH_VERIFIED");
     assert_eq!(fixture.status(&fixture.job_id), "COMPLETE");
-    assert!(persistence::get_controlled_evidence_read_record(&fixture.path, &version_id)
-        .expect("read record query")
-        .is_none());
+    assert!(
+        persistence::get_controlled_evidence_read_record(&fixture.path, &version_id)
+            .expect("read record query")
+            .is_none()
+    );
     assert!(!fixture.root.join("synthetic:").exists());
 
     let db = Connection::open(&fixture.path).expect("read synthetic completion audit");
