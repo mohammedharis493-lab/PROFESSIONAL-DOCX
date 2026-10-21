@@ -312,7 +312,6 @@ fn legacy_assessment_version_numbers_advance_with_immutable_prior_state() {
     assert_eq!(fixture.counts()[2], 0);
 }
 
-
 struct SyntheticEvidence {
     version_id: String,
     document_id: String,
@@ -494,12 +493,11 @@ fn legacy_assessment_can_attach_archived_document_hidden_by_evidence_read_path()
     .expect("archive only the synthetic source document");
     drop(db);
 
-    assert!(persistence::get_controlled_evidence_read_record(
-        &fixture.path,
-        &evidence.version_id,
-    )
-    .expect("read record access path returns without SQL error")
-    .is_none());
+    assert!(
+        persistence::get_controlled_evidence_read_record(&fixture.path, &evidence.version_id,)
+            .expect("read record access path returns without SQL error")
+            .is_none()
+    );
     let before = fixture.counts();
     let result = fixture
         .assess(
