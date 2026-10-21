@@ -363,3 +363,43 @@ test("post-rename real-byte failure regressions are cfg(test) and do not change 
   assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
 });
+
+
+test("real controlled bytes must pass read-time digest but statutory metadata writer does not consult reader", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const readStart = evidence.indexOf("pub fn read_controlled_evidence_bytes(");
+  const readEnd = evidence.indexOf("\nfn capture_controlled_evidence_internal", readStart);
+  assert.ok(readStart >= 0 && readEnd > readStart);
+  const read = evidence.slice(readStart, readEnd);
+  assert.match(read, /fs::canonicalize\(&evidence_path\)/);
+  assert.match(read, /metadata\.len\(\) != record\.size_bytes/);
+  assert.match(read, /Sha256::digest\(&bytes\)/);
+  assert.match(read, /digest\[\.\.\] != record\.sha256\[\.\.\]/);
+  const assess = implementation("create_statutory_compliance_assessment");
+  assert.match(assess, /FROM controlled_evidence_versions/);
+  assert.match(assess, /retention_state != "RETAINED"/);
+  assert.match(assess, /verification_state != "HASH_VERIFIED"/);
+  assert.doesNotMatch(assess, /read_controlled_evidence_bytes|fs::read|Sha256::digest|hash_file/,
+    "STATUTORY_ATTACHMENT_BYTE_REVALIDATION_CHANGED_REQUIRES_REVIEW");
+});
+
+test("real native controlled-byte tamper and loss fixture stays separate from Tauri denial matrix", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const testModule = evidence.slice(evidence.indexOf("#[cfg(test)]\nmod tests {"));
+  for (const name of [
+    "real_captured_bytes_digest_mismatch_still_allows_legacy_statutory_metadata_attachment",
+    "missing_real_controlled_file_does_not_block_legacy_statutory_metadata_attachment",
+  ]) {
+    assert.ok(testModule.includes("fn " + name + "()"),
+      "REAL_BYTE_STATUTORY_LIFECYCLE_NATIVE_TEST_MISSING: " + name);
+  }
+  assert.match(testModule, /fn statutory_requirement\(&self\) -> String/);
+  assert.match(testModule, /capture_controlled_evidence\(/);
+  assert.match(testModule, /read_controlled_evidence_bytes\(/);
+  assert.match(testModule, /persistence::create_statutory_compliance_assessment\(/);
+  assert.match(testModule, /make_disposable_controlled_file_writable/);
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+});
