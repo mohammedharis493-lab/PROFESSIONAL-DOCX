@@ -225,3 +225,27 @@ test("synthetic exact-evidence regressions are native persistence tests, not cap
   assert.equal(matrix.cases.length, 34);
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
 });
+
+
+test("controlled bytes read path retains independent root, size, and SHA-256 checks", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const start = evidence.indexOf("pub fn read_controlled_evidence_bytes(");
+  const end = evidence.indexOf("\nfn capture_controlled_evidence_internal", start);
+  assert.ok(start >= 0 && end > start, "CONTROLLED_BYTES_READER_SOURCE_MISSING");
+  const read = evidence.slice(start, end);
+  assert.match(read, /persistence::get_controlled_evidence_read_record/,
+    "CONTROLLED_BYTES_READ_METADATA_GATE_MISSING");
+  assert.match(read, /record\.controlled_storage_locator != expected_locator/,
+    "CONTROLLED_BYTES_EXACT_LOCATOR_GUARD_MISSING");
+  assert.match(read, /!canonical_path\.starts_with\(&canonical_root\)/,
+    "CONTROLLED_BYTES_ROOT_CONTAINMENT_MISSING");
+  assert.match(read, /metadata\.len\(\) != record\.size_bytes/,
+    "CONTROLLED_BYTES_LENGTH_VERIFICATION_MISSING");
+  assert.match(read, /Sha256::digest\(&bytes\)/,
+    "CONTROLLED_BYTES_DIGEST_RECOMPUTATION_MISSING");
+  assert.match(read, /digest\[\.\.\] != record\.sha256\[\.\.\]/,
+    "CONTROLLED_BYTES_DIGEST_MISMATCH_GUARD_MISSING");
+  const assessment = implementation("create_statutory_compliance_assessment");
+  assert.doesNotMatch(assessment, /read_controlled_evidence_bytes/,
+    "STATUTORY_ATTACHMENT_BYTE_READ_SEMANTICS_CHANGED_REQUIRES_REVIEW");
+});
