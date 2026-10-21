@@ -317,3 +317,49 @@ test("actual captured-byte verifier is distinct from synthetic persistence compl
   assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
 });
+
+
+test("real-byte capture orders filesystem finalization ahead of transactional database completion", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const start = evidence.indexOf("fn perform_capture<F>(");
+  const end = evidence.indexOf("\nfn verify_indexed_source(", start);
+  assert.ok(start >= 0 && end > start, "REAL_CAPTURE_FUNCTION_MISSING");
+  const capture = evidence.slice(start, end);
+  const rename = capture.indexOf("fs::rename(&temp_path, &final_path)?");
+  const readback = capture.indexOf("let verified_sha256 = hash_file(&final_path)?");
+  const readonly = capture.indexOf("permissions.set_readonly(true)");
+  const completed = capture.indexOf("persistence::complete_evidence_capture(");
+  assert.ok(rename >= 0 && rename < readback && readback < readonly && readonly < completed,
+    "REAL_CAPTURE_FILE_DB_ORDER_CHANGED_REQUIRES_CUSTODY_REVIEW");
+  assert.match(capture, /if verified_sha256 != sha256 \{/);
+  assert.doesNotMatch(capture.slice(completed), /remove_file\(&final_path\)/,
+    "POST_COMPLETION_FILE_CLEANUP_SEMANTICS_CHANGED_REQUIRES_REVIEW");
+  const outerStart = evidence.indexOf("fn capture_controlled_evidence_internal<F>(");
+  const outerEnd = evidence.indexOf("\nfn perform_capture<F>(", outerStart);
+  assert.ok(outerStart >= 0 && outerEnd > outerStart);
+  const outer = evidence.slice(outerStart, outerEnd);
+  assert.match(outer, /EvidenceError::Persistence\(_\) => \("FAILED", "CAPTURE_PERSISTENCE_FAILED"\)/);
+  assert.match(outer, /finish_evidence_capture_failure/);
+});
+
+test("post-rename real-byte failure regressions are cfg(test) and do not change Tauri denial ledger", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  assert.match(evidence, /#\[cfg\(test\)\]\s*mod tests \{/);
+  for (const name of [
+    "postrename_metadata_failure_preserves_unindexed_real_bytes_then_retry_succeeds",
+    "postrename_completion_audit_failure_rolls_back_metadata_but_leaves_controlled_file",
+  ]) {
+    assert.ok(evidence.includes("fn " + name + "()"), "POSTRENAME_NATIVE_TEST_MISSING: " + name);
+  }
+  assert.match(evidence, /CREATE TRIGGER test_reject_capture_version_insert/);
+  assert.match(evidence, /CREATE TRIGGER test_reject_capture_completion_audit/);
+  assert.match(evidence, /original_bytes = b"real fixture bytes/);
+  assert.match(evidence, /original_bytes = b"actual captured bytes/);
+  assert.match(evidence, /read_controlled_evidence_bytes\(/);
+  const registry = lib.match(/tauri::generate_handler!\s*\[([\s\S]*?)\]/);
+  assert.ok(registry && registry[1].split(",").map(s => s.trim()).includes("capture_controlled_evidence"));
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+});
