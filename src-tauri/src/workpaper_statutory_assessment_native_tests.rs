@@ -23,8 +23,8 @@ impl StatutoryFixture {
         initialize_database(&path).expect("run actual migrations");
         let service = persistence::create_service_type(&path, "Statutory fixture service")
             .expect("test service");
-        let client = persistence::create_client(&path, "Statutory fixture client")
-            .expect("test client");
+        let client =
+            persistence::create_client(&path, "Statutory fixture client").expect("test client");
         let engagement_id = persistence::create_engagement(
             &path,
             &client.client_id,
@@ -298,7 +298,10 @@ fn legacy_assessment_version_numbers_advance_with_immutable_prior_state() {
         persistence::list_statutory_compliance_assessments(&fixture.path, &fixture.requirement_id)
             .expect("inspect immutable earlier states");
     assert_eq!(
-        history.iter().map(|row| row.version_number).collect::<Vec<_>>(),
+        history
+            .iter()
+            .map(|row| row.version_number)
+            .collect::<Vec<_>>(),
         vec![3, 2, 1]
     );
     assert_eq!(history[1].status, "PENDING");
