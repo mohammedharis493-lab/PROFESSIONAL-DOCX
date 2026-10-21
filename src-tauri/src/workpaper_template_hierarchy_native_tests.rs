@@ -240,7 +240,24 @@ fn legacy_template_clone_rolls_back_staged_engagement_on_invalid_definition() {
         "Malformed fixture template",
         None,
     )
-    .expect("create valid immutable template version");
+    .expect("create genuine template version from disposable migrated database");
+
+    let before_protected_update = fixture.counts();
+    let db = Connection::open(&fixture.path).expect("open isolated fixture");
+    let protected_update = db.execute(
+        "UPDATE engagement_template_versions
+         SET definition_json = '{}' WHERE engagement_template_version_id = ?1",
+        [&template.latest_version_id],
+    );
+    assert!(
+        protected_update
+            .unwrap_err()
+            .to_string()
+            .contains("immutable"),
+        "actual production migration must prevent rewriting historical template versions"
+    );
+    drop(db);
+    assert_eq!(fixture.counts(), before_protected_update);
 
     let cases = [
         serde_json::json!({
@@ -287,20 +304,33 @@ fn legacy_template_clone_rolls_back_staged_engagement_on_invalid_definition() {
         }),
     ];
     for (i, bad_definition) in cases.iter().enumerate() {
-        // Deliberately corrupt ONLY this disposable fixture's template payload.
-        // Real application code does not expose this tampering operation.
-        let db = Connection::open(&fixture.path).expect("fixture template mutation");
+        // A separate, explicitly fabricated fixture version is inserted for
+        // adversarial input coverage. No existing immutable version is edited,
+        // and the real installed application exposes no such fixture insertion.
+        let fabricated_version_id = Uuid::new_v4().to_string();
+        let db = Connection::open(&fixture.path).expect("open disposable fixture");
         db.execute(
-            "UPDATE engagement_template_versions
-             SET definition_json = ?1 WHERE engagement_template_version_id = ?2",
-            params![bad_definition.to_string(), &template.latest_version_id],
+            "INSERT INTO engagement_template_versions (
+                engagement_template_version_id, engagement_template_id,
+                version_number, source_engagement_id, service_type_id,
+                definition_json, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2)",
+            params![
+                &fabricated_version_id,
+                &template.engagement_template_id,
+                (i as i64) + 2,
+                &source_id,
+                &fixture.service_type_id,
+                bad_definition.to_string()
+            ],
         )
-        .expect("inject syntactically valid but malformed hierarchy");
+        .expect("insert only a new synthetic malformed fixture version");
         drop(db);
+
         let before = fixture.counts();
         let failed = persistence::create_engagement_from_template(
             &fixture.path,
-            &template.latest_version_id,
+            &fabricated_version_id,
             &fixture.client_id,
             &format!("Rejected attempt {i}"),
             None,
@@ -314,6 +344,17 @@ fn legacy_template_clone_rolls_back_staged_engagement_on_invalid_definition() {
             "staged engagement/area/procedure and audit counts must roll back"
         );
     }
+    let original = persistence::create_engagement_from_template(
+        &fixture.path,
+        &template.latest_version_id,
+        &fixture.client_id,
+        "Historical original remains usable",
+        None,
+        None,
+        "ACTIVE",
+    )
+    .expect("initial historical version remains readable and usable");
+    assert!(Uuid::parse_str(&original.engagement_id).is_ok());
 }
 
 #[test]
