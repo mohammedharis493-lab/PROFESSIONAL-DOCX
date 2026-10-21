@@ -771,7 +771,9 @@ mod tests {
         let file_instance_id = test.index_file("Metadata failure.txt", original_bytes);
         let db = rusqlite::Connection::open(&test.database_path).expect("open test SQLite");
         let source_versions_before: i64 = db
-            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
             .expect("count original scanned versions");
         db.execute_batch(
             "CREATE TRIGGER test_reject_capture_version_insert
@@ -823,7 +825,9 @@ mod tests {
             )
             .expect("failed job remains auditable");
         let source_versions_after: i64 = db
-            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
             .expect("count versions after rollback");
         assert_eq!(source_versions_after, source_versions_before);
         let audit_count: i64 = db
@@ -850,14 +854,19 @@ mod tests {
             .to_str()
             .expect("controlled name is UTF-8");
         Uuid::parse_str(orphan_id).expect("file was renamed to a controlled-version UUID");
-        assert_eq!(fs::read(orphan).expect("real bytes still on disk"), original_bytes);
-        assert!(fs::metadata(orphan).expect("file metadata").permissions().readonly());
-        assert!(persistence::get_controlled_evidence_read_record(
-            &test.database_path,
-            orphan_id,
-        )
-        .expect("normal read metadata lookup")
-        .is_none());
+        assert_eq!(
+            fs::read(orphan).expect("real bytes still on disk"),
+            original_bytes
+        );
+        assert!(fs::metadata(orphan)
+            .expect("file metadata")
+            .permissions()
+            .readonly());
+        assert!(
+            persistence::get_controlled_evidence_read_record(&test.database_path, orphan_id,)
+                .expect("normal read metadata lookup")
+                .is_none()
+        );
 
         db.execute_batch("DROP TRIGGER test_reject_capture_version_insert")
             .expect("restore fixture database behavior");
@@ -895,9 +904,17 @@ mod tests {
         // or files are retained outside this isolated test directory.
         for entry in fs::read_dir(&document_dir).expect("cleanup controlled fixture") {
             let path = entry.expect("enumerate fixture").path();
-            let mut permissions = fs::metadata(&path).expect("fixture metadata").permissions();
-            permissions.set_readonly(false);
-            fs::set_permissions(&path, permissions).expect("restore disposable file permissions");
+            #[cfg(windows)]
+            {
+                let mut permissions = fs::metadata(&path).expect("fixture metadata").permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(&path, permissions)
+                    .expect("restore disposable file permissions");
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = path;
+            }
         }
     }
 
@@ -908,7 +925,9 @@ mod tests {
         let file_instance_id = test.index_file("Audit failure.txt", original_bytes);
         let db = rusqlite::Connection::open(&test.database_path).expect("open fixture SQLite");
         let content_before: i64 = db
-            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
             .expect("count baseline content versions");
         db.execute_batch(
             "CREATE TRIGGER test_reject_capture_completion_audit
@@ -938,11 +957,17 @@ mod tests {
             .expect("failed job persisted");
         assert_eq!(status, "FAILED");
         let remaining_content: i64 = db
-            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
             .expect("count content after audit rollback");
         assert_eq!(remaining_content, content_before);
         let persisted_versions: i64 = db
-            .query_row("SELECT COUNT(*) FROM controlled_evidence_versions", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
             .expect("count controlled versions");
         assert_eq!(persisted_versions, 0);
         let completed_count: i64 = db
@@ -972,22 +997,28 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(paths.len(), 1);
         let orphan = &paths[0];
-        assert_eq!(fs::read(orphan).expect("orphan bytes on filesystem"), original_bytes);
+        assert_eq!(
+            fs::read(orphan).expect("orphan bytes on filesystem"),
+            original_bytes
+        );
         let orphan_id = orphan
             .file_name()
             .expect("controlled orphan filename")
             .to_str()
             .expect("UTF-8 UUID");
-        assert!(persistence::get_controlled_evidence_read_record(
-            &test.database_path,
-            orphan_id,
-        )
-        .expect("unindexed file excluded from metadata read")
-        .is_none());
+        assert!(
+            persistence::get_controlled_evidence_read_record(&test.database_path, orphan_id,)
+                .expect("unindexed file excluded from metadata read")
+                .is_none()
+        );
         drop(db);
 
-        let mut permissions = fs::metadata(orphan).expect("orphan metadata").permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(orphan, permissions).expect("restore disposable fixture permissions");
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(orphan).expect("orphan metadata").permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(orphan, permissions)
+                .expect("restore disposable fixture permissions");
+        }
     }
 }
