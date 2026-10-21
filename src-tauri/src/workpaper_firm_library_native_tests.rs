@@ -321,3 +321,58 @@ fn legacy_statutory_consumer_pins_exact_library_version_and_rejects_wrong_scopes
     assert_eq!(now[3], after_record[3]);
     // Neither a stored exact version nor a recorded audit authenticates a human.
 }
+
+#[test]
+fn legacy_statutory_consumer_only_checks_claimed_hash_length_not_recomputed_digest() {
+    let fixture = FirmLibraryFixture::new();
+    let item = fixture.requirement(r#"{"text":"genuine first version"}"#);
+    let new_version_id = Uuid::new_v4().to_string();
+    let forged_digest = vec![0xA5_u8; 32];
+    let forged_definition = r#"{"text":"synthetic database-tamper input"}"#;
+    assert_ne!(
+        Sha256::digest(forged_definition.as_bytes()).to_vec(),
+        forged_digest
+    );
+
+    // This is a NEW synthetic row injected only in disposable SQLite.
+    // Existing native publish always computes its own digest, so this is
+    // NOT a demonstrated registered-Tauri injection or ordinary UI vector.
+    let db = Connection::open(&fixture.path).expect("open disposable fixture");
+    db.execute(
+        "INSERT INTO firm_library_versions (
+            firm_library_version_id, firm_library_item_id, version_number,
+            definition_json, definition_hash, created_at_ms
+         ) VALUES (?1, ?2, 2, ?3, ?4, 2)",
+        rusqlite::params![
+            &new_version_id,
+            &item.firm_library_item_id,
+            forged_definition,
+            &forged_digest
+        ],
+    )
+    .expect("seed intentionally inconsistent new fixture version");
+    drop(db);
+    let before = fixture.counts();
+
+    let recorded = persistence::create_statutory_compliance_requirement(
+        &fixture.path,
+        &fixture.engagement_id,
+        &new_version_id,
+    )
+    .expect("current downstream verifies hash byte length, not recomputed digest");
+    assert_eq!(recorded.firm_library_version_id, new_version_id);
+    assert_eq!(recorded.definition_json, forged_definition);
+    assert_eq!(recorded.definition_hash, forged_digest);
+    let mut expected = before;
+    expected[2] += 1;
+    expected[3] += 1;
+    expected[4] += 1;
+    assert_eq!(fixture.counts(), expected);
+    let initial = persistence::list_firm_library_versions(
+        &fixture.path,
+        &item.firm_library_item_id,
+    )
+    .expect("original historic version still exists");
+    assert_eq!(initial[1].firm_library_version_id, item.latest_version_id);
+    assert_eq!(initial[1].definition_hash, item.latest_definition_hash);
+}
