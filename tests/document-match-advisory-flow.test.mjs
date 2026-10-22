@@ -405,3 +405,62 @@ test("detached UI requires source history on both render and Compare click paths
   assert.match(source, /disabled: !versionReady/);
   assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage/);
 });
+
+test("fabricated advisory outcomes and finding details never surface with otherwise valid IDs", () => {
+  const original = request().review;
+  assert.equal(current(original), true);
+  const originalFindings = original.observation.findings;
+  const forged = [
+    {outcome: "consistent"},
+    {outcome: "incomplete"},
+    {findings: []},
+    {findings: [...originalFindings, originalFindings[0]]},
+    {findings: [...originalFindings].reverse()},
+    {findings: [{...originalFindings[0], status: "consistent"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], label: "Unjustified verified match"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], ruleId: "renamed"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], documentField: "another-field"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], referenceField: "another-field"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], documentValue: "UNTRUSTED"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], referenceValue: "UNTRUSTED"}, originalFindings[1]]},
+    {findings: [{...originalFindings[0], reason: "both-fields-absent"}, originalFindings[1]]},
+    {findings: [null, originalFindings[1]]},
+  ];
+  for (const tamper of forged) {
+    const review = {
+      ...original,
+      observation: {...original.observation, ...tamper},
+    };
+    assert.equal(current(review), false);
+    const {html,tree} = ui({selection: selected(), review});
+    assert.doesNotMatch(html, /Difference to review|Clear local comparison|Unjustified verified match/);
+    assert.equal(allNodes(tree, "button").length, 1);
+  }
+});
+
+test("faithful copied advisory observations remain displayable without automatic selection", () => {
+  const original = request().review;
+  const faithful = {
+    ...original,
+    observation: {
+      ...original.observation,
+      findings: original.observation.findings.map(f => ({...f})),
+    },
+  };
+  assert.equal(current(faithful), true);
+  const {html} = ui({selection: selected(), review: faithful});
+  assert.match(html, /Difference to review/);
+  assert.match(html, /Clear local comparison/);
+  assert.doesNotMatch(ui().html, /Difference to review|Clear local comparison/);
+});
+
+test("revalidating cached findings never reads source bytes or mutates the comparison", () => {
+  const flow = readFileSync("src/document-match-advisory-flow.ts", "utf8");
+  const initial = request().review;
+  const before = JSON.stringify([initial, file, snapshot, references, rules]);
+  assert.equal(current(initial), true);
+  assert.equal(JSON.stringify([initial, file, snapshot, references, rules]), before);
+  assert.match(flow, /sameObservation\(review\.observation, fresh\.observation\)/);
+  assert.match(flow, /inspectOptionalIndexedDocumentMatch\(file, snapshot!, matching\[0\], rules, true\)/);
+  assert.doesNotMatch(flow, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
+});
