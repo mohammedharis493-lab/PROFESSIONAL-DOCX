@@ -13,11 +13,24 @@ import {
 import { DocumentMatchOptInControl } from "../src/document-match-opt-in-control.ts";
 import { noteOptionalMatchFinding } from "../src/document-match-advisory.ts";
 
-const file = Object.freeze({ documentId: "doc-1", fileInstanceId: "instance-1", name: "test.pdf" });
+const file = Object.freeze({ documentId: "doc-1", fileInstanceId: "instance-1", name: "test.pdf", availabilityState: "AVAILABLE" });
+const SOURCE_HASH = "a".repeat(64);
 const snapshot = Object.freeze({
   documentId: "doc-1", fileInstanceId: "instance-1",
   extractionSnapshotId: "snap-1",
+  sourceContentVersionId: "observed-version-1",
+  sourceSha256Hex: SOURCE_HASH,
   fields: Object.freeze({ number: "INV-100", amountMinor: 12500 }),
+});
+const history = Object.freeze({
+  requestedDocumentId: file.documentId,
+  entries: Object.freeze([Object.freeze({
+    contentVersionId: snapshot.sourceContentVersionId,
+    fileInstanceId: file.fileInstanceId,
+    sha256Hex: SOURCE_HASH,
+    sourceStableDuringRead: true,
+    verificationState: "HASH_VERIFIED",
+  })]),
 });
 const references = Object.freeze([
   Object.freeze({ referenceId: "book-1", fields: Object.freeze({ number: "INV-999", amountMinor: 12500 }) }),
@@ -45,7 +58,7 @@ const current = (review, overrides = {}) => reviewIsCurrent(
 function ui(overrides = {}) {
   const calls = { selections: [], reviews: [], clears: 0, unavailable: [], annotations: [] };
   const props = {
-    visitKey: visit, indexedFile: file, snapshot, references, rules,
+    visitKey: visit, indexedFile: file, snapshot, history, references, rules,
     selection: null, review: null,
     onSelectionChange: x => calls.selections.push(x),
     onReview: x => calls.reviews.push(x),
@@ -307,4 +320,88 @@ test("forged observation identities or statuses never surface stale or unauthori
     const {html} = ui({selection: selected(), review});
     assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
   }
+});
+
+test("detached UI refuses comparison without independently supplied matching version history", () => {
+  const review = request().review;
+  for (const mismatched of [
+    null,
+    {requestedDocumentId: "different-document", entries: history.entries},
+    {...history, entries: []},
+    {...history, entries: [{...history.entries[0], fileInstanceId: "other-instance"}]},
+    {...history, entries: [{...history.entries[0], sha256Hex: "b".repeat(64)}]},
+    {...history, entries: [{...history.entries[0], verificationState: "METADATA_ONLY"}]},
+    {...history, entries: [{...history.entries[0], sourceStableDuringRead: false}]},
+  ]) {
+    const {tree, html, calls} = ui({history: mismatched, selection: selected(), review});
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.match(html, /Optional comparison unavailable/);
+    assert.doesNotMatch(html, /Difference to review|Clear local comparison/);
+    allNodes(tree, "button")[0].props.onClick(); // bypass visual disabled state
+    assert.deepEqual(calls.reviews, []);
+    assert.equal(calls.unavailable.length, 1);
+  }
+});
+
+test("detached UI refuses changed or unavailable source without blocking file operations", () => {
+  const previously = request().review;
+  const {html,tree,calls} = ui({
+    indexedFile: {...file, availabilityState: "CHANGED"},
+    selection: selected(),
+    review: previously,
+  });
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Difference to review/);
+  assert.match(html, /Document access is unaffected/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["source-unavailable"]);
+});
+
+test("extraction claims changed under same snapshot ID cannot retain opt-in selection or stale review", () => {
+  const review = request().review;
+  const changingVersion = {...snapshot, sourceContentVersionId: "new-content-version"};
+  const changingHash = {...snapshot, sourceSha256Hex: "b".repeat(64)};
+  for (const newer of [changingVersion, changingHash]) {
+    assert.equal(selectionIsCurrent(selected(), visit, file, newer), false);
+    assert.equal(current(review, {snapshot: newer}), false);
+    const {tree,html,calls} = ui({snapshot: newer, selection: selected(), review});
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.doesNotMatch(html, /Difference to review/);
+    allNodes(tree, "button")[0].props.onClick();
+    assert.deepEqual(calls.reviews, []);
+  }
+});
+
+test("an old explicitly selected book cannot silently retarget an otherwise matching new version", () => {
+  const newer = {
+    ...snapshot, extractionSnapshotId: snapshot.extractionSnapshotId,
+    sourceContentVersionId: "later-version",
+    sourceSha256Hex: "b".repeat(64),
+  };
+  const laterHistory = {
+    ...history, entries: [{
+      ...history.entries[0],
+      contentVersionId: newer.sourceContentVersionId,
+      sha256Hex: newer.sourceSha256Hex,
+    }],
+  };
+  const {tree,html,calls} = ui({
+    snapshot: newer, history: laterHistory, selection: selected(), review: request().review,
+  });
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Difference to review/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
+});
+
+test("detached UI requires source history on both render and Compare click paths", () => {
+  const source = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  assert.match(source, /correlateOptionalExtractionWithDocumentHistory\(/);
+  assert.match(source, /indexedFile, snapshot, history, selectedReference \?\? null, rules, true/);
+  assert.match(source, /disabled: !versionReady/);
+  assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage/);
 });
