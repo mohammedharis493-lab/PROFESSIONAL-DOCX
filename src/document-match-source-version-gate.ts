@@ -3,8 +3,9 @@
  * with existing read-only document history DTO fields.
  *
  * This DOES NOT prove the extraction came from those bytes, authenticate the
- * extractor, authorize history reads, tie a history row to a file instance or
- * verify the current on-disk file. It is only a fail-closed metadata check.
+ * extractor, authorize history reads or verify the current on-disk file.
+ * The native row's stored file-instance ID is now checked, but a matching
+ * identity is NOT proof that extraction was derived from that source version.
  *
  * No Tauri, filesystem, database, network, hash calculation or write imports.
  */
@@ -21,13 +22,15 @@ import type {
 
 /**
  * Read-only fields already exposed by list_document_version_history in lib.rs.
- * The native DTO itself lacks a documentId and fileInstanceId, so the caller
- * must explicitly supply the document ID used for the history request.
+ * Each native row now includes the stored fileInstanceId; the DTO still
+ * lacks per-row documentId, so the caller must provide the document ID used
+ * for the history request. No native extraction fields are exposed.
  */
 export type ReadOnlyDocumentVersionHistory = Readonly<{
   requestedDocumentId: string;
   entries: readonly Readonly<{
     contentVersionId: string;
+    fileInstanceId: string;
     verificationState: string;
     sourceStableDuringRead: boolean | null;
     sha256Hex: string | null;
@@ -45,7 +48,8 @@ export type VersionCorrelationResult =
       reason: "source-unavailable" | "extraction-unavailable" | "history-unavailable" |
         "history-identity-mismatch" | "invalid-version-claim" | "version-not-found" |
         "version-ambiguous" | "history-not-verified" | "source-hash-mismatch" |
-        "snapshot-identity-mismatch" | "comparison-input-invalid";
+        "snapshot-identity-mismatch" | "comparison-input-invalid" |
+        "history-instance-unavailable" | "history-instance-mismatch";
       preparation: null;
       blocksDocumentUse: false;
       requiresDocumentChange: false;
@@ -84,8 +88,9 @@ function unavailable(
  * The selection of a matching version ID must be EXPLICIT. No fallback to
  * latest, filename, size, timestamps or previous document history is allowed.
  * Only native history rows whose SHA-256 and stability state are verified can
- * corroborate a future extractor's claim. Metadata agreement is not evidence
- * of extractor correctness or of a file-instance/source-byte binding.
+ * corroborate a future extractor's claim. The matching native row MUST
+ * identify the exact indexed file instance. This still does not prove that
+ * an extractor consumed those bytes or that current disk bytes are unchanged.
  */
 export function correlateOptionalExtractionWithDocumentHistory(
   file: IndexedDocumentIdentity & Readonly<{availabilityState: string}>,
@@ -124,9 +129,16 @@ export function correlateOptionalExtractionWithDocumentHistory(
   // one content version are permitted only when every relevant field agrees.
   const first = found[0];
   if (found.some(row => row.sha256Hex !== first.sha256Hex ||
+       row.fileInstanceId !== first.fileInstanceId ||
        row.verificationState !== first.verificationState ||
        row.sourceStableDuringRead !== first.sourceStableDuringRead)) {
     return unavailable("version-ambiguous");
+  }
+  if (!validId(first.fileInstanceId)) {
+    return unavailable("history-instance-unavailable");
+  }
+  if (first.fileInstanceId !== file.fileInstanceId) {
+    return unavailable("history-instance-mismatch");
   }
   if (first.verificationState !== "HASH_VERIFIED" ||
       first.sourceStableDuringRead !== true || !sha256(first.sha256Hex)) {
