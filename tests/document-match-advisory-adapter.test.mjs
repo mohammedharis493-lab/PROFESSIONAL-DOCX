@@ -178,3 +178,14 @@ test("adapter remains entirely detached from Tauri, persistence, indexed-file wr
   assert.match(adapter, /requested = false/);
   assert.match(adapter, /snapshot\.fileInstanceId !== indexedFile\.fileInstanceId/);
 });
+
+test("only boolean true counts as an explicit opt-in; truthy external values cannot trigger comparison", () => {
+  for (const requested of ["true", "false", 1, {}, null, undefined]) {
+    const result = inspectOptionalIndexedDocumentMatch(file, snapshot, reference, rules, requested);
+    assert.equal(result.observation.outcome, "not-requested");
+    assert.deepEqual(result.observation.findings, []);
+    assertNonblocking(result);
+  }
+  assert.equal(inspectOptionalIndexedDocumentMatch(file, snapshot, reference, rules, true)
+    .observation.outcome, "suggestions");
+});
