@@ -185,6 +185,43 @@ export function requestExplicitOptionalMatch(
   }
 }
 
+/**
+ * Revalidate every displayed claim, not just the cached input key. A future
+ * controlled React host can accidentally (or deliberately) pass a substituted
+ * observation while preserving the version, document and reference IDs.
+ * This deterministic check is run ONLY for an existing user-requested review.
+ * It never reads a file, invokes native commands or creates a comparison
+ * automatically when no review is present.
+ */
+function sameObservation(
+  observed: OptionalDocumentMatchReport,
+  expected: OptionalDocumentMatchReport,
+): boolean {
+  if (observed.scope !== expected.scope ||
+      observed.documentId !== expected.documentId ||
+      observed.extractionSnapshotId !== expected.extractionSnapshotId ||
+      observed.referenceId !== expected.referenceId ||
+      observed.outcome !== expected.outcome ||
+      observed.blocksDocumentUse !== expected.blocksDocumentUse ||
+      observed.requiresDocumentChange !== expected.requiresDocumentChange ||
+      observed.requiresReupload !== expected.requiresReupload ||
+      !Array.isArray(observed.findings) ||
+      observed.findings.length !== expected.findings.length) return false;
+
+  return expected.findings.every((match, i) => {
+    const actual = observed.findings[i];
+    return !!actual &&
+      actual.ruleId === match.ruleId &&
+      actual.label === match.label &&
+      actual.status === match.status &&
+      actual.documentField === match.documentField &&
+      actual.referenceField === match.referenceField &&
+      Object.is(actual.documentValue, match.documentValue) &&
+      Object.is(actual.referenceValue, match.referenceValue) &&
+      actual.reason === match.reason;
+  });
+}
+
 export function reviewIsCurrent(
   review: VolatileAdvisoryReview | null,
   visitKey: string,
@@ -214,7 +251,13 @@ export function reviewIsCurrent(
     reference.referenceId === selection!.referenceId);
   if (matching.length !== 1) return false;
   try {
-    return review.inputKey === comparisonInputKey(file, snapshot!, matching[0], rules);
+    if (review.inputKey !== comparisonInputKey(file, snapshot!, matching[0], rules)) {
+      return false;
+    }
+    // No user request means no review and no recomputation. This call only
+    // verifies a comparison that was already initiated by explicit Compare.
+    const fresh = inspectOptionalIndexedDocumentMatch(file, snapshot!, matching[0], rules, true);
+    return fresh.status === "ready" && sameObservation(review.observation, fresh.observation);
   } catch {
     return false;
   }
