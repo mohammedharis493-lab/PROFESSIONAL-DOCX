@@ -8,7 +8,8 @@ import type { ChangeEvent, ReactElement } from "react";
 import { DocumentMatchAdvisoryPanel } from "./document-match-advisory-panel.ts";
 import {
   chooseExplicitAdvisoryReference,
-  keepLocalAdvisoryDisposition,
+  stampVolatileAdvisoryAnnotation,
+  volatileAnnotationIsCurrent,
   requestExplicitOptionalMatch,
   reviewIsCurrent,
   selectionIsCurrent,
@@ -17,6 +18,7 @@ import type {
   ExplicitAdvisorySelection,
   OptionalMatchAttempt,
   VolatileAdvisoryReview,
+  VolatileAdvisoryAnnotation,
 } from "./document-match-advisory-flow.ts";
 import type { IndexedDocumentIdentity } from "./document-match-advisory-adapter.ts";
 import { correlateOptionalExtractionWithDocumentHistory } from "./document-match-source-version-gate.ts";
@@ -57,7 +59,11 @@ export type DocumentMatchOptInControlProps = Readonly<{
     | Extract<VersionCorrelationResult, {status: "unavailable"}>["reason"]
     | "history-epoch-unavailable"
   ) => void;
-  onLocalAnnotation?: (annotation: LocalAdvisoryDisposition) => void;
+  /**
+   * Visit-local, exact-review annotation. Caller must revalidate before
+   * reusing it; it is NOT an audit event or a professional approval.
+   */
+  onLocalAnnotation?: (annotation: VolatileAdvisoryAnnotation) => void;
 }>;
 
 /**
@@ -179,9 +185,15 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
           h(DocumentMatchAdvisoryPanel, {
             observation: currentReview.observation,
             onLocalAnnotation: onLocalAnnotation
-              ? (annotation: LocalAdvisoryDisposition) => onLocalAnnotation(
-                  keepLocalAdvisoryDisposition(currentReview, annotation),
-                )
+              ? (annotation: LocalAdvisoryDisposition) => {
+                  // Only the current, explicitly compared report can emit
+                  // annotations; revalidate before calling a future host.
+                  const stamped = stampVolatileAdvisoryAnnotation(currentReview, annotation);
+                  if (volatileAnnotationIsCurrent(
+                    stamped, currentReview, visitKey, indexedFile, snapshot,
+                    references, rules, selection, historyReadKey,
+                  )) onLocalAnnotation(stamped);
+                }
               : undefined,
           }),
         )
