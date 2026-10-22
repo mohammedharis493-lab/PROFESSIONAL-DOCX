@@ -233,3 +233,12 @@ test("gate is pure and disconnected from Tauri, filesystem, native authority and
   assert.match(pkg, /document-match-source-version-gate\.test\.mjs/);
   assert.match(src, /requested === true/);
 });
+
+test("malformed optional reference or rules cannot bubble up as document-use errors", () => {
+  denied("comparison-input-invalid", {rules: [rules[0], rules[0]], requested: true});
+  denied("comparison-input-invalid", {rules: [{...rules[0], comparison: "unknown"}], requested: true});
+  denied("comparison-input-invalid", {
+    reference: {referenceId: "book", fields: {amountMinor: {nested: true}}},
+    requested: true,
+  });
+});
