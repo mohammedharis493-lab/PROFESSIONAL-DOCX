@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test:normal-data": "node --experimental-strip-types --test tests/normal-data-comparison-rules.test.mjs",
-    "test:document-match-advisory": "node --experimental-strip-types --test tests/document-match-advisory.test.mjs tests/document-match-advisory-panel.test.mjs tests/document-match-advisory-adapter.test.mjs tests/document-match-advisory-flow.test.mjs",
+    "test:document-match-advisory": "node --experimental-strip-types --test tests/document-match-advisory.test.mjs tests/document-match-advisory-panel.test.mjs tests/document-match-advisory-adapter.test.mjs tests/document-match-advisory-flow.test.mjs tests/document-match-source-version-gate.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
