@@ -176,10 +176,10 @@ export function reviewIsCurrent(
       review.documentId !== file.documentId || review.fileInstanceId !== file.fileInstanceId ||
       review.extractionSnapshotId !== snapshot!.extractionSnapshotId ||
       review.referenceId !== selection!.referenceId ||
-      review.observation.scope !== "detached-optional-matching-observation-only" ||
-      review.observation.blocksDocumentUse !== false ||
-      review.observation.requiresDocumentChange !== false ||
-      review.observation.requiresReupload !== false ||
+      review.observation?.scope !== "detached-optional-matching-observation-only" ||
+      review.observation?.blocksDocumentUse !== false ||
+      review.observation?.requiresDocumentChange !== false ||
+      review.observation?.requiresReupload !== false ||
       !Array.isArray(references) || !Array.isArray(rules)) return false;
   const matching = references.filter(reference => reference &&
     reference.referenceId === selection!.referenceId);
