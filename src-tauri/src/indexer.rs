@@ -930,9 +930,9 @@ mod tests {
             )
             .expect("read-only version history should load");
             assert!(!versions.is_empty());
-            assert!(versions.iter().all(|version| {
-                version.file_instance_id == indexed.file_instance_id
-            }));
+            assert!(versions
+                .iter()
+                .all(|version| { version.file_instance_id == indexed.file_instance_id }));
         }
     }
 
