@@ -350,6 +350,7 @@ pub struct ControlledEvidenceReadRecord {
 #[derive(Debug, Clone)]
 pub struct DocumentVersionHistoryRecord {
     pub content_version_id: String,
+    pub file_instance_id: String,
     pub observed_at_ms: i64,
     pub size_bytes: u64,
     pub last_write_time_ms: Option<i64>,
@@ -4161,7 +4162,8 @@ pub fn list_document_version_history(
             cev.verification_state,
             cev.captured_by,
             cev.capture_reason,
-            cev.capture_policy
+            cev.capture_policy,
+            cv.file_instance_id
          FROM content_versions cv
          LEFT JOIN controlled_evidence_versions cev
            ON cev.source_content_version_id = cv.content_version_id
@@ -4175,6 +4177,7 @@ pub fn list_document_version_history(
 
         Ok(DocumentVersionHistoryRecord {
             content_version_id: row.get(0)?,
+            file_instance_id: row.get(14)?,
             observed_at_ms: row.get(1)?,
             size_bytes: row.get::<_, i64>(2)?.max(0) as u64,
             last_write_time_ms: row.get(3)?,
