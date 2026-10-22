@@ -919,6 +919,24 @@ mod tests {
         assert_eq!(available.len(), 2);
         assert_ne!(available[0].file_instance_id, available[1].file_instance_id);
         assert_ne!(available[0].document_id, available[1].document_id);
+
+        // Even byte-identical copies receive distinct content-version rows.
+        // The read-only history query must expose each row's STORED instance
+        // identity; callers cannot infer it from a hash or document name.
+        for indexed in available {
+            let versions = persistence::list_document_version_history(
+                &test.database_path,
+                &indexed.document_id,
+            )
+            .expect("read-only version history should load");
+            assert!(!versions.is_empty());
+            assert!(versions.iter().all(|version| {
+                version.file_instance_id == indexed.file_instance_id
+            }));
+            assert!(versions.iter().all(|version| {
+                version.content_version_id != indexed.file_instance_id
+            }));
+        }
     }
 
     #[test]
