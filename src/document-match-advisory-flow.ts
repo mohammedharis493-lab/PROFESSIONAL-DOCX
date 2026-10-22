@@ -177,6 +177,11 @@ export function reviewIsCurrent(
       review.extractionSnapshotId !== snapshot!.extractionSnapshotId ||
       review.referenceId !== selection!.referenceId ||
       review.observation?.scope !== "detached-optional-matching-observation-only" ||
+      review.observation?.documentId !== review.documentId ||
+      review.observation?.extractionSnapshotId !== review.extractionSnapshotId ||
+      review.observation?.referenceId !== review.referenceId ||
+      !Array.isArray(review.observation?.findings) ||
+      !["consistent", "incomplete", "suggestions", "no-rules"].includes(review.observation?.outcome) ||
       review.observation?.blocksDocumentUse !== false ||
       review.observation?.requiresDocumentChange !== false ||
       review.observation?.requiresReupload !== false ||
