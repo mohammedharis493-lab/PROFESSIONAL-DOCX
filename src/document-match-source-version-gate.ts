@@ -45,7 +45,7 @@ export type VersionCorrelationResult =
       reason: "source-unavailable" | "extraction-unavailable" | "history-unavailable" |
         "history-identity-mismatch" | "invalid-version-claim" | "version-not-found" |
         "version-ambiguous" | "history-not-verified" | "source-hash-mismatch" |
-        "snapshot-identity-mismatch";
+        "snapshot-identity-mismatch" | "comparison-input-invalid";
       preparation: null;
       blocksDocumentUse: false;
       requiresDocumentChange: false;
@@ -138,13 +138,18 @@ export function correlateOptionalExtractionWithDocumentHistory(
 
   // Still requires a separately permission-checked and provenance-bound
   // extraction reader before any live UI integration.
-  const preparation = inspectOptionalIndexedDocumentMatch(
-    file, extraction, reference, rules, requested === true,
-  );
-  if (preparation.status !== "ready") return unavailable("extraction-unavailable");
-  return Object.freeze({
-    status: "correlated" as const, reason: null, preparation,
-    blocksDocumentUse: false as const, requiresDocumentChange: false as const,
-    requiresReupload: false as const,
-  });
+  try {
+    const preparation = inspectOptionalIndexedDocumentMatch(
+      file, extraction, reference, rules, requested === true,
+    );
+    if (preparation.status !== "ready") return unavailable("extraction-unavailable");
+    return Object.freeze({
+      status: "correlated" as const, reason: null, preparation,
+      blocksDocumentUse: false as const, requiresDocumentChange: false as const,
+      requiresReupload: false as const,
+    });
+  } catch {
+    // Malformed optional comparison data must not interrupt document usage.
+    return unavailable("comparison-input-invalid");
+  }
 }
