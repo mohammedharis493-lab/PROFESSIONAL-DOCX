@@ -89,6 +89,11 @@ function fieldsOf(value: unknown, name: string): AdvisoryFields {
   return value as AdvisoryFields;
 }
 
+function observedField(fields: AdvisoryFields, key: string): AdvisoryScalar {
+  // An inherited property (e.g. "toString") is NOT an extracted data field.
+  return Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : undefined;
+}
+
 function isMissing(value: AdvisoryScalar): boolean {
   return value === null || value === undefined ||
     (typeof value === "string" && value.trim() === "");
@@ -108,8 +113,9 @@ function validateRules(rules: readonly AdvisoryComparisonRule[]): void {
     for (const key of ["ruleId", "label", "documentField", "referenceField"] as const) {
       requiredString(rule[key], "Advisory rule " + key);
     }
-    if (ids.has(rule.ruleId)) throw new TypeError("Duplicate advisory rule ID: " + rule.ruleId);
-    ids.add(rule.ruleId);
+    const ruleId = requiredString(rule.ruleId, "Advisory rule ruleId");
+    if (ids.has(ruleId)) throw new TypeError("Duplicate advisory rule ID: " + ruleId);
+    ids.add(ruleId);
     if (rule.comparison !== "exact-text" && rule.comparison !== "integer-minor-units") {
       throw new TypeError("Unsupported advisory comparison kind");
     }
@@ -165,8 +171,8 @@ export function inspectOptionalDocumentMatch(
 
   const referenceFields = reference.fields;
   const findings: AdvisoryFinding[] = rules.map((rule) => {
-    const documentValue = documentFields[rule.documentField];
-    const referenceValue = referenceFields[rule.referenceField];
+    const documentValue = observedField(documentFields, rule.documentField);
+    const referenceValue = observedField(referenceFields, rule.referenceField);
     const documentMissing = isMissing(documentValue);
     const referenceMissing = isMissing(referenceValue);
     let status: AdvisoryFindingStatus;
