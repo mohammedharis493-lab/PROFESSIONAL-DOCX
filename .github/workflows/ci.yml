@@ -34,6 +34,9 @@ jobs:
       - name: Test Normal Data declaration rules
         run: npm run test:normal-data
 
+      - name: Test optional document matching advisory contract
+        run: npm run test:document-match-advisory
+
       - name: Build frontend
         run: npm run build
 
