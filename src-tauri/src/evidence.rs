@@ -1226,4 +1226,229 @@ mod tests {
         assert_eq!(links[0].document_id, captured.document_id);
         assert!(!evidence_path.exists());
     }
+
+    #[test]
+    fn real_capture_linked_to_client_a_workpaper_can_be_attached_to_client_b_statutory_requirement() {
+        // Characterize legacy cross-client *reuse*: this test does not claim the
+        // global controlled-evidence table assigns an owner or that sharing is
+        // categorically forbidden. Human decisions must define that policy.
+        // All real bytes and client/engagement rows are disposable fixtures.
+        let test = TestEvidence::new();
+        let bytes = b"real source evidence in distinct-client association fixture";
+        let file_id = test.index_file("Client A support.txt", bytes);
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("capture actual indexed bytes and verified digest");
+        let readable = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("source evidence must really pass controlled-byte integrity checks");
+        assert_eq!(readable.bytes, bytes);
+
+        let service = persistence::create_service_type(
+            &test.database_path,
+            "Shared service type, independent client engagements",
+        )
+        .expect("create common service type");
+        let client_a = persistence::create_client(&test.database_path, "Client A test only")
+            .expect("create independent client A");
+        let client_b = persistence::create_client(&test.database_path, "Client B test only")
+            .expect("create independent client B");
+        assert_ne!(client_a.client_id, client_b.client_id);
+        let engagement_a = persistence::create_engagement(
+            &test.database_path,
+            &client_a.client_id,
+            &service.service_type_id,
+            "Client A engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("create engagement A");
+        let engagement_b = persistence::create_engagement(
+            &test.database_path,
+            &client_b.client_id,
+            &service.service_type_id,
+            "Client B engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("create engagement B");
+        assert_ne!(engagement_a.engagement_id, engagement_b.engagement_id);
+
+        let workpaper_a = persistence::create_workpaper(
+            &test.database_path,
+            &engagement_a.engagement_id,
+            None,
+            None,
+            "A-EV-001",
+            "Client A source evidence workpaper",
+            "DRAFT",
+        )
+        .expect("create engagement A workpaper");
+        let revision_a = persistence::create_workpaper_revision(
+            &test.database_path,
+            &workpaper_a.workpaper_id,
+            persistence::NewWorkpaperRevision {
+                revision_reason: Some("Initial control evidence association"),
+                objective: "Inspect Client A source support",
+                procedure_performed: "Associate existing controlled evidence with A",
+                population: "Fixture documents for Client A",
+                sample: "Single real controlled file",
+                exceptions: "No performance conclusion",
+                management_explanation: "Not supplied in fixture",
+                conclusion: "Test-only relationship, no qualified signoff",
+            },
+        )
+        .expect("create engagement A workpaper revision");
+        let link_a = persistence::create_workpaper_evidence_link(
+            &test.database_path,
+            &revision_a.workpaper_revision_id,
+            &captured.document_id,
+            None,
+            Some(&captured.controlled_evidence_version_id),
+            "SUPPORTS",
+            Some("Client A workpaper association for scope comparison"),
+        )
+        .expect("assign exact existing controlled version to Client A workpaper");
+        assert_eq!(
+            link_a.controlled_evidence_version_id.as_deref(),
+            Some(captured.controlled_evidence_version_id.as_str())
+        );
+
+        let methodology = persistence::create_firm_library_item(
+            &test.database_path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "Same firm methodology in two independent clients",
+            None,
+            Some(&service.service_type_id),
+            r#"{"requirement":"scope fixture only"}"#,
+        )
+        .expect("create same firm library version");
+        let requirement_a = persistence::create_statutory_compliance_requirement(
+            &test.database_path,
+            &engagement_a.engagement_id,
+            &methodology.latest_version_id,
+        )
+        .expect("Client A requirement");
+        let requirement_b = persistence::create_statutory_compliance_requirement(
+            &test.database_path,
+            &engagement_b.engagement_id,
+            &methodology.latest_version_id,
+        )
+        .expect("Client B requirement");
+        assert_ne!(
+            requirement_a.statutory_compliance_requirement_id,
+            requirement_b.statutory_compliance_requirement_id
+        );
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment_a = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_a
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Test-only A assertion, not professional approval"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("A assessment attaches version already used in A workpaper");
+        let assessment_b = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_b
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Test-only B reuse, no cross-client grant established"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy statutory writer does not check client-scoped evidence sharing");
+
+        assert_eq!(assessment_a.version_number, 2);
+        assert_eq!(assessment_b.version_number, 2);
+        assert_eq!(assessment_a.evidence_count, 1);
+        assert_eq!(assessment_b.evidence_count, 1);
+        let links_a = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment_a.statutory_compliance_assessment_id,
+        )
+        .expect("exact A evidence tuple");
+        let links_b = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment_b.statutory_compliance_assessment_id,
+        )
+        .expect("exact B evidence tuple");
+        assert_eq!(links_a.len(), 1);
+        assert_eq!(links_b.len(), 1);
+        for link in [&links_a[0], &links_b[0]] {
+            assert_eq!(
+                link.controlled_evidence_version_id,
+                captured.controlled_evidence_version_id
+            );
+            assert_eq!(link.document_id, captured.document_id);
+            assert_eq!(
+                link.source_content_version_id,
+                captured.source_content_version_id
+            );
+            assert_eq!(link.source_sha256, captured.sha256);
+        }
+        assert_ne!(
+            links_a[0].statutory_compliance_evidence_link_id,
+            links_b[0].statutory_compliance_evidence_link_id
+        );
+
+        let db = rusqlite::Connection::open(&test.database_path)
+            .expect("inspect real-migration engagement and evidence associations");
+        let (workpaper_client_id, assessment_client_id): (String, String) = db
+            .query_row(
+                "SELECT
+                    (SELECT e.client_id
+                       FROM workpapers w JOIN engagements e
+                         ON e.engagement_id = w.engagement_id
+                      WHERE w.workpaper_id = ?1),
+                    (SELECT e.client_id
+                       FROM statutory_compliance_requirements r JOIN engagements e
+                         ON e.engagement_id = r.engagement_id
+                      WHERE r.statutory_compliance_requirement_id = ?2)",
+                rusqlite::params![
+                    &workpaper_a.workpaper_id,
+                    &requirement_b.statutory_compliance_requirement_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ground separate clients in actual migrated joins");
+        assert_eq!(workpaper_client_id, client_a.client_id);
+        assert_eq!(assessment_client_id, client_b.client_id);
+        assert_ne!(workpaper_client_id, assessment_client_id);
+        let null_actor_audits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'STATUTORY_COMPLIANCE_ASSESSMENT_RECORDED'
+                   AND entity_id IN (?1, ?2) AND actor_id IS NULL",
+                rusqlite::params![
+                    &assessment_a.statutory_compliance_assessment_id,
+                    &assessment_b.statutory_compliance_assessment_id
+                ],
+                |row| row.get(0),
+            )
+            .expect("current legacy audit actor remains unspecified");
+        assert_eq!(null_actor_audits, 2);
+        // This is metadata reuse with real verified bytes, not evidence that
+        // a user can bypass installed Tauri or that a cross-client share was
+        // unauthorized under a policy not yet defined.
+    }
 }
