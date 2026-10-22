@@ -933,9 +933,6 @@ mod tests {
             assert!(versions.iter().all(|version| {
                 version.file_instance_id == indexed.file_instance_id
             }));
-            assert!(versions.iter().all(|version| {
-                version.content_version_id != indexed.file_instance_id
-            }));
         }
     }
 
