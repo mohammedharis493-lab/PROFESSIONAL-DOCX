@@ -148,6 +148,27 @@ test("both missing values are explicitly different from a mismatch", () => {
   assert.ok(result.findings.every(x => x.reason === "both-fields-absent"));
 });
 
+test("inherited object fields are never mistaken for extracted or book values", () => {
+  const { document, reference, rules } = inputs();
+  const inheritedDocument = Object.create({ voucherNumber: "INV-1002" });
+  inheritedDocument.amountMinor = 12500;
+  inheritedDocument.currency = "INR";
+  const compared = inspectOptionalDocumentMatch(
+    { ...document, fields: inheritedDocument }, reference, rules, true,
+  );
+  assert.equal(compared.outcome, "incomplete");
+  assert.equal(compared.findings[0].status, "not-compared");
+  assert.equal(compared.findings[0].reason, "document-field-absent");
+
+  const inheritedBook = Object.create({ voucherRef: "INV-1001" });
+  inheritedBook.totalMinor = 12500;
+  inheritedBook.currency = "INR";
+  const reversed = inspectOptionalDocumentMatch(
+    document, { ...reference, fields: inheritedBook }, rules, true,
+  );
+  assert.equal(reversed.findings[0].reason, "reference-field-absent");
+});
+
 test("blank strings mean unavailable while zero monetary minor units are real values", () => {
   const { document, reference, rules } = inputs();
   const result = inspectOptionalDocumentMatch(
