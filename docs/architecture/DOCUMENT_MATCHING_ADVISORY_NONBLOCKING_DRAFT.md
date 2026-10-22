@@ -257,3 +257,51 @@ frontend regressions cover same-metadata refresh, stale direct-click
 attempts, absent epochs, recovery and renewed explicit user consent. No
 Tauri command, new native permission, storage mutation, original document
 edit, re-upload, accounting book operation, or reconciliation is added.
+
+
+## Visit-bound acknowledgement and dismissal (DRAFT continuation, 2026-10-22)
+
+The advisory engine's original `LocalAdvisoryDisposition` intentionally contains
+only document, extraction-snapshot, selected-reference and rule IDs. This is
+**insufficient as a cache key across viewer visits or changed comparison data**:
+the same identifiers can reappear after a source/version or book-field update.
+An earlier acknowledgement must never make a new disagreement appear approved.
+
+The still-unmounted `DocumentMatchOptInControl` now emits only a
+`VolatileAdvisoryAnnotation` to its future visit-local
+`onLocalAnnotation` callback. It is independently stamped from an
+already-current, explicitly requested review and binds the annotation to
+`visitKey`, `documentId`, `fileInstanceId`, `extractionSnapshotId`,
+`referenceId`, `historyReadKey`, and the pure comparison `inputKey`,
+as well as the non-consistent rule and `acknowledged`/`dismissed` choice.
+The lower-level narrow `LocalAdvisoryDisposition` is still available for
+panel-only isolated tests and never represents a professional decision.
+The narrow annotation validator now rejects invalid disposition strings.
+
+A future host may retain a stamped annotation **in volatile visit memory
+only**, and MUST use `volatileAnnotationIsCurrent` to filter before showing
+one. That guard first revalidates the selected source, reference, extraction
+snapshot, read epoch, rules, and every report finding; then it checks the
+annotation's exact IDs and comparison input. Changes to history epoch, file
+instance, document visit, selected book, version/hash claims, mapped fields or
+rules invalidate the annotation. A consistent or absent finding cannot be
+annotated. Clearing a comparison or closing a viewer must discard annotations.
+The bounded UI still has no annotation display and no state persistence.
+
+**Security boundary:** These values are local invalidation hints. They are
+not unforgeable, an authentication secret, a signer or reviewer credential, an
+audit record, extraction/source-byte provenance, professional approval, or
+native permission. A malicious caller controlling the snapshot and client
+can fabricate both the review and annotation. Any future durable review or
+sign-off requires its *own* separately authorized native transaction and
+independent policy review. No original document or accounting book is
+revised, replaced, or required to be re-uploaded. No new Tauri command,
+storage operation, live `App.tsx` mount, mandatory reconciliation,
+evidence capture or sign-off path is introduced.
+
+Frontend regression tests exercise exact-visit delivery, changed values
+with reused snapshot IDs, history refresh, wrong-instance and wrong-reference
+rejections, forged disposition labels, consistent-field suppression and
+absence of callback-driven writes. Prior DEC-01–08, Issues #129/#138,
+direct-Tauri authorization, live extractor provenance and independent human
+acceptance remain unresolved.
