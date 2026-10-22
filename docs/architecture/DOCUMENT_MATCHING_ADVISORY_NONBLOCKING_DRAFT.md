@@ -193,3 +193,32 @@ missing/foreign/unverified/unstable version histories, direct simulated clicks
 despite disabled controls, changed source availability, stale version claims,
 and even a newly internally consistent version that must not inherit an old
 book choice. These tests establish **frontend fail-closed behavior only**.
+
+
+## Cached advisory finding integrity (DRAFT continuation, 2026-10-22)
+
+The detached `reviewIsCurrent` guard in `src/document-match-advisory-flow.ts`
+now checks more than a cached input key, selected reference and source/version
+identity. **Only after an explicit Compare result already exists**, it
+recomputes the deterministic pure advisory observation from the *current*
+read-only snapshot, explicit selected reference and mapping rules. It requires
+the cached report's outcome and **every** finding's rule ID, label, status,
+field names, scalar values, reason and original order to match. Missing,
+added, reordered, substituted or fabricated findings are hidden instead of
+being presented as accounting consistency or discrepancies. This also
+rejects a forged all-consistent result produced by changing only a cached
+outcome or its finding statuses. Copying a genuinely equivalent report is
+permitted because review state is not an identity credential.
+
+The recomputation is a **display-integrity check for a prior deliberate
+user action**, not background matching, source-byte verification or a new
+authorization decision. No report is calculated or shown in the absence of a
+review; the original document remains usable if an observation is rejected.
+Neither the input key nor this equality check establishes extraction
+provenance: a malicious provider could supply fabricated fields to both
+calculations. Native read authorization, independently source-bound
+extraction and direct-Tauri acceptance remain mandatory before mounting.
+No `App.tsx` integration, new Tauri command, persistent annotation, original
+source rewrite, re-upload requirement, ledger reconciliation or sign-off is
+introduced by this increment. Regression coverage targets forged statuses,
+values, labels, field identities, reason codes, reordered and added findings.
