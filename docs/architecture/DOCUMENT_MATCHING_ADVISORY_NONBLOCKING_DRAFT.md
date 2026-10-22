@@ -305,3 +305,36 @@ rejections, forged disposition labels, consistent-field suppression and
 absence of callback-driven writes. Prior DEC-01–08, Issues #129/#138,
 direct-Tauri authorization, live extractor provenance and independent human
 acceptance remain unresolved.
+
+
+## Event-time defensive rechecks after render (DRAFT continuation, 2026-10-22)
+
+An already-rendered select or annotation handler can be invoked after a future
+host has replaced or mutated a supplied history/reference object in place,
+without a new React render or a correctly rotated `historyReadKey`.
+The controlled, **unmounted** UI therefore no longer relies solely on the
+render-time source-version gate at these event boundaries:
+
+- Explicit selection performs a fresh, read-only
+  `correlateOptionalExtractionWithDocumentHistory` check and verifies that
+  exactly one current reference still has the selected ID. A stale selection
+  event clears the local review and returns no selected reference.
+- A local acknowledgement/dismissal callback independently repeats the same
+  history-correlation check, then checks the full current advisory review and
+  exact volatile annotation scope before contacting the future visit-local
+  host. Malformed annotation events are dropped without an exception from the
+  detached control. Errors thrown by a future host callback are not mistaken
+  for source-document validation failures.
+- The explicit Compare handler already repeats the source/version correlation
+  with `requested=true` before producing a report. These changes do not
+  trigger an automatic comparison, storage read, native permission or audit.
+
+New synthetic tests intentionally mutate the same history object *after* UI
+render but *before* select/annotation callbacks and inject an ambiguous
+reference list or invalid annotation. They verify no annotation/reference
+selection is forwarded. This is defense in depth against accidental client
+state mutation; it cannot enforce a trustworthy history-token lifecycle or
+verify the original bytes, authenticated extraction or native authorization.
+All direct-Tauri, provenance, DEC-01–08, Issues #129/#138 and independent
+security acceptance hold points remain outstanding. Original files and books
+remain available and unchanged irrespective of matching status.
