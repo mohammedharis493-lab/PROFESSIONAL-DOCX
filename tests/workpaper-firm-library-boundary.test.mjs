@@ -403,3 +403,37 @@ test("real native controlled-byte tamper and loss fixture stays separate from Ta
   assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
   assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
 });
+
+
+test("statutory exact-evidence attachment has no join to an engagement-scoped workpaper or client", () => {
+  const assess = implementation("create_statutory_compliance_assessment");
+  assert.match(assess, /FROM statutory_compliance_requirements/);
+  assert.match(assess, /FROM controlled_evidence_versions/);
+  assert.match(assess, /INSERT INTO statutory_compliance_evidence_links/);
+  assert.doesNotMatch(assess, /JOIN engagements|JOIN workpapers|JOIN workpaper_evidence_links/,
+    "STATUTORY_CROSS_CLIENT_REUSE_POLICY_CHANGED_REQUIRES_REVIEW");
+  assert.doesNotMatch(assess, /verified_session|trusted_principal|authenticated_grant/,
+    "STATUTORY_ISSUER_BOUNDARY_CHANGED_REQUIRES_REVIEW");
+  const evidenceLink = implementation("create_workpaper_evidence_link");
+  assert.match(evidenceLink, /FROM workpaper_revisions/);
+  assert.match(evidenceLink, /FROM controlled_evidence_versions/);
+  assert.match(evidenceLink, /version_document != document_id/);
+});
+
+test("real-byte two-client workpaper-to-statutory native fixture is nonshipping and not direct IPC", () => {
+  const evidence = readFileSync("src-tauri/src/evidence.rs", "utf8");
+  const native = evidence.slice(evidence.indexOf("#[cfg(test)]\nmod tests {"));
+  assert.ok(native.includes(
+    "fn real_capture_linked_to_client_a_workpaper_can_be_attached_to_client_b_statutory_requirement()"
+  ), "CLIENT_SCOPE_REAL_BYTE_TEST_MISSING");
+  assert.match(native, /capture_controlled_evidence\(/);
+  assert.match(native, /read_controlled_evidence_bytes\(/);
+  assert.match(native, /persistence::create_workpaper\(/);
+  assert.match(native, /persistence::create_workpaper_evidence_link\(/);
+  assert.match(native, /persistence::create_statutory_compliance_assessment\(/);
+  assert.match(native, /assert_ne!\(workpaper_client_id, assessment_client_id\)/);
+  assert.equal(matrix.routes.length, 9);
+  assert.equal(matrix.cases.length, 34);
+  assert.equal(matrix.liveTauriCommandDenialHarness, "NOT_IMPLEMENTED");
+  assert.ok(matrix.cases.every(c => c.execution === "NOT_IMPLEMENTED" && c.result === "NOT_RUN"));
+});
