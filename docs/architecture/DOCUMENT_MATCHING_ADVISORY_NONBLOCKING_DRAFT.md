@@ -77,3 +77,42 @@ This is a **detached, unmounted, nonshipping** opt-in user interaction boundary 
 - Component state is **controlled**: the eventual host must hold only volatile `selection`/`review` and local disposition state and refresh the visit token for every distinct opening. There is no automatic background comparison or automatic proposal of books. Before actual mounting, independently verify read permissions, version provenance, context-token rotation and viewer open/close safety in end-to-end tests.
 
 The dedicated npm advisory script now runs the flow/control regressions alongside the original engine, panel, and indexed adapter suites. No live frontend route or production privilege is changed. Existing PR #137, Issues #129/#138, DEC-01..08 and L1–L4 containment/security decisions remain independent and unresolved.
+
+
+## Existing content-version history correlation gate (DRAFT, 2026-10-22)
+
+[`src/document-match-source-version-gate.ts`](../../src/document-match-source-version-gate.ts)
+provides a **pure, detached, non-authorizing metadata correlation** against the native
+`list_document_version_history` DTO already exposed in `src-tauri/src/lib.rs`.
+[`tests/document-match-source-version-gate.test.mjs`](../../tests/document-match-source-version-gate.test.mjs)
+covers both legitimate metadata correspondence and missing, changed, inconsistent or maliciously
+malformed inputs. The existing advisory CI script includes its tests.
+
+The current read-only native history DTO actually exposes `contentVersionId`,
+`verificationState`, `sourceStableDuringRead` and `sha256Hex`. It does **not** contain
+`documentId` or `fileInstanceId` per returned row: the caller must explicitly pass
+the document ID it requested. The future extraction snapshot schema does **not** currently
+exist; this module defines **claimed** `sourceContentVersionId` and `sourceSha256Hex`
+only as future adapter inputs, never as fields silently taken from filenames or previews.
+
+A correlation is allowed only for an `AVAILABLE` indexed source with the same document and
+file-instance identities as the supplied snapshot, a **deliberately named** content-version ID,
+an exact 64-character lowercase hexadecimal SHA-256 that equals the corresponding native history
+row, and `HASH_VERIFIED` + `sourceStableDuringRead === true`. History must belong to the
+explicitly requested document ID. Duplicate rows from the native controlled-evidence JOIN are
+accepted only when the version/hash/verification/stability attributes agree; otherwise the
+gate fails closed. No available snapshot, history, reference or mapping is inferred. Actual
+comparison remains disabled by default; truthy non-Boolean inputs do not imply consent.
+Every unavailable outcome explicitly preserves normal document use and requires no document
+editing, replacement or re-upload.
+
+**Critical limitations: metadata correspondence is NOT source provenance.** A caller could
+fabricate snapshot version/hash claims from a legitimate version history; matching them does
+not establish that extracted fields were produced from those bytes, that a read was authorized,
+that an indexed instance corresponds to that content version, or that the current filesystem
+bytes are unchanged. In particular, existing history rows lack per-row `fileInstanceId`.
+The check **must not** be used as the sole gate for live UI or an assurance/approval statement.
+A separate permission-checked extractor/read-only field provider, binding to the exact
+content version and file instance with independently established provenance, remains necessary.
+This does not modify any native APIs, migration, production DB, accounting book, document source,
+custody, user permissions, workpaper PR #137, or security decisions in Issues #129/#138.
