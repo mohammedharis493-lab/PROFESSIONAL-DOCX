@@ -22,6 +22,9 @@ export type ExplicitAdvisorySelection = Readonly<{
   fileInstanceId: string;
   extractionSnapshotId: string;
   referenceId: string;
+  /** UI-only binding to optional claimed version metadata, never trusted provenance. */
+  sourceContentVersionId?: string;
+  sourceSha256Hex?: string;
 }>;
 
 export type VolatileAdvisoryReview = Readonly<{
@@ -55,6 +58,22 @@ function unavailable(reason: Extract<OptionalMatchAttempt, {status: "unavailable
   return Object.freeze({ status: "unavailable" as const, review: null, reason, blocksDocumentUse: false as const });
 }
 
+function versionClaims(snapshot: ReadOnlyExtractionFieldSnapshot): Readonly<{
+  sourceContentVersionId?: string;
+  sourceSha256Hex?: string;
+}> {
+  const value = snapshot as ReadOnlyExtractionFieldSnapshot & {
+    sourceContentVersionId?: unknown;
+    sourceSha256Hex?: unknown;
+  };
+  return {
+    ...(typeof value.sourceContentVersionId === "string"
+      ? {sourceContentVersionId: value.sourceContentVersionId} : {}),
+    ...(typeof value.sourceSha256Hex === "string"
+      ? {sourceSha256Hex: value.sourceSha256Hex} : {}),
+  };
+}
+
 function fieldsKey(fields: AdvisoryFields): readonly (readonly [string, string, string])[] {
   return Object.entries(fields).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([key, value]) => [key, value === null ? "null" : typeof value, String(value)] as const);
@@ -74,6 +93,8 @@ function comparisonInputKey(
   return JSON.stringify([
     file.documentId, file.fileInstanceId,
     snapshot.documentId, snapshot.fileInstanceId, snapshot.extractionSnapshotId,
+    versionClaims(snapshot).sourceContentVersionId ?? null,
+    versionClaims(snapshot).sourceSha256Hex ?? null,
     fieldsKey(snapshot.fields),
     reference.referenceId, fieldsKey(reference.fields),
     rules.map(rule => [
@@ -98,6 +119,7 @@ export function chooseExplicitAdvisoryReference(
     scope: "volatile-optional-reference-selection" as const,
     visitKey, documentId: file.documentId, fileInstanceId: file.fileInstanceId,
     extractionSnapshotId: snapshot.extractionSnapshotId, referenceId,
+    ...versionClaims(snapshot),
   });
 }
 
@@ -112,6 +134,8 @@ export function selectionIsCurrent(
     !!file && selection.documentId === file.documentId &&
     selection.fileInstanceId === file.fileInstanceId &&
     !!snapshot && selection.extractionSnapshotId === snapshot.extractionSnapshotId &&
+    selection.sourceContentVersionId === versionClaims(snapshot).sourceContentVersionId &&
+    selection.sourceSha256Hex === versionClaims(snapshot).sourceSha256Hex &&
     snapshot.documentId === file.documentId &&
     snapshot.fileInstanceId === file.fileInstanceId;
 }
