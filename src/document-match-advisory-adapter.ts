@@ -120,7 +120,7 @@ export function inspectOptionalIndexedDocumentMatch(
     documentId: indexedFile.documentId,
     extractionSnapshotId: snapshot.extractionSnapshotId,
     fields: snapshot.fields,
-  }, reference, rules, requested);
+  }, reference, rules, requested === true);
 
   return Object.freeze({
     status: "ready" as const,
