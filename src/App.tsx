@@ -621,6 +621,7 @@ type ControlledEvidenceVersion = {
 
 type DocumentVersionHistoryEntry = {
   contentVersionId: string;
+  fileInstanceId: string;
   observedAtMs: number;
   sizeBytes: number;
   lastWriteTimeMs: number | null;
