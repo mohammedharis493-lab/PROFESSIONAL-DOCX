@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test:normal-data": "node --experimental-strip-types --test tests/normal-data-comparison-rules.test.mjs",
+    "test:document-match-advisory": "node --experimental-strip-types --test tests/document-match-advisory.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
