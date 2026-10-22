@@ -276,6 +276,24 @@ export function reviewIsCurrent(
   }
 }
 
+/**
+ * Ephemeral presentation state for a finding in precisely one optional
+ * comparison. No authority, native actor, evidence approval, durable audit or
+ * source mutation is represented by this structure.
+ */
+export type VolatileAdvisoryAnnotation = Readonly<{
+  scope: "volatile-optional-annotation-only";
+  visitKey: string;
+  documentId: string;
+  fileInstanceId: string;
+  extractionSnapshotId: string;
+  referenceId: string;
+  historyReadKey?: string;
+  inputKey: string;
+  ruleId: string;
+  disposition: "acknowledged" | "dismissed";
+}>;
+
 /** Local-only annotation, optionally held by a React host during this visit. */
 export function keepLocalAdvisoryDisposition(
   review: VolatileAdvisoryReview,
@@ -283,12 +301,84 @@ export function keepLocalAdvisoryDisposition(
 ): LocalAdvisoryDisposition {
   if (!review || !annotation || review.scope !== "volatile-optional-comparison-review" ||
       annotation.scope !== "local-advisory-review-only" ||
+      (annotation.disposition !== "acknowledged" && annotation.disposition !== "dismissed") ||
+      !requiredId(annotation.ruleId) ||
       annotation.documentId !== review.documentId ||
       annotation.extractionSnapshotId !== review.extractionSnapshotId ||
       annotation.referenceId !== review.referenceId ||
+      !Array.isArray(review.observation?.findings) ||
       !review.observation.findings.some(finding =>
-        finding.ruleId === annotation.ruleId && finding.status !== "consistent")) {
+        finding && finding.ruleId === annotation.ruleId &&
+        (finding.status === "difference" || finding.status === "not-compared"))) {
     throw new TypeError("Local annotation does not belong to this optional comparison");
   }
   return annotation;
+}
+
+/**
+ * Convert a panel's narrow user-action payload to an explicitly visit-local
+ * annotation. Only a CURRENT review from the controlled host may invoke this;
+ * use volatileAnnotationIsCurrent before retaining/showing the result. A
+ * comparison input key and history epoch are UI invalidation data, NOT proof
+ * of origin, authority, or actual user identity.
+ */
+export function stampVolatileAdvisoryAnnotation(
+  review: VolatileAdvisoryReview,
+  annotation: LocalAdvisoryDisposition,
+): VolatileAdvisoryAnnotation {
+  const valid = keepLocalAdvisoryDisposition(review, annotation);
+  if (!requiredId(review.visitKey) || !requiredId(review.documentId) ||
+      !requiredId(review.fileInstanceId) || !requiredId(review.extractionSnapshotId) ||
+      !requiredId(review.referenceId) || !requiredId(review.inputKey) ||
+      (review.historyReadKey !== undefined && !requiredId(review.historyReadKey))) {
+    throw new TypeError("Volatile annotation review identity is unavailable");
+  }
+  return Object.freeze({
+    scope: "volatile-optional-annotation-only" as const,
+    visitKey: review.visitKey,
+    documentId: review.documentId,
+    fileInstanceId: review.fileInstanceId,
+    extractionSnapshotId: review.extractionSnapshotId,
+    referenceId: review.referenceId,
+    ...(review.historyReadKey === undefined ? {} : {historyReadKey: review.historyReadKey}),
+    inputKey: review.inputKey,
+    ruleId: valid.ruleId,
+    disposition: valid.disposition,
+  });
+}
+
+/**
+ * A future visit-local host must revalidate before rendering annotations.
+ * Rejects stale history epochs, visit/file/ref changes, changed fields/rules
+ * and annotations for findings that are now consistent. Never persists or
+ * changes a document. A malicious caller can forge this pure client payload:
+ * it MUST NOT be accepted as native authority or an approval record.
+ */
+export function volatileAnnotationIsCurrent(
+  annotation: VolatileAdvisoryAnnotation | null,
+  review: VolatileAdvisoryReview | null,
+  visitKey: string,
+  file: IndexedDocumentIdentity,
+  snapshot: ReadOnlyExtractionFieldSnapshot | null,
+  references: readonly OptionalReference[],
+  rules: readonly AdvisoryComparisonRule[],
+  selection: ExplicitAdvisorySelection | null,
+  historyReadKey?: string,
+): boolean {
+  if (!annotation || !review ||
+      !reviewIsCurrent(review, visitKey, file, snapshot, references, rules, selection, historyReadKey) ||
+      annotation.scope !== "volatile-optional-annotation-only" ||
+      annotation.visitKey !== review.visitKey ||
+      annotation.documentId !== review.documentId ||
+      annotation.fileInstanceId !== review.fileInstanceId ||
+      annotation.extractionSnapshotId !== review.extractionSnapshotId ||
+      annotation.referenceId !== review.referenceId ||
+      annotation.historyReadKey !== review.historyReadKey ||
+      annotation.inputKey !== review.inputKey ||
+      !requiredId(annotation.ruleId) ||
+      (annotation.disposition !== "acknowledged" &&
+       annotation.disposition !== "dismissed")) return false;
+  return review.observation.findings.some(finding =>
+    finding && finding.ruleId === annotation.ruleId &&
+    (finding.status === "difference" || finding.status === "not-compared"));
 }
