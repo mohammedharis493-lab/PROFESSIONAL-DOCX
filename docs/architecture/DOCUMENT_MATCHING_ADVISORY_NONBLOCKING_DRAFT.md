@@ -59,3 +59,21 @@ The adapter intentionally does **not** invent a source of `ReadOnlyExtractionFie
 4. Keep original source files, extraction corrections, durable acknowledgements, professional approvals and authenticated security decisions out of this draft scope. PR #137 and open Issues #129/#138 are untouched.
 
 This increment's source-preservation argument is a narrow **static/read-only call-graph guarantee**: the adapter invokes only the pure advisory engine, accepts data objects by reference without modifying them, and returns immutable observations. It does not read or write original bytes. End-to-end runtime integrity, read authorization and extract provenance remain **unverified** because nothing is mounted in the live app.
+
+
+## Explicit reference selection and volatile Compare workflow (2026-10-22 DRAFT continuation)
+
+New files: [`src/document-match-advisory-flow.ts`](../../src/document-match-advisory-flow.ts),
+[`src/document-match-opt-in-control.ts`](../../src/document-match-opt-in-control.ts), and
+[`tests/document-match-advisory-flow.test.mjs`](../../tests/document-match-advisory-flow.test.mjs).
+
+This is a **detached, unmounted, nonshipping** opt-in user interaction boundary layered over the already verified read-only indexed-file adapter. No new native command, extraction reader, accounting book association, upload/save form, persistence, signed evidence activity, or change to `App.tsx` is introduced.
+
+- The control must be given one **fresh visit-local key** for each viewer opening. It is an ephemeral UI context token, **not** an identity proof, stable document identifier, source hash, content version, authenticated actor, or evidence attestation. It must not be persisted or reused when the viewer closes/reopens.
+- A host may supply a **separately permission-checked, read-only** extraction snapshot and an explicit list of reference records and mapping rules. This infrastructure **does not currently exist for structured voucher fields in the indexed viewer**; do not infer it from the filename or document preview. Without a bound snapshot or references, compare is disabled and ordinary document use remains intact.
+- Only an actual dropdown selection creates a scoped `volatile-optional-reference-selection` object, and **only an explicit Compare click** may invoke `requestExplicitOptionalMatch`. Missing or duplicate candidate IDs are not silently picked. Unselected and stale selections cannot initiate a comparison. A missing book is not a document failure.
+- The immutable `volatile-optional-comparison-review` holds an ordinary *noncryptographic*, local-only `inputKey` used to hide stale results when the indexed file, viewer visit, extraction snapshot, chosen reference, reference field values, or comparison rules change. This does **not** attest source provenance, validity, freshness or financial correctness; the read-only extraction provider is still responsible for authenticated source-version association.
+- A current observation is rendered using the existing passive advisory panel. Optional acknowledge/dismiss actions are **local-only display annotations**, not a professional approval, trusted sign-off, custody event, persistence operation or accounting correction. Clearing a local review does not edit the document. Invalid external props or rules produce a nonblocking unavailable result rather than altering document use.
+- Component state is **controlled**: the eventual host must hold only volatile `selection`/`review` and local disposition state and refresh the visit token for every distinct opening. There is no automatic background comparison or automatic proposal of books. Before actual mounting, independently verify read permissions, version provenance, context-token rotation and viewer open/close safety in end-to-end tests.
+
+The dedicated npm advisory script now runs the flow/control regressions alongside the original engine, panel, and indexed adapter suites. No live frontend route or production privilege is changed. Existing PR #137, Issues #129/#138, DEC-01..08 and L1–L4 containment/security decisions remain independent and unresolved.
