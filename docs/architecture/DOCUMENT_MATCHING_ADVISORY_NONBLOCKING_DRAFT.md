@@ -222,3 +222,38 @@ No `App.tsx` integration, new Tauri command, persistent annotation, original
 source rewrite, re-upload requirement, ledger reconciliation or sign-off is
 introduced by this increment. Regression coverage targets forged statuses,
 values, labels, field identities, reason codes, reordered and added findings.
+
+
+## Visit-local history-read epoch and explicit consent reset (DRAFT continuation, 2026-10-22)
+
+The detached controlled UI now **requires** a `historyReadKey`: a fresh, nonempty,
+nonpersistent, caller-generated token identifying the *current response lifecycle*
+of an independently authorized document-history read. The future host is
+responsible for changing the token on **every history reload, replacement,
+loss, and recovery**, even when the returned rows are identical; it must
+never reuse a token during one viewer visit. This is a presentation lifecycle
+contract, not a cryptographic digest, permission decision or source provenance.
+
+The optional reference selection and the locally cached advisory review now
+carry this token. The selector and Compare handler refuse selections bound to
+a different read epoch; an old report is hidden after a refresh, even if
+`contentVersionId`, `fileInstanceId`, SHA-256, reference and field data
+have not changed. A new explicit selection and a new Compare click are
+required after an epoch change. Missing or blank epochs disable optional
+comparison without affecting original file preview/open or other document
+operations. A host that fails to rotate its token is **not protected**
+against stale consent revival; an untrusted caller can fabricate any token.
+The token must not be interpreted as trusted identity, a grant, an extractor
+receipt, a time-based expiry or native read authorization.
+
+For backward compatibility, pure lower-level advisory helpers accept an
+optional history-read key; the **detached control** is stricter and always
+supplies/requires it. Lower-level helpers can still operate in an isolated
+unit-test context and must not be mounted or exposed directly as an
+authorized production interface. The existing metadata correlation checks
+remain necessary and insufficient; extraction provenance, live direct-Tauri
+authorization tests, DEC-01–08 and human acceptance remain open. New
+frontend regressions cover same-metadata refresh, stale direct-click
+attempts, absent epochs, recovery and renewed explicit user consent. No
+Tauri command, new native permission, storage mutation, original document
+edit, re-upload, accounting book operation, or reconciliation is added.
