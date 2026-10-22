@@ -1228,7 +1228,8 @@ mod tests {
     }
 
     #[test]
-    fn real_capture_linked_to_client_a_workpaper_can_be_attached_to_client_b_statutory_requirement() {
+    fn real_capture_linked_to_client_a_workpaper_can_be_attached_to_client_b_statutory_requirement()
+    {
         // Characterize legacy cross-client *reuse*: this test does not claim the
         // global controlled-evidence table assigns an owner or that sharing is
         // categorically forbidden. Human decisions must define that policy.
