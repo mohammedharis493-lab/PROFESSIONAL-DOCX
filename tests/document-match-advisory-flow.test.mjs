@@ -6,11 +6,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   chooseExplicitAdvisoryReference,
   keepLocalAdvisoryDisposition,
+  stampVolatileAdvisoryAnnotation,
+  volatileAnnotationIsCurrent,
   requestExplicitOptionalMatch,
   reviewIsCurrent,
   selectionIsCurrent,
 } from "../src/document-match-advisory-flow.ts";
 import { DocumentMatchOptInControl } from "../src/document-match-opt-in-control.ts";
+import { DocumentMatchAdvisoryPanel } from "../src/document-match-advisory-panel.ts";
 import { noteOptionalMatchFinding } from "../src/document-match-advisory.ts";
 
 const file = Object.freeze({ documentId: "doc-1", fileInstanceId: "instance-1", name: "test.pdf", availabilityState: "AVAILABLE" });
@@ -549,4 +552,138 @@ test("the history token is UI-only and cannot become a native permission grant",
   assert.match(flow, /review\.historyReadKey !== historyReadKey/);
   assert.doesNotMatch(app, /document-match-opt-in-control/);
   assert.doesNotMatch(control + flow, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
+});
+
+function annotationCurrent(note, review, overrides = {}) {
+  return volatileAnnotationIsCurrent(
+    note, review,
+    overrides.visit ?? visit,
+    overrides.file ?? file,
+    overrides.snapshot === undefined ? snapshot : overrides.snapshot,
+    overrides.references ?? references,
+    overrides.rules ?? rules,
+    overrides.selection === undefined ? selected() : overrides.selection,
+    overrides.historyReadKey === undefined ? HISTORY_READ_KEY : overrides.historyReadKey,
+  );
+}
+
+test("a user acknowledgement is stamped to the exact volatile review inputs", () => {
+  const review = request().review;
+  const initial = JSON.stringify([review, file, snapshot, history, rules]);
+  const plain = noteOptionalMatchFinding(review.observation, "number", "acknowledged");
+  const stamped = stampVolatileAdvisoryAnnotation(review, plain);
+  assert.equal(stamped.scope, "volatile-optional-annotation-only");
+  assert.equal(stamped.visitKey, visit);
+  assert.equal(stamped.fileInstanceId, file.fileInstanceId);
+  assert.equal(stamped.historyReadKey, HISTORY_READ_KEY);
+  assert.equal(stamped.inputKey, review.inputKey);
+  assert.equal(stamped.disposition, "acknowledged");
+  assert.equal(annotationCurrent(stamped, review), true);
+  assert.ok(Object.isFrozen(stamped));
+  assert.equal(JSON.stringify([review, file, snapshot, history, rules]), initial);
+  assert.doesNotMatch(JSON.stringify(stamped), /sourceSha256Hex|sourceContentVersionId|professionalApproval|actorId|sourcePath/);
+});
+
+test("volatile annotation is hidden after visit, source, history or reference changes", () => {
+  const review = request().review;
+  const stamped = stampVolatileAdvisoryAnnotation(
+    review, noteOptionalMatchFinding(review.observation, "number", "dismissed"),
+  );
+  const scenarios = [
+    {visit: "another-visit"},
+    {file: {...file, documentId: "other-document"}},
+    {file: {...file, fileInstanceId: "other-instance"}},
+    {snapshot: {...snapshot, extractionSnapshotId: "different-snapshot"}},
+    {snapshot: {...snapshot, sourceContentVersionId: "different-version"}},
+    {snapshot: {...snapshot, sourceSha256Hex: "b".repeat(64)}},
+    {historyReadKey: "fresh-read-next"},
+    {references: [references[1]]},
+    {selection: chooseExplicitAdvisoryReference(
+      visit, file, snapshot, "book-2", HISTORY_READ_KEY,
+    )},
+    {rules: [{...rules[0], label: "Changed mapping"}, rules[1]]},
+  ];
+  for (const scenario of scenarios) {
+    assert.equal(annotationCurrent(stamped, review, scenario), false);
+  }
+});
+
+test("even same snapshot ID and rule IDs cannot transfer an annotation to changed values", () => {
+  const older = request().review;
+  const stamped = stampVolatileAdvisoryAnnotation(
+    older, noteOptionalMatchFinding(older.observation, "number", "acknowledged"),
+  );
+  const changedSnapshot = {
+    ...snapshot, fields: {...snapshot.fields, number: "INV-200"},
+  };
+  const renewedSelection = chooseExplicitAdvisoryReference(
+    visit, file, changedSnapshot, "book-1", HISTORY_READ_KEY,
+  );
+  const newer = request({snapshot: changedSnapshot, selection: renewedSelection}).review;
+  assert.equal(newer.status, undefined);
+  assert.notEqual(newer.inputKey, older.inputKey);
+  assert.equal(annotationCurrent(stamped, newer, {
+    snapshot: changedSnapshot, selection: renewedSelection,
+  }), false);
+  assert.equal(annotationCurrent(stamped, older, {snapshot: changedSnapshot}), false);
+});
+
+test("consistent or forged annotations cannot be stamped or accepted", () => {
+  const review = request().review;
+  const note = noteOptionalMatchFinding(review.observation, "number", "acknowledged");
+  assert.throws(() => stampVolatileAdvisoryAnnotation(
+    review, {...note, disposition: "approved"},
+  ), /does not belong/);
+  assert.throws(() => stampVolatileAdvisoryAnnotation(
+    review, {...note, ruleId: "amount"},
+  ), /does not belong/);
+  assert.throws(() => stampVolatileAdvisoryAnnotation(
+    {...review, inputKey: ""}, note,
+  ), /identity is unavailable/);
+  const stamped = stampVolatileAdvisoryAnnotation(review, note);
+  const changes = [
+    {scope: "formal-approval"}, {disposition: "approved"},
+    {ruleId: "amount"}, {ruleId: "missing"},
+    {historyReadKey: "other-history"}, {visitKey: "other-visit"},
+    {inputKey: "different-input"}, {fileInstanceId: "other-file"},
+    {referenceId: "other-reference"}, {extractionSnapshotId: "other-snapshot"},
+  ];
+  for (const change of changes) {
+    assert.equal(annotationCurrent({...stamped, ...change}, review), false);
+  }
+  assert.equal(annotationCurrent(null, review), false);
+  assert.equal(annotationCurrent(stamped, null), false);
+});
+
+test("detached control emits only visit-local guarded annotations", () => {
+  const review = request().review;
+  const {tree,calls,html} = ui({selection: selected(), review});
+  assert.match(html, /Difference to review/);
+  const embedded = allNodes(tree, DocumentMatchAdvisoryPanel)[0];
+  assert.ok(embedded);
+  const panel = DocumentMatchAdvisoryPanel(embedded.props);
+  const annotationButtons = allNodes(panel, "button");
+  assert.equal(annotationButtons.length, 2);
+  annotationButtons[0].props.onClick();
+  annotationButtons[1].props.onClick();
+  assert.deepEqual(calls.annotations.map(x => x.disposition), ["acknowledged", "dismissed"]);
+  assert.ok(calls.annotations.every(x => annotationCurrent(x, review)));
+  assert.ok(calls.annotations.every(x => x.scope === "volatile-optional-annotation-only"));
+  assert.ok(calls.annotations.every(x => Object.isFrozen(x)));
+  const noCallback = ui({selection: selected(), review, onLocalAnnotation: undefined});
+  const noCallbackPanel = allNodes(noCallback.tree, DocumentMatchAdvisoryPanel)[0];
+  assert.equal(allNodes(DocumentMatchAdvisoryPanel(noCallbackPanel.props), "button").length, 0);
+  assert.deepEqual(ui({review: null, selection: selected()}).calls.annotations, []);
+});
+
+test("annotation delivery remains detached, nonpersistent and without sign-off authority", () => {
+  const flow = readFileSync("src/document-match-advisory-flow.ts", "utf8");
+  const control = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(control, /onLocalAnnotation\?: \(annotation: VolatileAdvisoryAnnotation\)/);
+  assert.match(control, /volatileAnnotationIsCurrent\(/);
+  assert.match(flow, /annotation\.inputKey !== review\.inputKey/);
+  assert.doesNotMatch(app, /document-match-opt-in-control|volatileAnnotationIsCurrent/);
+  assert.doesNotMatch(flow + control,
+    /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile|create_workpaper_signoff/);
 });
