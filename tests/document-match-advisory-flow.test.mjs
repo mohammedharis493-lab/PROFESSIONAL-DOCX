@@ -687,3 +687,81 @@ test("annotation delivery remains detached, nonpersistent and without sign-off a
   assert.doesNotMatch(flow + control,
     /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile|create_workpaper_signoff/);
 });
+
+test("rendered reference selector drops a stale choice after history changes in place", () => {
+  const mutableHistory = {
+    requestedDocumentId: history.requestedDocumentId,
+    entries: history.entries.map(entry => ({...entry})),
+  };
+  const {tree,calls} = ui({history: mutableHistory});
+  const selector = allNodes(tree, "select")[0];
+  assert.equal(selector.props.disabled, false);
+  mutableHistory.entries[0].verificationState = "UNVERIFIED";
+  selector.props.onChange({currentTarget: {value: "book-1"}});
+  assert.deepEqual(calls.selections, [null]);
+  assert.equal(calls.clears, 1);
+  assert.deepEqual(calls.reviews, []);
+});
+
+test("rendered reference selector rejects reference ambiguity introduced after render", () => {
+  const mutableReferences = references.map(reference => ({...reference}));
+  const {tree,calls} = ui({references: mutableReferences});
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  mutableReferences.push({...mutableReferences[0]});
+  allNodes(tree, "select")[0].props.onChange({
+    currentTarget: {value: "book-1"},
+  });
+  assert.deepEqual(calls.selections, [null]);
+  assert.deepEqual(calls.reviews, []);
+});
+
+test("stale annotation handler rechecks changed history before delivering any note", () => {
+  const mutableHistory = {
+    requestedDocumentId: history.requestedDocumentId,
+    entries: history.entries.map(entry => ({...entry})),
+  };
+  const review = request().review;
+  const {tree,calls} = ui({
+    history: mutableHistory, selection: selected(), review,
+  });
+  const embedded = allNodes(tree, DocumentMatchAdvisoryPanel)[0];
+  assert.ok(embedded);
+  assert.equal(typeof embedded.props.onLocalAnnotation, "function");
+  const note = noteOptionalMatchFinding(review.observation, "number", "dismissed");
+  // Row can change in place without a React re-render or new historyReadKey.
+  mutableHistory.entries[0].fileInstanceId = "other-file-instance";
+  embedded.props.onLocalAnnotation(note);
+  assert.deepEqual(calls.annotations, []);
+  assert.deepEqual(calls.reviews, []);
+});
+
+test("malformed annotation delivery never leaks into the viewer host callback", () => {
+  const review = request().review;
+  const {tree,calls} = ui({selection: selected(), review});
+  const embedded = allNodes(tree, DocumentMatchAdvisoryPanel)[0];
+  const forged = [
+    null,
+    {},
+    {scope: "formal-approval", ruleId: "number", disposition: "approved"},
+    {...noteOptionalMatchFinding(review.observation, "number", "acknowledged"),
+      disposition: "approved"},
+  ];
+  for (const annotation of forged) {
+    assert.doesNotThrow(() => embedded.props.onLocalAnnotation(annotation));
+  }
+  assert.deepEqual(calls.annotations, []);
+  const legitimate = noteOptionalMatchFinding(review.observation, "number", "dismissed");
+  embedded.props.onLocalAnnotation(legitimate);
+  assert.equal(calls.annotations.length, 1);
+  assert.equal(calls.annotations[0].disposition, "dismissed");
+});
+
+test("history and annotation freshness are checked at events, not solely at render", () => {
+  const source = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  assert.match(source, /function historyStillCurrent\(\)/);
+  assert.match(source, /const nextSelection = historyStillCurrent\(\)/);
+  assert.match(source, /if \(!historyStillCurrent\(\)\) return;/);
+  assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile/);
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.doesNotMatch(app, /document-match-opt-in-control/);
+});
