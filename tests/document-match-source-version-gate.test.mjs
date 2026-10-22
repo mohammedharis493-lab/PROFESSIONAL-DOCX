@@ -27,6 +27,7 @@ const history = Object.freeze({
   entries: Object.freeze([
     Object.freeze({
       contentVersionId: snapshot.sourceContentVersionId,
+      fileInstanceId: file.fileInstanceId,
       verificationState: "HASH_VERIFIED",
       sourceStableDuringRead: true,
       sha256Hex: HASH_A,
@@ -186,6 +187,7 @@ test("duplicate version-history rows with identical metadata are permitted", () 
 test("conflicting duplicate version-history rows fail closed", () => {
   for (const variation of [
     {sha256Hex: HASH_B},
+    {fileInstanceId: "different-file-instance"},
     {verificationState: "UNKNOWN"},
     {sourceStableDuringRead: false},
   ]) {
@@ -241,4 +243,55 @@ test("malformed optional reference or rules cannot bubble up as document-use err
     reference: {referenceId: "book", fields: {amountMinor: {nested: true}}},
     requested: true,
   });
+});
+
+test("identical bytes do not authorize reusing a content version across indexed file instances", () => {
+  const otherInstance = {
+    ...file, fileInstanceId: "copy-with-identical-bytes",
+  };
+  const claimedCopy = {
+    ...snapshot, fileInstanceId: otherInstance.fileInstanceId,
+  };
+  denied("history-instance-mismatch", {
+    file: otherInstance,
+    snapshot: claimedCopy,
+    requested: true,
+  });
+  // The same SHA-256 on the wrong file instance is not a sufficient match.
+  denied("history-instance-mismatch", {
+    history: {...history, entries: [
+      {...history.entries[0], fileInstanceId: "copy-with-identical-bytes"},
+    ]},
+    requested: true,
+  });
+});
+
+test("history missing a real native file instance field never passes correlation", () => {
+  for (const fileInstanceId of [undefined, null, "", " "]) {
+    denied("history-instance-unavailable", {
+      history: {...history, entries: [{...history.entries[0], fileInstanceId}]},
+      requested: true,
+    });
+  }
+});
+
+test("a version from the exact selected file instance remains metadata-only and nonblocking", () => {
+  const result = check({requested: true});
+  assert.equal(result.status, "correlated");
+  assert.equal(result.preparation.observation.outcome, "suggestions");
+  assert.equal(result.requiresDocumentChange, false);
+  assert.equal(result.requiresReupload, false);
+});
+
+test("existing native history DTO and SQLite query expose the same stored file instance", () => {
+  const native = readFileSync("src-tauri/src/lib.rs", "utf8");
+  const persistence = readFileSync("src-tauri/src/persistence.rs", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(native, /struct DocumentVersionHistoryDto\s*\{\s*content_version_id: String,\s*file_instance_id: String,/);
+  assert.match(native, /file_instance_id: value\.file_instance_id/);
+  assert.match(persistence, /pub struct DocumentVersionHistoryRecord\s*\{\s*pub content_version_id: String,\s*pub file_instance_id: String,/);
+  assert.match(persistence, /cev\.capture_policy,\s*cv\.file_instance_id/);
+  assert.match(app, /type DocumentVersionHistoryEntry = \{\s*contentVersionId: string;\s*fileInstanceId: string;/);
+  // No new Tauri command or native mutation is necessary to get instance identity.
+  assert.doesNotMatch(native, /fn (?:inspect|run|request)_optional_document_match/);
 });
