@@ -22,6 +22,8 @@ export type ExplicitAdvisorySelection = Readonly<{
   fileInstanceId: string;
   extractionSnapshotId: string;
   referenceId: string;
+  /** Caller-rotated history-response epoch: UI invalidation ONLY, not proof. */
+  historyReadKey?: string;
   /** UI-only binding to optional claimed version metadata, never trusted provenance. */
   sourceContentVersionId?: string;
   sourceSha256Hex?: string;
@@ -34,6 +36,7 @@ export type VolatileAdvisoryReview = Readonly<{
   fileInstanceId: string;
   extractionSnapshotId: string;
   referenceId: string;
+  historyReadKey?: string;
   // Only a local UI invalidation key. Not a cryptographic digest or evidence attestation.
   inputKey: string;
   observation: OptionalDocumentMatchReport;
@@ -108,8 +111,10 @@ export function chooseExplicitAdvisoryReference(
   file: IndexedDocumentIdentity,
   snapshot: ReadOnlyExtractionFieldSnapshot | null,
   referenceId: string,
+  historyReadKey?: string,
 ): ExplicitAdvisorySelection | null {
   if (!requiredId(visitKey) || !requiredId(referenceId) ||
+      (historyReadKey !== undefined && !requiredId(historyReadKey)) ||
       !file || !requiredId(file.documentId) || !requiredId(file.fileInstanceId) ||
       !snapshot || !requiredId(snapshot.extractionSnapshotId) ||
       snapshot.documentId !== file.documentId ||
@@ -119,6 +124,7 @@ export function chooseExplicitAdvisoryReference(
     scope: "volatile-optional-reference-selection" as const,
     visitKey, documentId: file.documentId, fileInstanceId: file.fileInstanceId,
     extractionSnapshotId: snapshot.extractionSnapshotId, referenceId,
+    ...(historyReadKey === undefined ? {} : {historyReadKey}),
     ...versionClaims(snapshot),
   });
 }
@@ -128,9 +134,12 @@ export function selectionIsCurrent(
   visitKey: string,
   file: IndexedDocumentIdentity,
   snapshot: ReadOnlyExtractionFieldSnapshot | null,
+  historyReadKey?: string,
 ): boolean {
   return !!selection && selection.scope === "volatile-optional-reference-selection" &&
     requiredId(visitKey) && selection.visitKey === visitKey &&
+    selection.historyReadKey === historyReadKey &&
+    (historyReadKey === undefined || requiredId(historyReadKey)) &&
     !!file && selection.documentId === file.documentId &&
     selection.fileInstanceId === file.fileInstanceId &&
     !!snapshot && selection.extractionSnapshotId === snapshot.extractionSnapshotId &&
@@ -152,9 +161,10 @@ export function requestExplicitOptionalMatch(
   references: readonly OptionalReference[],
   rules: readonly AdvisoryComparisonRule[],
   selection: ExplicitAdvisorySelection | null,
+  historyReadKey?: string,
 ): OptionalMatchAttempt {
   if (!selection) return unavailable("no-explicit-selection");
-  if (!selectionIsCurrent(selection, visitKey, file, snapshot)) {
+  if (!selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey)) {
     return unavailable("stale-selection");
   }
   if (!Array.isArray(references)) return unavailable("reference-unavailable");
@@ -175,6 +185,7 @@ export function requestExplicitOptionalMatch(
       fileInstanceId: file.fileInstanceId,
       extractionSnapshotId: snapshot!.extractionSnapshotId,
       referenceId: reference.referenceId,
+      ...(historyReadKey === undefined ? {} : {historyReadKey}),
       inputKey: comparisonInputKey(file, snapshot!, reference, rules),
       observation: prepared.observation,
     });
@@ -230,9 +241,11 @@ export function reviewIsCurrent(
   references: readonly OptionalReference[],
   rules: readonly AdvisoryComparisonRule[],
   selection: ExplicitAdvisorySelection | null,
+  historyReadKey?: string,
 ): boolean {
   if (!review || review.scope !== "volatile-optional-comparison-review" ||
-      !selectionIsCurrent(selection, visitKey, file, snapshot) ||
+      !selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey) ||
+      review.historyReadKey !== historyReadKey ||
       review.visitKey !== visitKey ||
       review.documentId !== file.documentId || review.fileInstanceId !== file.fileInstanceId ||
       review.extractionSnapshotId !== snapshot!.extractionSnapshotId ||
