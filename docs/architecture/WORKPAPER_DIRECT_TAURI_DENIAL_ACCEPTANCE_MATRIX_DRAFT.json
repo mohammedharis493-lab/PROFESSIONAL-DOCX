@@ -1,0 +1,409 @@
+{
+  "schema": "professional-docx-native-command-denial-plan/v1",
+  "snapshotCommit": "18e7f5ad4cd0df61b9b6c750e1cf7bd1a3c4d66b",
+  "status": "DRAFT_NO_SECURITY_APPROVAL",
+  "selectedContainmentOption": null,
+  "independentHumanReview": "UNAVAILABLE_NOT_PERFORMED",
+  "liveTauriCommandDenialHarness": "NOT_IMPLEMENTED",
+  "principalIssuer": "NOT_IMPLEMENTED",
+  "workpaperGrants": "NOT_IMPLEMENTED",
+  "governanceDecisions": [
+    "DEC-01",
+    "DEC-02",
+    "DEC-03",
+    "DEC-04",
+    "DEC-05",
+    "DEC-06",
+    "DEC-07",
+    "DEC-08"
+  ],
+  "routes": [
+    {
+      "name": "create_workpaper",
+      "class": "workpaper_creation",
+      "actorInputs": [],
+      "requiredGrant": "CREATE_WORKPAPER_IN_ENGAGEMENT"
+    },
+    {
+      "name": "create_workpaper_revision",
+      "class": "revision_writer",
+      "actorInputs": [],
+      "requiredGrant": "REVISE_WORKPAPER"
+    },
+    {
+      "name": "create_workpaper_evidence_link",
+      "class": "evidence_writer",
+      "actorInputs": [],
+      "requiredGrant": "ATTACH_EVIDENCE"
+    },
+    {
+      "name": "create_workpaper_signoff",
+      "class": "signoff_writer",
+      "actorInputs": [
+        "actorId",
+        "actorRole",
+        "signoffType"
+      ],
+      "requiredGrant": "APPROVE_WORKPAPER"
+    },
+    {
+      "name": "transition_workpaper_state",
+      "class": "workflow_writer",
+      "actorInputs": [
+        "actorId"
+      ],
+      "requiredGrant": "TRANSITION_WORKFLOW"
+    },
+    {
+      "name": "create_review_note",
+      "class": "review_note_writer",
+      "actorInputs": [
+        "raisedBy",
+        "ownerId"
+      ],
+      "requiredGrant": "CREATE_REVIEW_NOTE"
+    },
+    {
+      "name": "respond_to_review_note",
+      "class": "review_note_action",
+      "actorInputs": [
+        "actorId"
+      ],
+      "requiredGrant": "RESPOND_REVIEW_NOTE"
+    },
+    {
+      "name": "clear_review_note",
+      "class": "review_note_action",
+      "actorInputs": [
+        "actorId"
+      ],
+      "requiredGrant": "CLEAR_REVIEW_NOTE"
+    },
+    {
+      "name": "reopen_review_note",
+      "class": "review_note_action",
+      "actorInputs": [
+        "actorId"
+      ],
+      "requiredGrant": "REOPEN_REVIEW_NOTE"
+    }
+  ],
+  "globalAtomicityInvariants": [
+    "New workpaper creation requires independently verified CREATE_WORKPAPER_IN_ENGAGEMENT authority scoped to its parent engagement; no preexisting workpaper ID or its own newly created grant can bootstrap creation",
+    "Refusal must not change revision text or counters, evidence references, signoffs, supersessions, review note state/event history, workflow state/events or audit events",
+    "Refusal cannot fall back to the old unflagged create_workpaper_revision path or another registered write command",
+    "Read-only historical list/export views must remain available under separately approved preservation policy",
+    "Trusted actor identity must be resolved natively, never from actorId, actorRole, raisedBy or ownerId alone",
+    "Test fixtures must not create a real issuer, workpaper grants or a fake human security approver",
+    "A newly created workpaper cannot be born REVIEWED or professionally approved solely from a caller-supplied workflowState, and creation grants do not implicitly grant its owner review or approval rights"
+  ],
+  "cases": [
+    {
+      "id": "create_workpaper/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_workpaper",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native creator/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/WRONG_ENGAGEMENT_GRANT",
+      "command": "create_workpaper",
+      "scenario": "WRONG_ENGAGEMENT_GRANT",
+      "precondition": "The verified creator has no effective create-workpaper grant on the chosen engagement",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_workpaper",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "The creator's engagement-scoped grant was revoked, expired or changed under the writer lock",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper/CALLER_CONTROLLED_INITIAL_WORKFLOW_STATE",
+      "command": "create_workpaper",
+      "scenario": "CALLER_CONTROLLED_INITIAL_WORKFLOW_STATE",
+      "precondition": "A caller requests an initial reviewed, approved or other authority-implying workflow state rather than the approved server-derived initial state",
+      "expected": "DENY_OR_SERVER_OVERRIDE_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_revision/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_workpaper_revision",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_revision/WRONG_WORKPAPER_GRANT",
+      "command": "create_workpaper_revision",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_revision/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_workpaper_revision",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_evidence_link/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_workpaper_evidence_link",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_evidence_link/WRONG_WORKPAPER_GRANT",
+      "command": "create_workpaper_evidence_link",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_evidence_link/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_workpaper_evidence_link",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_signoff/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_workpaper_signoff",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_signoff/WRONG_WORKPAPER_GRANT",
+      "command": "create_workpaper_signoff",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_signoff/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_workpaper_signoff",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_workpaper_signoff/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "create_workpaper_signoff",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes actorId/actorRole/signoffType claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "transition_workpaper_state/MISSING_TRUSTED_PRINCIPAL",
+      "command": "transition_workpaper_state",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "transition_workpaper_state/WRONG_WORKPAPER_GRANT",
+      "command": "transition_workpaper_state",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "transition_workpaper_state/REVOKED_OR_EXPIRED_GRANT",
+      "command": "transition_workpaper_state",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "transition_workpaper_state/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "transition_workpaper_state",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes actorId claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_review_note/MISSING_TRUSTED_PRINCIPAL",
+      "command": "create_review_note",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_review_note/WRONG_WORKPAPER_GRANT",
+      "command": "create_review_note",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_review_note/REVOKED_OR_EXPIRED_GRANT",
+      "command": "create_review_note",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "create_review_note/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "create_review_note",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes raisedBy/ownerId claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "respond_to_review_note/MISSING_TRUSTED_PRINCIPAL",
+      "command": "respond_to_review_note",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "respond_to_review_note/WRONG_WORKPAPER_GRANT",
+      "command": "respond_to_review_note",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "respond_to_review_note/REVOKED_OR_EXPIRED_GRANT",
+      "command": "respond_to_review_note",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "respond_to_review_note/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "respond_to_review_note",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes actorId claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "clear_review_note/MISSING_TRUSTED_PRINCIPAL",
+      "command": "clear_review_note",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "clear_review_note/WRONG_WORKPAPER_GRANT",
+      "command": "clear_review_note",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "clear_review_note/REVOKED_OR_EXPIRED_GRANT",
+      "command": "clear_review_note",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "clear_review_note/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "clear_review_note",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes actorId claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "reopen_review_note/MISSING_TRUSTED_PRINCIPAL",
+      "command": "reopen_review_note",
+      "scenario": "MISSING_TRUSTED_PRINCIPAL",
+      "precondition": "No independently verified native principal/session is available",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "reopen_review_note/WRONG_WORKPAPER_GRANT",
+      "command": "reopen_review_note",
+      "scenario": "WRONG_WORKPAPER_GRANT",
+      "precondition": "A verified principal has no effective grant for the targeted workpaper or review note parent",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "reopen_review_note/REVOKED_OR_EXPIRED_GRANT",
+      "command": "reopen_review_note",
+      "scenario": "REVOKED_OR_EXPIRED_GRANT",
+      "precondition": "An otherwise valid grant has been revoked or has expired",
+      "expected": "DENY_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    },
+    {
+      "id": "reopen_review_note/SPOOFED_PAYLOAD_ATTRIBUTION",
+      "command": "reopen_review_note",
+      "scenario": "SPOOFED_PAYLOAD_ATTRIBUTION",
+      "precondition": "A caller substitutes actorId claiming a different person or professional role",
+      "expected": "DENY_OR_BIND_TO_VERIFIED_PRINCIPAL_BEFORE_MUTATION",
+      "execution": "NOT_IMPLEMENTED",
+      "result": "NOT_RUN"
+    }
+  ],
+  "creationAuthorityStatus": "UNDECIDED_ENGAGEMENT_SCOPED_GRANT_DESIGN"
+}

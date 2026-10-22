@@ -537,6 +537,46 @@ mod tests {
                 .expect("indexed file should exist")
                 .file_instance_id
         }
+
+        fn statutory_requirement(&self) -> String {
+            // The requirement is genuinely created with the installed migrated
+            // library/service/client/engagement persistence helpers. This is
+            // still a disposable native fixture, not an authorized Tauri actor.
+            let service = persistence::create_service_type(
+                &self.database_path,
+                "Real controlled evidence statutory fixture",
+            )
+            .expect("create fixture service");
+            let client =
+                persistence::create_client(&self.database_path, "Real-byte statutory fixture")
+                    .expect("create fixture client");
+            let engagement = persistence::create_engagement(
+                &self.database_path,
+                &client.client_id,
+                &service.service_type_id,
+                "Real-byte metadata attachment fixture",
+                None,
+                None,
+                "ACTIVE",
+            )
+            .expect("create fixture engagement");
+            let item = persistence::create_firm_library_item(
+                &self.database_path,
+                "STATUTORY_COMPLIANCE_REQUIREMENT",
+                "Real-byte statutory requirement",
+                None,
+                Some(&service.service_type_id),
+                r#"{"requirement":"fixture only"}"#,
+            )
+            .expect("create fixture methodology");
+            persistence::create_statutory_compliance_requirement(
+                &self.database_path,
+                &engagement.engagement_id,
+                &item.latest_version_id,
+            )
+            .expect("instantiate real-migration statutory requirement")
+            .statutory_compliance_requirement_id
+        }
     }
 
     impl Drop for TestEvidence {
@@ -759,5 +799,657 @@ mod tests {
             .as_deref(),
             Some("FAILED")
         );
+    }
+
+    // Uses real indexed file bytes and production migrations, but injects a
+    // synthetic SQLite trigger only inside the disposable TEST database.
+    // This is the native capture function, NOT registered Tauri IPC or a grant.
+    #[test]
+    fn postrename_metadata_failure_preserves_unindexed_real_bytes_then_retry_succeeds() {
+        let test = TestEvidence::new();
+        let original_bytes = b"real fixture bytes preserved before metadata failure";
+        let file_instance_id = test.index_file("Metadata failure.txt", original_bytes);
+        let db = rusqlite::Connection::open(&test.database_path).expect("open test SQLite");
+        let source_versions_before: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
+            .expect("count original scanned versions");
+        db.execute_batch(
+            "CREATE TRIGGER test_reject_capture_version_insert
+             BEFORE INSERT ON controlled_evidence_versions
+             BEGIN SELECT RAISE(ABORT, 'synthetic metadata insertion failure'); END;",
+        )
+        .expect("inject synthetic post-rename persistence failure");
+        drop(db);
+
+        let err = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect_err("test-only trigger must reject completed metadata");
+        assert!(matches!(err, EvidenceError::Persistence(_)));
+        assert_eq!(
+            persistence::count_controlled_evidence_versions_for_test(&test.database_path)
+                .expect("read persisted capture versions"),
+            0
+        );
+        assert_eq!(
+            persistence::latest_evidence_capture_status_for_test(
+                &test.database_path,
+                &file_instance_id,
+            )
+            .expect("read capture failure state")
+            .as_deref(),
+            Some("FAILED")
+        );
+        assert_eq!(
+            persistence::count_audit_events_for_test(
+                &test.database_path,
+                "EVIDENCE_CAPTURE_FAILED",
+                &file_instance_id,
+            )
+            .expect("read failure audit"),
+            0,
+            "failure audit is for the capture job, not file instance"
+        );
+
+        let db = rusqlite::Connection::open(&test.database_path).expect("inspect rollback");
+        let (failed_job_id, document_id): (String, String) = db
+            .query_row(
+                "SELECT evidence_capture_job_id, document_id FROM evidence_capture_jobs
+                 WHERE file_instance_id = ?1 AND status = 'FAILED'",
+                [&file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("failed job remains auditable");
+        let source_versions_after: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
+            .expect("count versions after rollback");
+        assert_eq!(source_versions_after, source_versions_before);
+        let audit_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'EVIDENCE_CAPTURE_FAILED'
+                   AND entity_id = ?1 AND actor_id IS NULL",
+                [&failed_job_id],
+                |row| row.get(0),
+            )
+            .expect("count un-attributed failed capture events");
+        assert_eq!(audit_count, 1);
+
+        let document_dir = test.evidence_state.root.join(&document_id);
+        let entries = fs::read_dir(&document_dir)
+            .expect("controlled directory exists after completed filesystem rename")
+            .map(|entry| entry.expect("enumerate controlled file").path())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let orphan = &entries[0];
+        let orphan_id = orphan
+            .file_name()
+            .expect("controlled file has a name")
+            .to_str()
+            .expect("controlled name is UTF-8");
+        Uuid::parse_str(orphan_id).expect("file was renamed to a controlled-version UUID");
+        assert_eq!(
+            fs::read(orphan).expect("real bytes still on disk"),
+            original_bytes
+        );
+        assert!(fs::metadata(orphan)
+            .expect("file metadata")
+            .permissions()
+            .readonly());
+        assert!(
+            persistence::get_controlled_evidence_read_record(&test.database_path, orphan_id,)
+                .expect("normal read metadata lookup")
+                .is_none()
+        );
+
+        db.execute_batch("DROP TRIGGER test_reject_capture_version_insert")
+            .expect("restore fixture database behavior");
+        drop(db);
+
+        let recovered = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect("a new capture may succeed after removing synthetic trigger");
+        let readable = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &recovered.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("new metadata-linked version verifies actual bytes");
+        assert_eq!(readable.bytes, original_bytes);
+        assert_ne!(orphan_id, recovered.controlled_evidence_version_id);
+        assert_eq!(
+            persistence::count_controlled_evidence_versions_for_test(&test.database_path)
+                .expect("new capture version count"),
+            1
+        );
+        assert_eq!(
+            fs::read_dir(&document_dir)
+                .expect("read controlled evidence directory after retry")
+                .count(),
+            2,
+            "the first unindexed file remains after successful retry"
+        );
+
+        // Restore file permissions before cleanup on Windows. No fixture data
+        // or files are retained outside this isolated test directory.
+        for entry in fs::read_dir(&document_dir).expect("cleanup controlled fixture") {
+            let path = entry.expect("enumerate fixture").path();
+            #[cfg(windows)]
+            {
+                let mut permissions = fs::metadata(&path).expect("fixture metadata").permissions();
+                permissions.set_readonly(false);
+                fs::set_permissions(&path, permissions)
+                    .expect("restore disposable file permissions");
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = path;
+            }
+        }
+    }
+
+    #[test]
+    fn postrename_completion_audit_failure_rolls_back_metadata_but_leaves_controlled_file() {
+        let test = TestEvidence::new();
+        let original_bytes = b"actual captured bytes before synthetic completed-audit failure";
+        let file_instance_id = test.index_file("Audit failure.txt", original_bytes);
+        let db = rusqlite::Connection::open(&test.database_path).expect("open fixture SQLite");
+        let content_before: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
+            .expect("count baseline content versions");
+        db.execute_batch(
+            "CREATE TRIGGER test_reject_capture_completion_audit
+             BEFORE INSERT ON audit_events
+             WHEN NEW.event_type = 'EVIDENCE_CAPTURE_COMPLETED'
+             BEGIN SELECT RAISE(ABORT, 'synthetic completion audit failure'); END;",
+        )
+        .expect("inject late, synthetic audit-insertion failure");
+        drop(db);
+
+        let err = capture_controlled_evidence(
+            &test.database_path,
+            &test.evidence_state,
+            &file_instance_id,
+        )
+        .expect_err("fixture trigger must abort completion transaction");
+        assert!(matches!(err, EvidenceError::Persistence(_)));
+
+        let db = rusqlite::Connection::open(&test.database_path).expect("inspect rollback");
+        let (job_id, document_id, status): (String, String, String) = db
+            .query_row(
+                "SELECT evidence_capture_job_id, document_id, status
+                 FROM evidence_capture_jobs WHERE file_instance_id = ?1",
+                [&file_instance_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("failed job persisted");
+        assert_eq!(status, "FAILED");
+        let remaining_content: i64 = db
+            .query_row("SELECT COUNT(*) FROM content_versions", [], |row| {
+                row.get(0)
+            })
+            .expect("count content after audit rollback");
+        assert_eq!(remaining_content, content_before);
+        let persisted_versions: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM controlled_evidence_versions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count controlled versions");
+        assert_eq!(persisted_versions, 0);
+        let completed_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'EVIDENCE_CAPTURE_COMPLETED'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read nonexistent completion audit");
+        assert_eq!(completed_count, 0);
+        let failure_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE entity_id = ?1 AND event_type = 'EVIDENCE_CAPTURE_FAILED'
+                   AND actor_id IS NULL",
+                [&job_id],
+                |row| row.get(0),
+            )
+            .expect("read expected failure audit");
+        assert_eq!(failure_count, 1);
+
+        let document_dir = test.evidence_state.root.join(&document_id);
+        let paths = fs::read_dir(&document_dir)
+            .expect("controlled filesystem directory remains")
+            .map(|entry| entry.expect("read fixture directory").path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 1);
+        let orphan = &paths[0];
+        assert_eq!(
+            fs::read(orphan).expect("orphan bytes on filesystem"),
+            original_bytes
+        );
+        let orphan_id = orphan
+            .file_name()
+            .expect("controlled orphan filename")
+            .to_str()
+            .expect("UTF-8 UUID");
+        assert!(
+            persistence::get_controlled_evidence_read_record(&test.database_path, orphan_id,)
+                .expect("unindexed file excluded from metadata read")
+                .is_none()
+        );
+        drop(db);
+
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(orphan).expect("orphan metadata").permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(orphan, permissions)
+                .expect("restore disposable fixture permissions");
+        }
+    }
+
+    fn make_disposable_controlled_file_writable(path: &Path) {
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(path)
+                .expect("fixture file metadata")
+                .permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)
+                .expect("restore writable Windows test-file permission");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("restore owner-write access only on isolated Unix test file");
+        }
+    }
+
+    // These native tests exercise actual indexed/captured/rehash-verified bytes
+    // then deliberately disturb only disposable controlled files. The metadata
+    // writer is invoked via persistence, NOT a registered authenticated Tauri
+    // command. No independent evidence grant or qualified reviewer exists.
+
+    #[test]
+    fn real_captured_bytes_digest_mismatch_still_allows_legacy_statutory_metadata_attachment() {
+        let test = TestEvidence::new();
+        let original = b"actual statutory evidence bytes, fixture original";
+        let file_id = test.index_file("Statutory integrity.txt", original);
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("real native capture verifies controlled bytes");
+        let evidence_path = test
+            .evidence_state
+            .root
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
+        let baseline = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("real baseline bytes must pass read-time digest verification");
+        assert_eq!(baseline.bytes, original);
+
+        let requirement_id = test.statutory_requirement();
+        let mut tampered = original.to_vec();
+        tampered[0] ^= 0x01;
+        assert_eq!(tampered.len(), original.len());
+        make_disposable_controlled_file_writable(&evidence_path);
+        fs::write(&evidence_path, &tampered)
+            .expect("alter only disposable fixture bytes at the same length");
+        let denied = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect_err("controlled-byte reader must refuse a hash mismatch");
+        assert!(matches!(denied, EvidenceError::Integrity(_)));
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Caller assertion, not fresh byte verified"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy assessment snapshots retained hash-verified DB metadata");
+        assert_eq!(assessment.version_number, 2);
+        assert_eq!(assessment.status, "COMPLIANT");
+        assert_eq!(assessment.evidence_count, 1);
+        let links = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment.statutory_compliance_assessment_id,
+        )
+        .expect("read attached source metadata snapshot");
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].controlled_evidence_version_id,
+            captured.controlled_evidence_version_id
+        );
+        assert_eq!(links[0].document_id, captured.document_id);
+        assert_eq!(
+            links[0].source_content_version_id,
+            captured.source_content_version_id
+        );
+        assert_eq!(links[0].source_sha256, captured.sha256);
+        assert_eq!(
+            fs::read(&evidence_path).expect("read fixture bytes"),
+            tampered
+        );
+    }
+
+    #[test]
+    fn missing_real_controlled_file_does_not_block_legacy_statutory_metadata_attachment() {
+        let test = TestEvidence::new();
+        let original = b"controlled source bytes deleted only inside test fixture";
+        let file_id = test.index_file("Statutory missing bytes.txt", original);
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("real verified native evidence capture");
+        let evidence_path = test
+            .evidence_state
+            .root
+            .join(&captured.document_id)
+            .join(&captured.controlled_evidence_version_id);
+        assert_eq!(
+            read_controlled_evidence_bytes(
+                &test.database_path,
+                &test.evidence_state,
+                &captured.controlled_evidence_version_id,
+                1024,
+            )
+            .expect("controlled bytes initially pass")
+            .bytes,
+            original
+        );
+        let requirement_id = test.statutory_requirement();
+        make_disposable_controlled_file_writable(&evidence_path);
+        fs::remove_file(&evidence_path).expect("remove only isolated test controlled file");
+        assert!(!evidence_path.exists());
+        let rejected = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect_err("normal controlled read must refuse missing managed bytes");
+        assert!(matches!(rejected, EvidenceError::Configuration(_)));
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Metadata-only evidence attachment after fixture file removal"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy DB attachment does not reopen missing managed bytes");
+        assert_eq!(assessment.evidence_count, 1);
+        let links = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment.statutory_compliance_assessment_id,
+        )
+        .expect("verify immutable evidence provenance tuple");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].source_sha256, captured.sha256);
+        assert_eq!(links[0].document_id, captured.document_id);
+        assert!(!evidence_path.exists());
+    }
+
+    #[test]
+    fn real_capture_linked_to_client_a_workpaper_can_be_attached_to_client_b_statutory_requirement()
+    {
+        // Characterize legacy cross-client *reuse*: this test does not claim the
+        // global controlled-evidence table assigns an owner or that sharing is
+        // categorically forbidden. Human decisions must define that policy.
+        // All real bytes and client/engagement rows are disposable fixtures.
+        let test = TestEvidence::new();
+        let bytes = b"real source evidence in distinct-client association fixture";
+        let file_id = test.index_file("Client A support.txt", bytes);
+        let captured =
+            capture_controlled_evidence(&test.database_path, &test.evidence_state, &file_id)
+                .expect("capture actual indexed bytes and verified digest");
+        let readable = read_controlled_evidence_bytes(
+            &test.database_path,
+            &test.evidence_state,
+            &captured.controlled_evidence_version_id,
+            1024,
+        )
+        .expect("source evidence must really pass controlled-byte integrity checks");
+        assert_eq!(readable.bytes, bytes);
+
+        let service = persistence::create_service_type(
+            &test.database_path,
+            "Shared service type, independent client engagements",
+        )
+        .expect("create common service type");
+        let client_a = persistence::create_client(&test.database_path, "Client A test only")
+            .expect("create independent client A");
+        let client_b = persistence::create_client(&test.database_path, "Client B test only")
+            .expect("create independent client B");
+        assert_ne!(client_a.client_id, client_b.client_id);
+        let engagement_a = persistence::create_engagement(
+            &test.database_path,
+            &client_a.client_id,
+            &service.service_type_id,
+            "Client A engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("create engagement A");
+        let engagement_b = persistence::create_engagement(
+            &test.database_path,
+            &client_b.client_id,
+            &service.service_type_id,
+            "Client B engagement",
+            None,
+            None,
+            "ACTIVE",
+        )
+        .expect("create engagement B");
+        assert_ne!(engagement_a.engagement_id, engagement_b.engagement_id);
+
+        let workpaper_a = persistence::create_workpaper(
+            &test.database_path,
+            &engagement_a.engagement_id,
+            None,
+            None,
+            "A-EV-001",
+            "Client A source evidence workpaper",
+            "DRAFT",
+        )
+        .expect("create engagement A workpaper");
+        let revision_a = persistence::create_workpaper_revision(
+            &test.database_path,
+            &workpaper_a.workpaper_id,
+            persistence::NewWorkpaperRevision {
+                revision_reason: Some("Initial control evidence association"),
+                objective: "Inspect Client A source support",
+                procedure_performed: "Associate existing controlled evidence with A",
+                population: "Fixture documents for Client A",
+                sample: "Single real controlled file",
+                exceptions: "No performance conclusion",
+                management_explanation: "Not supplied in fixture",
+                conclusion: "Test-only relationship, no qualified signoff",
+            },
+        )
+        .expect("create engagement A workpaper revision");
+        let link_a = persistence::create_workpaper_evidence_link(
+            &test.database_path,
+            &revision_a.workpaper_revision_id,
+            &captured.document_id,
+            None,
+            Some(&captured.controlled_evidence_version_id),
+            "SUPPORTS",
+            Some("Client A workpaper association for scope comparison"),
+        )
+        .expect("assign exact existing controlled version to Client A workpaper");
+        assert_eq!(
+            link_a.controlled_evidence_version_id.as_deref(),
+            Some(captured.controlled_evidence_version_id.as_str())
+        );
+
+        let methodology = persistence::create_firm_library_item(
+            &test.database_path,
+            "STATUTORY_COMPLIANCE_REQUIREMENT",
+            "Same firm methodology in two independent clients",
+            None,
+            Some(&service.service_type_id),
+            r#"{"requirement":"scope fixture only"}"#,
+        )
+        .expect("create same firm library version");
+        let requirement_a = persistence::create_statutory_compliance_requirement(
+            &test.database_path,
+            &engagement_a.engagement_id,
+            &methodology.latest_version_id,
+        )
+        .expect("Client A requirement");
+        let requirement_b = persistence::create_statutory_compliance_requirement(
+            &test.database_path,
+            &engagement_b.engagement_id,
+            &methodology.latest_version_id,
+        )
+        .expect("Client B requirement");
+        assert_ne!(
+            requirement_a.statutory_compliance_requirement_id,
+            requirement_b.statutory_compliance_requirement_id
+        );
+
+        let evidence_ids = vec![captured.controlled_evidence_version_id.clone()];
+        let assessment_a = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_a
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Test-only A assertion, not professional approval"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("A assessment attaches version already used in A workpaper");
+        let assessment_b = persistence::create_statutory_compliance_assessment(
+            &test.database_path,
+            persistence::StatutoryComplianceAssessmentDefinition {
+                statutory_compliance_requirement_id: &requirement_b
+                    .statutory_compliance_requirement_id,
+                applicability: "APPLICABLE",
+                due_date: Some("2026-12-31"),
+                actual_compliance_date: Some("2026-12-30"),
+                status: "COMPLIANT",
+                exception_text: None,
+                conclusion: Some("Test-only B reuse, no cross-client grant established"),
+                controlled_evidence_version_ids: &evidence_ids,
+            },
+        )
+        .expect("legacy statutory writer does not check client-scoped evidence sharing");
+
+        assert_eq!(assessment_a.version_number, 2);
+        assert_eq!(assessment_b.version_number, 2);
+        assert_eq!(assessment_a.evidence_count, 1);
+        assert_eq!(assessment_b.evidence_count, 1);
+        let links_a = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment_a.statutory_compliance_assessment_id,
+        )
+        .expect("exact A evidence tuple");
+        let links_b = persistence::list_statutory_compliance_evidence(
+            &test.database_path,
+            &assessment_b.statutory_compliance_assessment_id,
+        )
+        .expect("exact B evidence tuple");
+        assert_eq!(links_a.len(), 1);
+        assert_eq!(links_b.len(), 1);
+        for link in [&links_a[0], &links_b[0]] {
+            assert_eq!(
+                link.controlled_evidence_version_id,
+                captured.controlled_evidence_version_id
+            );
+            assert_eq!(link.document_id, captured.document_id);
+            assert_eq!(
+                link.source_content_version_id,
+                captured.source_content_version_id
+            );
+            assert_eq!(link.source_sha256, captured.sha256);
+        }
+        assert_ne!(
+            links_a[0].statutory_compliance_evidence_link_id,
+            links_b[0].statutory_compliance_evidence_link_id
+        );
+
+        let db = rusqlite::Connection::open(&test.database_path)
+            .expect("inspect real-migration engagement and evidence associations");
+        let (workpaper_client_id, assessment_client_id): (String, String) = db
+            .query_row(
+                "SELECT
+                    (SELECT e.client_id
+                       FROM workpapers w JOIN engagements e
+                         ON e.engagement_id = w.engagement_id
+                      WHERE w.workpaper_id = ?1),
+                    (SELECT e.client_id
+                       FROM statutory_compliance_requirements r JOIN engagements e
+                         ON e.engagement_id = r.engagement_id
+                      WHERE r.statutory_compliance_requirement_id = ?2)",
+                rusqlite::params![
+                    &workpaper_a.workpaper_id,
+                    &requirement_b.statutory_compliance_requirement_id
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ground separate clients in actual migrated joins");
+        assert_eq!(workpaper_client_id, client_a.client_id);
+        assert_eq!(assessment_client_id, client_b.client_id);
+        assert_ne!(workpaper_client_id, assessment_client_id);
+        let null_actor_audits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE event_type = 'STATUTORY_COMPLIANCE_ASSESSMENT_RECORDED'
+                   AND entity_id IN (?1, ?2) AND actor_id IS NULL",
+                rusqlite::params![
+                    &assessment_a.statutory_compliance_assessment_id,
+                    &assessment_b.statutory_compliance_assessment_id
+                ],
+                |row| row.get(0),
+            )
+            .expect("current legacy audit actor remains unspecified");
+        assert_eq!(null_actor_audits, 2);
+        // This is metadata reuse with real verified bytes, not evidence that
+        // a user can bypass installed Tauri or that a cross-client share was
+        // unauthorized under a policy not yet defined.
     }
 }
