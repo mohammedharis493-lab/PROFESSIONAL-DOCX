@@ -18,10 +18,13 @@ import type {
   OptionalMatchAttempt,
   VolatileAdvisoryReview,
 } from "./document-match-advisory-flow.ts";
+import type { IndexedDocumentIdentity } from "./document-match-advisory-adapter.ts";
+import { correlateOptionalExtractionWithDocumentHistory } from "./document-match-source-version-gate.ts";
 import type {
-  IndexedDocumentIdentity,
-  ReadOnlyExtractionFieldSnapshot,
-} from "./document-match-advisory-adapter.ts";
+  ReadOnlyDocumentVersionHistory,
+  VersionClaimedExtractionSnapshot,
+  VersionCorrelationResult,
+} from "./document-match-source-version-gate.ts";
 import type {
   AdvisoryComparisonRule,
   LocalAdvisoryDisposition,
@@ -31,8 +34,10 @@ import type {
 export type DocumentMatchOptInControlProps = Readonly<{
   /** A fresh, local, nonpersistent token for each viewer opening. */
   visitKey: string;
-  indexedFile: IndexedDocumentIdentity;
-  snapshot: ReadOnlyExtractionFieldSnapshot | null;
+  indexedFile: IndexedDocumentIdentity & Readonly<{availabilityState: string}>;
+  snapshot: VersionClaimedExtractionSnapshot | null;
+  /** Result of an independently authorized read-only history request. */
+  history: ReadOnlyDocumentVersionHistory | null;
   /** Host-supplied read-only options only; NO automatic searching for matches. */
   references: readonly OptionalReference[];
   rules: readonly AdvisoryComparisonRule[];
@@ -42,7 +47,10 @@ export type DocumentMatchOptInControlProps = Readonly<{
   onReview: (review: VolatileAdvisoryReview) => void;
   onClearReview: () => void;
   /** Optional visit-local issue notice only, never a document error. */
-  onUnavailable?: (reason: Extract<OptionalMatchAttempt, {status: "unavailable"}>["reason"]) => void;
+  onUnavailable?: (reason:
+    | Extract<OptionalMatchAttempt, {status: "unavailable"}>["reason"]
+    | Extract<VersionCorrelationResult, {status: "unavailable"}>["reason"]
+  ) => void;
   onLocalAnnotation?: (annotation: LocalAdvisoryDisposition) => void;
 }>;
 
@@ -52,7 +60,7 @@ export type DocumentMatchOptInControlProps = Readonly<{
  */
 export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps): ReactElement {
   const {
-    visitKey, indexedFile, snapshot, references, rules,
+    visitKey, indexedFile, snapshot, history, references, rules,
     selection, review, onSelectionChange, onReview, onClearReview,
     onUnavailable, onLocalAnnotation,
   } = props;
@@ -63,7 +71,14 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     references.findIndex(candidate => candidate?.referenceId === ref.referenceId) === index &&
     references.filter(candidate => candidate?.referenceId === ref.referenceId).length === 1,
   ) : [];
-  const validSelection = selectionIsCurrent(selection, visitKey, indexedFile, snapshot) &&
+  // requested=false never compares document/reference fields on render.
+  // Metadata agreement is not extraction provenance or authorization.
+  const versionCheck = correlateOptionalExtractionWithDocumentHistory(
+    indexedFile, snapshot, history, null, [], false,
+  );
+  const versionReady = versionCheck.status === "correlated";
+  const validSelection = versionReady &&
+    selectionIsCurrent(selection, visitKey, indexedFile, snapshot) &&
     uniqueRefs.some(reference => reference.referenceId === selection!.referenceId);
   const selectedId = validSelection ? selection!.referenceId : "";
   const currentReview = validSelection && reviewIsCurrent(
@@ -72,7 +87,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
 
   function selectReference(event: ChangeEvent<HTMLSelectElement>): void {
     const nextId = event.currentTarget.value;
-    const nextSelection = nextId && uniqueRefs.some(reference => reference.referenceId === nextId)
+    const nextSelection = versionReady && nextId && uniqueRefs.some(reference => reference.referenceId === nextId)
       ? chooseExplicitAdvisoryReference(visitKey, indexedFile, snapshot, nextId)
       : null;
     onClearReview();
@@ -80,8 +95,23 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   }
 
   function compare(): void {
+    // Recheck on the click path: a disabled UI control is not an authority gate.
+    if (!validSelection) {
+      onUnavailable?.(versionReady ? "no-explicit-selection" : versionCheck.reason!);
+      return;
+    }
+    const selectedReference = uniqueRefs.find(
+      reference => reference.referenceId === selection!.referenceId,
+    );
+    const checked = correlateOptionalExtractionWithDocumentHistory(
+      indexedFile, snapshot, history, selectedReference ?? null, rules, true,
+    );
+    if (checked.status !== "correlated" || checked.preparation.status !== "ready") {
+      onUnavailable?.(checked.status === "unavailable" ? checked.reason : "extraction-unavailable");
+      return;
+    }
     const attempted = requestExplicitOptionalMatch(
-      visitKey, indexedFile, snapshot, references, rules, validSelection ? selection : null,
+      visitKey, indexedFile, snapshot, references, rules, selection,
     );
     if (attempted.status === "ready") {
       onReview(attempted.review);
@@ -103,17 +133,21 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   },
     h("h3", null, "Optional reference comparison"),
     h("p", null, "Your original document remains available whether or not you compare it."),
-    h("p", null, "Comparison is only an advisory review. It does not verify accounts, approve workpapers, or edit the source."),
+    h("p", null, "Comparison is only an advisory review. A matching version-history row does not establish extraction provenance, certify accounts or edit the source."),
     !snapshotAvailable
       ? h("p", { role: "status" },
           "No bound structured extraction snapshot is available for this document. You can continue to preview and manage it normally.")
+      : null,
+    snapshotAvailable && !versionReady
+      ? h("p", { role: "status" },
+          "Optional comparison unavailable: source-version metadata is missing, unverified or does not match this indexed file. Document access is unaffected.")
       : null,
     h("label", null,
       "Select a reference explicitly (optional)",
       h("select", {
         "aria-label": "Select optional reference",
         value: selectedId,
-        disabled: !snapshotAvailable || uniqueRefs.length === 0,
+        disabled: !versionReady || uniqueRefs.length === 0,
         onChange: selectReference,
       },
         h("option", { value: "" }, "No reference selected"),
@@ -125,7 +159,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     ),
     h("button", {
       type: "button",
-      disabled: !snapshotAvailable || !validSelection,
+      disabled: !versionReady || !validSelection,
       onClick: compare,
     }, "Compare selected reference"),
     currentReview
@@ -141,6 +175,6 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
           }),
         )
       : null,
-    h("p", null, "Changing the document, viewer visit, snapshot, reference or rules hides any stale comparison."),
+    h("p", null, "Changing the document, viewer visit, extraction claim, source-version correspondence, reference or rules hides stale comparisons."),
   );
 }
