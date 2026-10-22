@@ -88,10 +88,12 @@ provides a **pure, detached, non-authorizing metadata correlation** against the 
 covers both legitimate metadata correspondence and missing, changed, inconsistent or maliciously
 malformed inputs. The existing advisory CI script includes its tests.
 
-The current read-only native history DTO actually exposes `contentVersionId`,
-`verificationState`, `sourceStableDuringRead` and `sha256Hex`. It does **not** contain
-`documentId` or `fileInstanceId` per returned row: the caller must explicitly pass
-the document ID it requested. The future extraction snapshot schema does **not** currently
+The current read-only native history DTO exposes `contentVersionId`,
+`fileInstanceId`, `verificationState`, `sourceStableDuringRead` and `sha256Hex`.
+The file-instance identity is read directly from the existing persisted `content_versions`
+row (as of the incremental draft change described below). The DTO still does **not**
+contain `documentId` per returned row: the caller must explicitly pass the document ID
+it requested. The future extraction snapshot schema does **not** currently
 exist; this module defines **claimed** `sourceContentVersionId` and `sourceSha256Hex`
 only as future adapter inputs, never as fields silently taken from filenames or previews.
 
@@ -109,10 +111,48 @@ editing, replacement or re-upload.
 **Critical limitations: metadata correspondence is NOT source provenance.** A caller could
 fabricate snapshot version/hash claims from a legitimate version history; matching them does
 not establish that extracted fields were produced from those bytes, that a read was authorized,
-that an indexed instance corresponds to that content version, or that the current filesystem
-bytes are unchanged. In particular, existing history rows lack per-row `fileInstanceId`.
+that extracted fields were actually derived from that indexed instance or that the current
+filesystem bytes are unchanged. The native history now exposes each version's stored
+`fileInstanceId`, which the detached gate checks; this is *identity corroboration*,
+not extraction provenance or current source-byte verification.
 The check **must not** be used as the sole gate for live UI or an assurance/approval statement.
 A separate permission-checked extractor/read-only field provider, binding to the exact
 content version and file instance with independently established provenance, remains necessary.
 This does not modify any native APIs, migration, production DB, accounting book, document source,
 custody, user permissions, workpaper PR #137, or security decisions in Issues #129/#138.
+
+
+## Exact native content-version to file-instance identity (DRAFT continuation, 2026-10-22)
+
+The pre-existing SQLite `content_versions` table has always contained a nonnullable
+`file_instance_id` foreign key, but the existing `list_document_version_history`
+read-only response omitted it. This increment **extends that existing response only**:
+
+- `src-tauri/src/persistence.rs`: read the stored `cv.file_instance_id` as part of the
+  existing document history SELECT, preserving all previous field indices and query ordering,
+  and add it to `DocumentVersionHistoryRecord`.
+- `src-tauri/src/lib.rs`: expose the existing field as `fileInstanceId` via
+  `DocumentVersionHistoryDto` camelCase serialization. No new Tauri command, new permission
+  capability, write endpoint, schema migration or database mutation is introduced.
+- `src/App.tsx`: update the existing viewer DTO type for the added read-only field;
+  no matching action or new UI is mounted and no existing viewer behavior changes.
+- `src/document-match-source-version-gate.ts`: **fail closed** when the chosen history
+  content-version row omits `fileInstanceId`, belongs to a *different* instance, or has
+  conflicting duplicated instance metadata. The row's original `contentVersionId` and
+  stored `fileInstanceId` must agree with the independently selected file and future
+  explicitly claimed extraction snapshot **even if two files share identical hashes**.
+  All failure states remain nonblocking and cannot request document edits or re-upload.
+- `tests/document-match-source-version-gate.test.mjs` and the existing native
+  synthetic-copy test in `src-tauri/src/indexer.rs` verify exact-instance binding,
+  missing identities, duplicate conflicts and successful independent read-only version
+  history for two byte-identical indexed documents.
+
+**Boundary:** The new field is stored metadata, not a proof of extractor input, file-read
+authorization, snapshot provenance, current disk stability or financial correctness.
+An adversarial caller can still submit fake extraction fields and claim an existing
+version/hash; a production extraction provider must independently establish those facts
+with approved read permissions and authenticated provenance *before* this UI is mounted.
+Nothing is changed in PR #137, professional custody/sign-off, production source files,
+accounting books or user-generated documents. The new metadata field is read through an
+already-existing Tauri history command; its existing authorization posture is NOT thereby
+security-approved. The independent decisions in Issues #129 and #138 remain OPEN.
