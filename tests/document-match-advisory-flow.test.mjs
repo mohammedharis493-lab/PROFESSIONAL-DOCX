@@ -274,3 +274,20 @@ test("flow and control have no Tauri, storage, network, file mutation or native 
   assert.match(flow, /selectionIsCurrent\(selection, visitKey, file, snapshot\)/);
   assert.match(flow, /volatile-optional-comparison-review/);
 });
+
+test("malformed externally supplied review never crashes or blocks the document", () => {
+  const original = request().review;
+  const invalid = [
+    {...original, observation: null},
+    {...original, observation: undefined},
+    {...original, observation: {...original.observation, blocksDocumentUse: true}},
+    {...original, observation: {...original.observation, requiresReupload: true}},
+    {...original, observation: {...original.observation, requiresDocumentChange: true}},
+  ];
+  for (const review of invalid) {
+    assert.equal(current(review), false);
+    const {html} = ui({selection: selected(), review});
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+    assert.match(html, /original document remains available/);
+  }
+});
