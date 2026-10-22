@@ -100,9 +100,22 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     review, visitKey, indexedFile, snapshot, references, rules, selection, historyReadKey,
   ) ? review : null;
 
+  // Render-time correlation only controls what is shown. An independently
+  // supplied history/reference object may be replaced or mutated before an
+  // already-rendered DOM handler runs. Recheck at every action boundary.
+  function historyStillCurrent(): boolean {
+    return epochReady && correlateOptionalExtractionWithDocumentHistory(
+      indexedFile, snapshot, history, null, [], false,
+    ).status === "correlated";
+  }
+
   function selectReference(event: ChangeEvent<HTMLSelectElement>): void {
     const nextId = event.currentTarget.value;
-    const nextSelection = versionReady && nextId && uniqueRefs.some(reference => reference.referenceId === nextId)
+    const eligibleNow = Array.isArray(references) && references.filter(reference =>
+      reference && reference.referenceId === nextId,
+    ).length === 1;
+    const nextSelection = historyStillCurrent() && nextId && eligibleNow &&
+      uniqueRefs.some(reference => reference.referenceId === nextId)
       ? chooseExplicitAdvisoryReference(visitKey, indexedFile, snapshot, nextId, historyReadKey)
       : null;
     onClearReview();
@@ -186,13 +199,22 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
             observation: currentReview.observation,
             onLocalAnnotation: onLocalAnnotation
               ? (annotation: LocalAdvisoryDisposition) => {
-                  // Only the current, explicitly compared report can emit
-                  // annotations; revalidate before calling a future host.
-                  const stamped = stampVolatileAdvisoryAnnotation(currentReview, annotation);
-                  if (volatileAnnotationIsCurrent(
-                    stamped, currentReview, visitKey, indexedFile, snapshot,
-                    references, rules, selection, historyReadKey,
-                  )) onLocalAnnotation(stamped);
+                  // A stale mounted handler, a mutated history row, or a
+                  // malformed panel event must not emit a new annotation.
+                  // Only input errors are caught; host callback errors are
+                  // intentionally not reclassified as document failures.
+                  if (!historyStillCurrent()) return;
+                  let stamped: VolatileAdvisoryAnnotation;
+                  try {
+                    stamped = stampVolatileAdvisoryAnnotation(currentReview, annotation);
+                    if (!volatileAnnotationIsCurrent(
+                      stamped, currentReview, visitKey, indexedFile, snapshot,
+                      references, rules, selection, historyReadKey,
+                    )) return;
+                  } catch {
+                    return;
+                  }
+                  onLocalAnnotation(stamped);
                 }
               : undefined,
           }),
