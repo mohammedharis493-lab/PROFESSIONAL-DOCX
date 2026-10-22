@@ -156,3 +156,40 @@ Nothing is changed in PR #137, professional custody/sign-off, production source 
 accounting books or user-generated documents. The new metadata field is read through an
 already-existing Tauri history command; its existing authorization posture is NOT thereby
 security-approved. The independent decisions in Issues #129 and #138 remain OPEN.
+
+
+## Detached UI correlation prerequisite and version-claim invalidation (DRAFT continuation, 2026-10-22)
+
+The detached `DocumentMatchOptInControl` now requires the same **read-only
+source-version/file-instance correlation** as the dedicated metadata gate.
+Its controlled props include a future `VersionClaimedExtractionSnapshot`,
+`indexedFile.availabilityState` and an explicit `ReadOnlyDocumentVersionHistory`
+result from an independently authorized read. The UI checks correspondence with
+`requested=false` before enabling the reference selector; it checks again
+**inside the deliberate Compare click handler with `requested=true`**.
+Merely invoking a disabled DOM button handler cannot bypass this check.
+
+No corresponding version history, wrong file instance, missing/changed source,
+unverified observation, unstable read or wrong SHA-256 disables the *optional
+comparison only* and hides any prior advisory. In addition, the volatile
+selection and review invalidation key now bind optional claimed
+`sourceContentVersionId` and `sourceSha256Hex` values. A new version/hash
+does not carry a previous opt-in reference selection forward—even when the
+`extractionSnapshotId` is accidentally reused by a future host.
+
+This is intentionally still an **unmounted, nonshipping and untrusted** UI
+boundary. Version/hash correspondence is necessary metadata corroboration but
+NOT an extractor receipt, current-byte verification, financial validation,
+authorized native read, audit trail or professional approval. No production
+structured extraction provider exists for indexed viewer files, and therefore
+there is no safe live path from the current `App.tsx` viewer to this UI.
+No new Tauri command, mutation, source rewrite, upload, migration, book
+reconciliation, sign-off or permissions change was added. Both the
+client-side gate and the new controlled props require a future independently
+reviewed provider and live direct-Tauri security acceptance prior to mounting.
+
+The existing `tests/document-match-advisory-flow.test.mjs` suite now exercises
+missing/foreign/unverified/unstable version histories, direct simulated clicks
+despite disabled controls, changed source availability, stale version claims,
+and even a newly internally consistent version that must not inherit an old
+book choice. These tests establish **frontend fail-closed behavior only**.
