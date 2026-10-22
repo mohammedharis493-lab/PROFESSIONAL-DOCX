@@ -43,22 +43,28 @@ const rules = Object.freeze([
     referenceField: "amountMinor", comparison: "integer-minor-units" }),
 ]);
 const visit = "viewer-open-1";
-const selected = () => chooseExplicitAdvisoryReference(visit, file, snapshot, "book-1");
+const HISTORY_READ_KEY = "fresh-history-read-1";
+const selected = () => chooseExplicitAdvisoryReference(
+  visit, file, snapshot, "book-1", HISTORY_READ_KEY,
+);
 const request = (overrides = {}) => requestExplicitOptionalMatch(
   overrides.visit ?? visit, overrides.file ?? file, overrides.snapshot === undefined ? snapshot : overrides.snapshot,
   overrides.references ?? references, overrides.rules ?? rules,
   overrides.selection === undefined ? selected() : overrides.selection,
+  overrides.historyReadKey === undefined ? HISTORY_READ_KEY : overrides.historyReadKey,
 );
 const current = (review, overrides = {}) => reviewIsCurrent(
   review, overrides.visit ?? visit, overrides.file ?? file,
   overrides.snapshot === undefined ? snapshot : overrides.snapshot,
   overrides.references ?? references, overrides.rules ?? rules,
   overrides.selection === undefined ? selected() : overrides.selection,
+  overrides.historyReadKey === undefined ? HISTORY_READ_KEY : overrides.historyReadKey,
 );
 function ui(overrides = {}) {
   const calls = { selections: [], reviews: [], clears: 0, unavailable: [], annotations: [] };
   const props = {
-    visitKey: visit, indexedFile: file, snapshot, history, references, rules,
+    visitKey: visit, indexedFile: file, snapshot, history,
+    historyReadKey: HISTORY_READ_KEY, references, rules,
     selection: null, review: null,
     onSelectionChange: x => calls.selections.push(x),
     onReview: x => calls.reviews.push(x),
@@ -157,7 +163,9 @@ test("Compare is the only UI path that produces a reference observation", () => 
 test("changing the explicit reference requires a fresh comparison", () => {
   const first = request();
   assert.equal(first.status, "ready");
-  const other = chooseExplicitAdvisoryReference(visit, file, snapshot, "book-2");
+  const other = chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-2", HISTORY_READ_KEY,
+  );
   assert.equal(current(first.review, {selection: other}), false);
   const second = request({selection: other});
   assert.equal(second.review.observation.outcome, "consistent");
@@ -284,7 +292,7 @@ test("flow and control have no Tauri, storage, network, file mutation or native 
   }
   assert.doesNotMatch(app, /document-match-opt-in-control|document-match-advisory-flow/);
   assert.match(uiSource, /onClick: compare/);
-  assert.match(flow, /selectionIsCurrent\(selection, visitKey, file, snapshot\)/);
+  assert.match(flow, /selectionIsCurrent\(selection, visitKey, file, snapshot, historyReadKey\)/);
   assert.match(flow, /volatile-optional-comparison-review/);
 });
 
@@ -463,4 +471,82 @@ test("revalidating cached findings never reads source bytes or mutates the compa
   assert.match(flow, /sameObservation\(review\.observation, fresh\.observation\)/);
   assert.match(flow, /inspectOptionalIndexedDocumentMatch\(file, snapshot!, matching\[0\], rules, true\)/);
   assert.doesNotMatch(flow, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
+});
+
+test("history refresh requires a new explicit book choice, even for identical metadata", () => {
+  const review = request().review;
+  assert.equal(current(review), true);
+  const newHistoryEpoch = "fresh-history-read-2";
+  // The native metadata is byte-for-byte identical; the host read epoch changed.
+  assert.equal(selectionIsCurrent(selected(), visit, file, snapshot, newHistoryEpoch), false);
+  assert.equal(current(review, {historyReadKey: newHistoryEpoch}), false);
+  assert.equal(request({historyReadKey: newHistoryEpoch}).reason, "stale-selection");
+  const {tree, html, calls} = ui({
+    historyReadKey: newHistoryEpoch, selection: selected(), review,
+  });
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Difference to review|Clear local comparison/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
+  allNodes(tree, "select")[0].props.onChange({
+    currentTarget: {value: "book-1"},
+  });
+  assert.equal(calls.selections.length, 1);
+  assert.equal(calls.selections[0].historyReadKey, newHistoryEpoch);
+  const fresh = request({
+    selection: calls.selections[0], historyReadKey: newHistoryEpoch,
+  });
+  assert.equal(fresh.status, "ready");
+  assert.equal(fresh.review.historyReadKey, newHistoryEpoch);
+  assert.equal(current(fresh.review, {
+    selection: calls.selections[0], historyReadKey: newHistoryEpoch,
+  }), true);
+});
+
+test("missing, whitespace, or wrong epoch disables comparison and hides stale review", () => {
+  const review = request().review;
+  for (const historyReadKey of ["", " ", null, undefined]) {
+    const {tree,html,calls} = ui({historyReadKey, selection: selected(), review});
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+    assert.match(html, /Document access is unaffected/);
+    allNodes(tree, "button")[0].props.onClick();
+    assert.deepEqual(calls.reviews, []);
+    assert.deepEqual(calls.unavailable, ["history-epoch-unavailable"]);
+  }
+  assert.equal(request({historyReadKey: "other-read"}).reason, "stale-selection");
+  assert.equal(current(review, {historyReadKey: "other-read"}), false);
+});
+
+test("a changed history response cannot silently reuse the prior epoch under the host contract", () => {
+  const priorReview = request().review;
+  const changed = {...history, entries: [{
+    ...history.entries[0], verificationState: "UNVERIFIED",
+  }]};
+  const blocked = ui({history: changed, selection: selected(), review: priorReview});
+  assert.doesNotMatch(blocked.html, /Difference to review|Clear local comparison/);
+  assert.equal(allNodes(blocked.tree, "button")[0].props.disabled, true);
+  // On recovery, a new read token is required even if all original row
+  // metadata is exactly restored by the native layer.
+  const recovered = ui({
+    history, historyReadKey: "history-read-after-recovery",
+    selection: selected(), review: priorReview,
+  });
+  assert.equal(allNodes(recovered.tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(recovered.html, /Difference to review|Clear local comparison/);
+});
+
+test("the history token is UI-only and cannot become a native permission grant", () => {
+  const flow = readFileSync("src/document-match-advisory-flow.ts", "utf8");
+  const control = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(control, /historyReadKey: string/);
+  assert.match(control, /historyReadKey, references, rules/);
+  assert.match(flow, /selection\.historyReadKey === historyReadKey/);
+  assert.match(flow, /review\.historyReadKey !== historyReadKey/);
+  assert.doesNotMatch(app, /document-match-opt-in-control/);
+  assert.doesNotMatch(control + flow, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
 });
