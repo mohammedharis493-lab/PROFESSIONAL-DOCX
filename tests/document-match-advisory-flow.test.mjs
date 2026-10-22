@@ -291,3 +291,20 @@ test("malformed externally supplied review never crashes or blocks the document"
     assert.match(html, /original document remains available/);
   }
 });
+
+test("forged observation identities or statuses never surface stale or unauthorized comparisons", () => {
+  const original = request().review;
+  const forged = [
+    {...original, observation: {...original.observation, documentId: "another-doc"}},
+    {...original, observation: {...original.observation, extractionSnapshotId: "another-snapshot"}},
+    {...original, observation: {...original.observation, referenceId: "another-book"}},
+    {...original, observation: {...original.observation, outcome: "not-requested"}},
+    {...original, observation: {...original.observation, findings: null}},
+    {...original, observation: {...original.observation, outcome: "malformed"}},
+  ];
+  for (const review of forged) {
+    assert.equal(current(review), false);
+    const {html} = ui({selection: selected(), review});
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+  }
+});
