@@ -117,9 +117,25 @@ test("missing book value remains not compared and preserves the existing extract
   const result = inspectOptionalDocumentMatch(
     document, { ...reference, fields: { currency: "INR" } }, rules, true,
   );
-  assert.equal(result.outcome, "suggestions");
+  assert.equal(result.outcome, "incomplete");
+  assert.equal(result.findings[0].reason, "reference-field-absent");
   assert.equal(result.findings[1].reason, "reference-field-absent");
   assert.equal(JSON.stringify(document), docBefore);
+});
+
+test("a real discrepancy stays a suggestion even if another reference field is missing", () => {
+  const { document, reference, rules } = inputs();
+  const compared = inspectOptionalDocumentMatch(
+    document,
+    { ...reference, fields: { voucherRef: "OTHER-REF", currency: "INR" } },
+    rules,
+    true,
+  );
+  assert.equal(compared.outcome, "suggestions");
+  assert.equal(compared.findings[0].status, "difference");
+  assert.equal(compared.findings[1].status, "not-compared");
+  assert.equal(compared.findings[1].reason, "reference-field-absent");
+  assert.equal(compared.blocksDocumentUse, false);
 });
 
 test("both missing values are explicitly different from a mismatch", () => {
