@@ -8,6 +8,7 @@ import type { ChangeEvent, ReactElement } from "react";
 import { DocumentMatchAdvisoryPanel } from "./document-match-advisory-panel.ts";
 import {
   chooseExplicitAdvisoryReference,
+  optionalReferenceFieldsKey,
   stampVolatileAdvisoryAnnotation,
   volatileAnnotationIsCurrent,
   requestExplicitOptionalMatch,
@@ -125,7 +126,8 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   try {
     validSelection = versionReady &&
       selectionIsCurrent(selection, visitKey, indexedFile, snapshot, historyReadKey) &&
-      uniqueRefs.some(option => option.id === selection!.referenceId);
+      uniqueRefs.some(option => option.id === selection!.referenceId &&
+        optionalReferenceFieldsKey(option.reference) === selection!.referenceFieldsKey);
     selectedId = validSelection ? selection!.referenceId : "";
     if (validSelection && reviewIsCurrent(
       review, visitKey, indexedFile, snapshot, references, rules, selection, historyReadKey,
@@ -156,6 +158,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
           historyStillCurrent()) {
         nextSelection = chooseExplicitAdvisoryReference(
           visitKey, indexedFile, snapshot, nextId, historyReadKey,
+          freshOptions.find(option => option.id === nextId)?.reference,
         );
       }
     } catch {
@@ -190,6 +193,12 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     }
     if (!selectedReference) {
       onUnavailable?.("reference-unavailable");
+      return;
+    }
+    // A user selected this reference at a particular set of book values.
+    // Same ID with new fields is NOT fresh consent to compare again.
+    if (optionalReferenceFieldsKey(selectedReference) !== selection!.referenceFieldsKey) {
+      onUnavailable?.("stale-selection");
       return;
     }
     const checked = correlateOptionalExtractionWithDocumentHistory(
