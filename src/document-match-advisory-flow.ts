@@ -26,6 +26,8 @@ export type ExplicitAdvisorySelection = Readonly<{
   extractionFieldsKey: string;
   /** Current explicitly chosen reference fields; local opt-in only. */
   referenceFieldsKey: string;
+  /** Exact comparison mapping configuration when reference was chosen; UI-only. */
+  comparisonRulesKey: string;
   /** Caller-rotated history-response epoch: UI invalidation ONLY, not proof. */
   historyReadKey?: string;
   /** UI-only binding to optional claimed version metadata, never trusted provenance. */
@@ -119,6 +121,31 @@ export function optionalReferenceFieldsKey(reference: OptionalReference): string
 }
 
 /**
+ * Exact UI invalidation for the full comparison mapping, including order.
+ * A mapping change must require a NEW selection, not only a new Compare.
+ * No rule is inferred; an explicitly selected empty mapping is still valid.
+ * This is NOT evidence of which rule was professionally approved.
+ */
+export function optionalComparisonRulesKey(rules: readonly AdvisoryComparisonRule[]): string | null {
+  try {
+    if (!Array.isArray(rules)) return null;
+    const ids = new Set<string>();
+    const entries = rules.map(rule => {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule) ||
+          !requiredId(rule.ruleId) || !requiredId(rule.label) ||
+          !requiredId(rule.documentField) || !requiredId(rule.referenceField) ||
+          (rule.comparison !== "exact-text" && rule.comparison !== "integer-minor-units") ||
+          ids.has(rule.ruleId)) throw new TypeError("Invalid optional comparison mapping");
+      ids.add(rule.ruleId);
+      return [rule.ruleId, rule.label, rule.documentField, rule.referenceField, rule.comparison];
+    });
+    return JSON.stringify(entries);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Exact, ordinary serialization for local review invalidation. Deliberately
  * makes NO assertion about underlying bytes, provenance, authorization or
  * matching confidence. All inputs must remain read-only while displayed.
@@ -149,6 +176,7 @@ export function chooseExplicitAdvisoryReference(
   referenceId: string,
   historyReadKey?: string,
   reference?: OptionalReference,
+  rules?: readonly AdvisoryComparisonRule[],
 ): ExplicitAdvisorySelection | null {
   if (!requiredId(visitKey) || !requiredId(referenceId) ||
       (historyReadKey !== undefined && !requiredId(historyReadKey)) ||
@@ -158,7 +186,8 @@ export function chooseExplicitAdvisoryReference(
       snapshot.fileInstanceId !== file.fileInstanceId) return null;
   const fieldsBinding = extractionFieldsKey(snapshot);
   const referenceBinding = reference ? optionalReferenceFieldsKey(reference) : null;
-  if (fieldsBinding === null || referenceBinding === null ||
+  const rulesBinding = rules ? optionalComparisonRulesKey(rules) : null;
+  if (fieldsBinding === null || referenceBinding === null || rulesBinding === null ||
       reference?.referenceId !== referenceId) return null;
 
   return Object.freeze({
@@ -167,6 +196,7 @@ export function chooseExplicitAdvisoryReference(
     extractionSnapshotId: snapshot.extractionSnapshotId, referenceId,
     extractionFieldsKey: fieldsBinding,
     referenceFieldsKey: referenceBinding,
+    comparisonRulesKey: rulesBinding,
     ...(historyReadKey === undefined ? {} : {historyReadKey}),
     ...versionClaims(snapshot),
   });
@@ -178,6 +208,7 @@ export function selectionIsCurrent(
   file: IndexedDocumentIdentity,
   snapshot: ReadOnlyExtractionFieldSnapshot | null,
   historyReadKey?: string,
+  rules?: readonly AdvisoryComparisonRule[],
 ): boolean {
   try {
   return !!selection && selection.scope === "volatile-optional-reference-selection" &&
@@ -190,6 +221,8 @@ export function selectionIsCurrent(
     selection.extractionFieldsKey !== null &&
     selection.extractionFieldsKey === extractionFieldsKey(snapshot) &&
     requiredId(selection.referenceFieldsKey) &&
+    requiredId(selection.comparisonRulesKey) &&
+    selection.comparisonRulesKey === optionalComparisonRulesKey(rules!) &&
     selection.sourceContentVersionId === versionClaims(snapshot).sourceContentVersionId &&
     selection.sourceSha256Hex === versionClaims(snapshot).sourceSha256Hex &&
     snapshot.documentId === file.documentId &&
@@ -215,7 +248,7 @@ export function requestExplicitOptionalMatch(
 ): OptionalMatchAttempt {
   if (!selection) return unavailable("no-explicit-selection");
   try {
-  if (!selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey)) {
+  if (!selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey, rules)) {
     return unavailable("stale-selection");
   }
   if (!Array.isArray(references)) return unavailable("reference-unavailable");
@@ -304,7 +337,7 @@ export function reviewIsCurrent(
 ): boolean {
   try {
   if (!review || review.scope !== "volatile-optional-comparison-review" ||
-      !selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey) ||
+      !selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey, rules) ||
       review.historyReadKey !== historyReadKey ||
       review.visitKey !== visitKey ||
       review.documentId !== file.documentId || review.fileInstanceId !== file.fileInstanceId ||
