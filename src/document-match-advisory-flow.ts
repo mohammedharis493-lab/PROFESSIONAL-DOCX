@@ -22,6 +22,8 @@ export type ExplicitAdvisorySelection = Readonly<{
   fileInstanceId: string;
   extractionSnapshotId: string;
   referenceId: string;
+  /** Exact value binding for local opt-in, NOT a source hash or provenance. */
+  extractionFieldsKey: string;
   /** Caller-rotated history-response epoch: UI invalidation ONLY, not proof. */
   historyReadKey?: string;
   /** UI-only binding to optional claimed version metadata, never trusted provenance. */
@@ -82,6 +84,22 @@ function fieldsKey(fields: AdvisoryFields): readonly (readonly [string, string, 
     .map(([key, value]) => [key, value === null ? "null" : typeof value, String(value)] as const);
 }
 
+/** Deterministic UI binding, not a digest/attestation. Bad field data fails closed. */
+function extractionFieldsKey(snapshot: ReadOnlyExtractionFieldSnapshot): string | null {
+  try {
+    const fields = snapshot.fields;
+    if (!fields || typeof fields !== "object" || Array.isArray(fields) ||
+        Object.values(fields).some(value =>
+          value !== null && value !== undefined &&
+          typeof value !== "string" && typeof value !== "number")) {
+      return null;
+    }
+    return JSON.stringify(fieldsKey(fields));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Exact, ordinary serialization for local review invalidation. Deliberately
  * makes NO assertion about underlying bytes, provenance, authorization or
@@ -119,11 +137,14 @@ export function chooseExplicitAdvisoryReference(
       !snapshot || !requiredId(snapshot.extractionSnapshotId) ||
       snapshot.documentId !== file.documentId ||
       snapshot.fileInstanceId !== file.fileInstanceId) return null;
+  const fieldsBinding = extractionFieldsKey(snapshot);
+  if (fieldsBinding === null) return null;
 
   return Object.freeze({
     scope: "volatile-optional-reference-selection" as const,
     visitKey, documentId: file.documentId, fileInstanceId: file.fileInstanceId,
     extractionSnapshotId: snapshot.extractionSnapshotId, referenceId,
+    extractionFieldsKey: fieldsBinding,
     ...(historyReadKey === undefined ? {} : {historyReadKey}),
     ...versionClaims(snapshot),
   });
@@ -143,6 +164,8 @@ export function selectionIsCurrent(
     !!file && selection.documentId === file.documentId &&
     selection.fileInstanceId === file.fileInstanceId &&
     !!snapshot && selection.extractionSnapshotId === snapshot.extractionSnapshotId &&
+    selection.extractionFieldsKey !== null &&
+    selection.extractionFieldsKey === extractionFieldsKey(snapshot) &&
     selection.sourceContentVersionId === versionClaims(snapshot).sourceContentVersionId &&
     selection.sourceSha256Hex === versionClaims(snapshot).sourceSha256Hex &&
     snapshot.documentId === file.documentId &&
