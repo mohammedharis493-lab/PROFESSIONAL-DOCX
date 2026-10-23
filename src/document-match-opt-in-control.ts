@@ -150,11 +150,19 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     }
   }
 
-  const snapshotAvailable = snapshot !== null &&
-    snapshot.documentId === indexedFile.documentId &&
-    snapshot.fileInstanceId === indexedFile.fileInstanceId &&
-    typeof snapshot.extractionSnapshotId === "string" &&
-    snapshot.extractionSnapshotId.trim().length > 0;
+  // The gate handles malformed read-only DTOs without throwing. Keep its
+  // detached presentation equally resilient if a future provider supplies
+  // a throwing identity getter or revoked proxy.
+  let snapshotAvailable = false;
+  try {
+    snapshotAvailable = snapshot !== null &&
+      snapshot.documentId === indexedFile.documentId &&
+      snapshot.fileInstanceId === indexedFile.fileInstanceId &&
+      typeof snapshot.extractionSnapshotId === "string" &&
+      snapshot.extractionSnapshotId.trim().length > 0;
+  } catch {
+    snapshotAvailable = false;
+  }
 
   return h("section", {
     className: "document-match-opt-in",
