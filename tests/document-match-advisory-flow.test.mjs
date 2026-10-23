@@ -1137,3 +1137,137 @@ test("reference binding remains purely local and does not activate a native read
   assert.doesNotMatch(app, /document-match-opt-in-control/);
   assert.doesNotMatch(flow+control, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage|create_workpaper_signoff/);
 });
+
+test("a comparison rule revision under the same IDs requires renewed explicit consent", () => {
+  const prior = selected();
+  const oldReview = request().review;
+  const changedRules = [{...rules[0], label: "Revised number label"}, rules[1]];
+  assert.equal(request({rules: changedRules}).status, "unavailable");
+  assert.equal(request({rules: changedRules}).reason, "stale-selection");
+  assert.equal(current(oldReview, {rules: changedRules}), false);
+  assert.equal(selectionIsCurrent(prior, visit, file, snapshot, HISTORY_READ_KEY, changedRules), false);
+  const {tree,html,calls}=ui({selection: prior, review: oldReview, rules: changedRules});
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
+  const renewed=chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[0], changedRules,
+  );
+  assert.ok(renewed);
+  assert.notEqual(renewed.comparisonRulesKey, prior.comparisonRulesKey);
+  assert.equal(request({rules: changedRules, selection: renewed}).status, "ready");
+});
+
+test("all mapping changes expire selection even with the same document and reference fields", () => {
+  const changes = [
+    [{...rules[0], ruleId: "number-v2"}, rules[1]],
+    [{...rules[0], label: "New label"}, rules[1]],
+    [{...rules[0], documentField: "another-field"}, rules[1]],
+    [{...rules[0], referenceField: "another-field"}, rules[1]],
+    [{...rules[0], comparison: "integer-minor-units"}, rules[1]],
+    [rules[1], rules[0]],
+    [rules[0]],
+    [...rules, {ruleId: "extra", label: "Extra", documentField: "number",
+      referenceField: "number", comparison: "exact-text"}],
+    [],
+  ];
+  for (const changedRules of changes) {
+    const selectedBefore = selected();
+    assert.equal(request({rules: changedRules}).reason, "stale-selection");
+    assert.equal(current(request().review, {rules: changedRules}), false);
+    const chosenAfter = chooseExplicitAdvisoryReference(
+      visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[0], changedRules,
+    );
+    assert.ok(chosenAfter);
+    assert.notEqual(chosenAfter.comparisonRulesKey, selectedBefore.comparisonRulesKey);
+  }
+});
+
+test("explicit empty rule mapping remains optional and returns a no-rules observation", () => {
+  const emptySelection = chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[0], [],
+  );
+  assert.ok(emptySelection);
+  assert.equal(emptySelection.comparisonRulesKey, "[]");
+  const outcome = request({rules: [], selection: emptySelection});
+  assert.equal(outcome.status, "ready");
+  assert.equal(outcome.review.observation.outcome, "no-rules");
+  assert.equal(outcome.blocksDocumentUse, false);
+  assert.equal(outcome.review.observation.requiresReupload, false);
+  assert.equal(request({rules: []}).reason, "stale-selection");
+});
+
+test("new mapping order is treated as changed opt-in, not inferred equivalence", () => {
+  const reordered = [rules[1], rules[0]];
+  const renewed = chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[0], reordered,
+  );
+  assert.ok(renewed);
+  assert.notEqual(renewed.comparisonRulesKey, selected().comparisonRulesKey);
+  assert.equal(request({rules: reordered, selection: renewed}).status, "ready");
+  assert.equal(request({rules: reordered}).reason, "stale-selection");
+});
+
+test("stale rendered Compare handler cannot silently reuse a changed rule mapping", () => {
+  const mutableRules = rules.map(rule => ({...rule}));
+  const prior = request().review;
+  const {tree,calls}=ui({rules: mutableRules,selection:selected(),review:prior});
+  assert.equal(allNodes(tree, "button")[0].props.disabled,false);
+  mutableRules[0].referenceField = "different-field";
+  allNodes(tree,"button")[0].props.onClick();
+  assert.deepEqual(calls.reviews,[]);
+  assert.deepEqual(calls.unavailable,["stale-selection"]);
+  assert.equal(current(prior,{rules:mutableRules}),false);
+});
+
+test("invalid mapping objects, duplicate IDs and unsupported modes never yield consent", () => {
+  const malformed = [
+    null,
+    {},
+    [{...rules[0],ruleId:""}],
+    [rules[0],{...rules[0]}],
+    [{...rules[0],comparison:"fuzzy"}],
+    [{...rules[0],documentField:""}],
+    [{...rules[0],label:null}],
+    [null],
+  ];
+  for (const changedRules of malformed) {
+    const chosen=chooseExplicitAdvisoryReference(
+      visit,file,snapshot,"book-1",HISTORY_READ_KEY,references[0],changedRules,
+    );
+    assert.equal(chosen,null);
+    assert.equal(request({rules:changedRules}).reason,"stale-selection");
+    const {tree,html}=ui({rules:changedRules,selection:selected(),review:request().review});
+    assert.equal(allNodes(tree,"button")[0].props.disabled,true);
+    assert.doesNotMatch(html,/Difference to review|Clear local comparison/);
+  }
+});
+
+test("missing or forged mapping key cannot authorize an optional Compare event", () => {
+  const original = selected();
+  assert.equal(chooseExplicitAdvisoryReference(
+    visit,file,snapshot,"book-1",HISTORY_READ_KEY,references[0],
+  ),null);
+  for (const binding of [null, "", "fake-mapping-key"]) {
+    const forged = {...original,comparisonRulesKey:binding};
+    assert.equal(selectionIsCurrent(forged,visit,file,snapshot,HISTORY_READ_KEY,rules),false);
+    assert.equal(request({selection:forged}).reason,"stale-selection");
+    const {tree}=ui({selection:forged,review:request().review});
+    assert.equal(allNodes(tree,"button")[0].props.disabled,true);
+  }
+});
+
+test("rule mapping is a local invalidation key, never an authorization or source edit", () => {
+  const flow=readFileSync("src/document-match-advisory-flow.ts","utf8");
+  const control=readFileSync("src/document-match-opt-in-control.ts","utf8");
+  const app=readFileSync("src/App.tsx","utf8");
+  assert.match(flow,/comparisonRulesKey: rulesBinding/);
+  assert.match(flow,/selection\.comparisonRulesKey === optionalComparisonRulesKey\(rules!\)/);
+  assert.match(control,/historyReadKey, rules,/);
+  assert.doesNotMatch(app,/document-match-opt-in-control/);
+  assert.doesNotMatch(flow+control,
+    /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile|create_workpaper_signoff/);
+});
