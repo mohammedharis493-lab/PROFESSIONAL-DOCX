@@ -484,3 +484,43 @@ Issues #129/#138, legacy L1–L4 and independent acceptance remain open.
 Regression tests cover same-ID changed values before/after render,
 type and field membership changes, canonical order, malformed book
 fields, forged/missing bindings, and the need for renewed explicit choice.
+
+
+## Voluntary choice expires when comparison mappings change (DRAFT, 2026-10-23)
+
+The same indexed document, extracted fields and explicitly selected book
+reference can yield materially different advisory findings when the
+comparison **rules** change. A prior selection was previously still usable
+for another Compare click after the mapping rule IDs, labels, source or book
+field paths, comparison modes, order or membership were revised. An older
+cached review was suppressed, but reference consent was not refreshed.
+
+The detached pure selection now also requires an explicit `rules` argument
+and stores `comparisonRulesKey`, an ordinary deterministic serialization
+of the rule IDs, labels, field mappings, modes and exact order. Creation
+rejects malformed/duplicate/unsupported rule configurations. The
+`selectionIsCurrent` guard checks the current mapping, and both the
+controlled selector and explicit Compare action supply this mapping. A
+changed mapping invalidates old voluntary reference consent, requiring a
+new selection before another advisory comparison. A deliberate selection
+with **zero** valid rules remains possible and returns a nonblocking
+`no-rules` observation after an explicit Compare click. Merely
+reordering otherwise equivalent rules also requires a new choice, because
+it changes the displayed finding order.
+
+This is a **breaking change only to an unmounted draft helper contract**;
+the draft control now supplies mapping rules to every selection/validation
+event. No production App caller is added. The mapping key is a forgeable
+client-side state-invalidation string, not a rule authorization record,
+authentic ledger mapping, evidence source digest, sign-off or security
+approval. In particular, an untrusted extraction or reference provider
+might fabricate consistent values and a mapping. Future native permission
+and source-byte provenance checks are still required before any App mount.
+No accounting action, source document edit, forced re-upload, reconciliation
+or persistence is introduced. DEC-01–08, Issues #129/#138, L1–L4,
+direct-Tauri denial tests and independent security review remain open.
+
+Additional regression coverage targets changed rule IDs, labels, field
+paths, comparison modes and ordering; invalid or duplicate rules;
+empty-rule review; forged/missing mapping keys; and rule changes after
+React render but before an already-mounted Compare handler runs.
