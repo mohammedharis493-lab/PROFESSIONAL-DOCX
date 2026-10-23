@@ -421,7 +421,8 @@ test("an old explicitly selected book cannot silently retarget an otherwise matc
 test("detached UI requires source history on both render and Compare click paths", () => {
   const source = readFileSync("src/document-match-opt-in-control.ts", "utf8");
   assert.match(source, /correlateOptionalExtractionWithDocumentHistory\(/);
-  assert.match(source, /indexedFile, snapshot, history, selectedReference \?\? null, rules, true/);
+  assert.match(source, /indexedFile, snapshot, history, selectedReference, rules, true/);
+  assert.match(source, /if \(!selectedReference\) \{/);
   assert.match(source, /disabled: !versionReady/);
   assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage/);
 });
@@ -768,7 +769,8 @@ test("malformed annotation delivery never leaks into the viewer host callback", 
 test("history and annotation freshness are checked at events, not solely at render", () => {
   const source = readFileSync("src/document-match-opt-in-control.ts", "utf8");
   assert.match(source, /function historyStillCurrent\(\)/);
-  assert.match(source, /const nextSelection = historyStillCurrent\(\)/);
+  assert.match(source, /freshOptions\.some\(option => option\.id === nextId\)/);
+  assert.match(source, /historyStillCurrent\(\)\) \{/);
   assert.match(source, /if \(!historyStillCurrent\(\)\) return;/);
   assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile/);
   const app = readFileSync("src/App.tsx", "utf8");
