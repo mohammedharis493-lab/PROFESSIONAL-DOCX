@@ -216,8 +216,17 @@ test("reference removal or ambiguity suppresses stale review and refuses new com
   assert.equal(allNodes(tree, "button")[0].props.disabled, true);
 });
 
-test("incomplete fields are advisory-only and continue to permit document use", () => {
-  const missing = request({snapshot: {...snapshot, fields: {}}});
+test("changed incomplete fields require renewed opt-in and never block document use", () => {
+  const missingSnapshot = {...snapshot, fields: {}};
+  const stale = request({snapshot: missingSnapshot});
+  assert.equal(stale.status, "unavailable");
+  assert.equal(stale.reason, "stale-selection");
+  assert.equal(stale.blocksDocumentUse, false);
+  const selection = chooseExplicitAdvisoryReference(
+    visit, file, missingSnapshot, "book-1", HISTORY_READ_KEY,
+  );
+  assert.ok(selection);
+  const missing = request({snapshot: missingSnapshot, selection});
   assert.equal(missing.status, "ready");
   assert.equal(missing.review.observation.outcome, "incomplete");
   assert.equal(missing.blocksDocumentUse, false);
@@ -764,4 +773,92 @@ test("history and annotation freshness are checked at events, not solely at rend
   assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile/);
   const app = readFileSync("src/App.tsx", "utf8");
   assert.doesNotMatch(app, /document-match-opt-in-control/);
+});
+
+test("extraction field edits under reused snapshot/version ID expire reference consent", () => {
+  const priorSelection = selected();
+  const priorReview = request().review;
+  assert.equal(typeof priorSelection.extractionFieldsKey, "string");
+  const changed = {...snapshot, fields: {...snapshot.fields, number: "INV-200"}};
+  assert.equal(selectionIsCurrent(priorSelection, visit, file, changed, HISTORY_READ_KEY), false);
+  assert.equal(request({snapshot: changed}).reason, "stale-selection");
+  assert.equal(current(priorReview, {snapshot: changed}), false);
+  const {tree,html,calls} = ui({snapshot: changed, selection: priorSelection, review: priorReview});
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
+  assert.deepEqual(calls.reviews, []);
+  const renewed = chooseExplicitAdvisoryReference(
+    visit, file, changed, "book-1", HISTORY_READ_KEY,
+  );
+  assert.notEqual(renewed.extractionFieldsKey, priorSelection.extractionFieldsKey);
+  assert.equal(selectionIsCurrent(renewed, visit, file, changed, HISTORY_READ_KEY), true);
+  const compared = request({snapshot: changed, selection: renewed});
+  assert.equal(compared.status, "ready");
+  assert.equal(compared.review.observation.outcome, "suggestions");
+});
+
+test("canonical opt-in binding ignores field order but detects changes in type or value", () => {
+  const selectedNow = selected();
+  const reordered = {
+    ...snapshot, fields: {amountMinor: 12500, number: "INV-100"},
+  };
+  assert.equal(selectionIsCurrent(selectedNow, visit, file, reordered, HISTORY_READ_KEY), true);
+  for (const fields of [
+    {number: "INV-100", amountMinor: "12500"},
+    {number: "INV-100", amountMinor: 12501},
+    {number: "INV-100"},
+    {number: "INV-100", amountMinor: 12500, ignoredNewField: 0},
+  ]) {
+    assert.equal(selectionIsCurrent(
+      selectedNow, visit, file, {...snapshot, fields}, HISTORY_READ_KEY,
+    ), false);
+    assert.equal(request({snapshot: {...snapshot, fields}}).reason, "stale-selection");
+  }
+});
+
+test("malformed extraction fields invalidate consent instead of causing optional UI errors", () => {
+  const throwingFields = Object.defineProperty({}, "number", {
+    enumerable: true,
+    get() { throw new Error("bad optional field accessor"); },
+  });
+  for (const fields of [null, [], {number: {nested: true}}, throwingFields]) {
+    const invalidSnapshot = {...snapshot, fields};
+    assert.equal(
+      chooseExplicitAdvisoryReference(visit, file, invalidSnapshot, "book-1", HISTORY_READ_KEY),
+      null,
+    );
+    assert.equal(selectionIsCurrent(selected(), visit, file, invalidSnapshot, HISTORY_READ_KEY), false);
+    assert.equal(request({snapshot: invalidSnapshot}).reason, "stale-selection");
+  }
+});
+
+test("a selection with missing or substituted field binding cannot enable Compare", () => {
+  const withoutBinding = {...selected()};
+  delete withoutBinding.extractionFieldsKey;
+  const forged = [
+    withoutBinding,
+    {...selected(), extractionFieldsKey: ""},
+    {...selected(), extractionFieldsKey: "not-the-current-fields"},
+  ];
+  for (const selection of forged) {
+    assert.equal(selectionIsCurrent(selection, visit, file, snapshot, HISTORY_READ_KEY), false);
+    assert.equal(request({selection}).reason, "stale-selection");
+    const {tree,html,calls} = ui({selection, review: request().review});
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.doesNotMatch(html, /Difference to review|Clear local comparison/);
+    allNodes(tree, "button")[0].props.onClick();
+    assert.deepEqual(calls.reviews, []);
+  }
+});
+
+test("field binding stays an unmounted local invalidation string, not provenance", () => {
+  const source = readFileSync("src/document-match-advisory-flow.ts", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(source, /extractionFieldsKey: fieldsBinding/);
+  assert.match(source, /selection\.extractionFieldsKey === extractionFieldsKey\(snapshot\)/);
+  assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage/);
+  assert.doesNotMatch(app, /document-match-opt-in-control|extractionFieldsKey/);
 });
