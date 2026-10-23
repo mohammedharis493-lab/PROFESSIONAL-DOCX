@@ -374,3 +374,35 @@ direct-Tauri permission/denial tests, and independent acceptance remain
 outstanding. Added regression coverage for reused snapshot IDs with changed
 fields, canonical reordering, type drift, malformed fields and renewed
 explicit opt-in.
+
+
+## Throwing or revoked read-only metadata input (DRAFT continuation, 2026-10-23)
+
+The detached `correlateOptionalExtractionWithDocumentHistory` gate previously
+caught malformed comparison field errors **after** history correlation, but
+file/extraction/history preflight read operations could still throw if a future
+provider or integration handed it an object with a throwing getter, revoked
+Proxy or corrupted history row. Such a failure would be unacceptable as an
+original-document viewer error because matching is optional.
+
+The full metadata preflight and correlation now returns a frozen,
+`status="unavailable"` / `reason="comparison-input-invalid"`,
+nonblocking result if a metadata getter, history filter or proxy operation
+throws. Valid source-version, file-instance and SHA-256 correspondence
+continues to be checked as before, and an existing valid optional comparison
+is not performed without an explicit request. The detached React control's
+snapshot-status rendering separately catches thrown identity getters;
+direct selected-reference and annotation event paths use the same
+nonthrowing pure metadata gate. Tests inject throwing file availability,
+document and snapshot identity, version/hash, history request/row fields,
+revoked proxies, and metadata that becomes invalid **after UI render**.
+
+A caught exception is **not** proof of malware, authenticity of the other
+fields, revocation of a native permission or valid source bytes. The returned
+unavailable state disables only the detached optional comparison, never
+forces source editing or re-upload, never invalidates the indexed document
+and never modifies accounting books. No production extraction provider,
+Tauri command, filesystem access, persistence, formal review/sign-off or
+`App.tsx` mount is introduced. Future trusted provider design and native
+authorization/denial tests remain prerequisites under Issues #129/#138,
+DEC-01–08 and the previously recorded acceptance hold points.
