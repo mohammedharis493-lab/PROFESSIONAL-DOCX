@@ -177,6 +177,14 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
           : versionCheck.reason!);
       return;
     }
+    // A mapping revision invalidates the user choice, even if the same
+    // source document and book reference are still available.
+    if (!selectionIsCurrent(
+      selection, visitKey, indexedFile, snapshot, historyReadKey, rules,
+    )) {
+      onUnavailable?.("stale-selection");
+      return;
+    }
     // The option list and selection may have changed since render without a
     // React state update. Recheck at the event boundary, not just disabled UI.
     let selectedReference: OptionalReference | null = null;
