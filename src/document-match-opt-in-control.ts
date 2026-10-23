@@ -67,6 +67,35 @@ export type DocumentMatchOptInControlProps = Readonly<{
 }>;
 
 /**
+ * Each option is a user-visible reference ID, not an accounting match.
+ * Invalid/duplicate/read-error lists fail closed AS A WHOLE so one bad entry
+ * cannot escape validation, crash render, or revive a previous selection.
+ * Do not open, sort by similarity, mutate or select any reference here.
+ */
+function distinctReferenceOptions(references: readonly OptionalReference[]): readonly Readonly<{
+  id: string;
+  reference: OptionalReference;
+}>[] {
+  try {
+    if (!Array.isArray(references)) return [];
+    const ids = new Set<string>();
+    return references.map(reference => {
+      if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
+        throw new TypeError("Malformed optional reference");
+      }
+      const id = reference.referenceId;
+      if (typeof id !== "string" || id.trim().length === 0 || ids.has(id)) {
+        throw new TypeError("Invalid or ambiguous optional reference ID");
+      }
+      ids.add(id);
+      return { id, reference };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * A document can always be opened, previewed and managed independently of this
  * component. A distinct, explicit button is the only matching trigger.
  */
@@ -77,12 +106,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     onUnavailable, onLocalAnnotation,
   } = props;
 
-  const uniqueRefs = Array.isArray(references) ? references.filter((ref, index) =>
-    ref && typeof ref.referenceId === "string" &&
-    ref.referenceId.trim().length > 0 &&
-    references.findIndex(candidate => candidate?.referenceId === ref.referenceId) === index &&
-    references.filter(candidate => candidate?.referenceId === ref.referenceId).length === 1,
-  ) : [];
+  const uniqueRefs = distinctReferenceOptions(references);
   // requested=false never compares document/reference fields on render.
   // Metadata agreement is not extraction provenance or authorization.
   const versionCheck = correlateOptionalExtractionWithDocumentHistory(
@@ -92,13 +116,25 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   // is a host contract violation; no client epoch can prove native freshness.
   const epochReady = typeof historyReadKey === "string" && historyReadKey.trim().length > 0;
   const versionReady = versionCheck.status === "correlated" && epochReady;
-  const validSelection = versionReady &&
-    selectionIsCurrent(selection, visitKey, indexedFile, snapshot, historyReadKey) &&
-    uniqueRefs.some(reference => reference.referenceId === selection!.referenceId);
-  const selectedId = validSelection ? selection!.referenceId : "";
-  const currentReview = validSelection && reviewIsCurrent(
-    review, visitKey, indexedFile, snapshot, references, rules, selection, historyReadKey,
-  ) ? review : null;
+  // Controlled props may arrive from an eventually trusted provider. These
+  // checks are presentation safety only; malformed client state must not
+  // interrupt the original document viewer.
+  let validSelection = false;
+  let currentReview: VolatileAdvisoryReview | null = null;
+  let selectedId = "";
+  try {
+    validSelection = versionReady &&
+      selectionIsCurrent(selection, visitKey, indexedFile, snapshot, historyReadKey) &&
+      uniqueRefs.some(option => option.id === selection!.referenceId);
+    selectedId = validSelection ? selection!.referenceId : "";
+    if (validSelection && reviewIsCurrent(
+      review, visitKey, indexedFile, snapshot, references, rules, selection, historyReadKey,
+    )) currentReview = review;
+  } catch {
+    validSelection = false;
+    currentReview = null;
+    selectedId = "";
+  }
 
   // Render-time correlation only controls what is shown. An independently
   // supplied history/reference object may be replaced or mutated before an
@@ -110,14 +146,21 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   }
 
   function selectReference(event: ChangeEvent<HTMLSelectElement>): void {
-    const nextId = event.currentTarget.value;
-    const eligibleNow = Array.isArray(references) && references.filter(reference =>
-      reference && reference.referenceId === nextId,
-    ).length === 1;
-    const nextSelection = historyStillCurrent() && nextId && eligibleNow &&
-      uniqueRefs.some(reference => reference.referenceId === nextId)
-      ? chooseExplicitAdvisoryReference(visitKey, indexedFile, snapshot, nextId, historyReadKey)
-      : null;
+    let nextSelection: ExplicitAdvisorySelection | null = null;
+    try {
+      const nextId = event.currentTarget.value;
+      const freshOptions = distinctReferenceOptions(references);
+      if (typeof nextId === "string" &&
+          uniqueRefs.some(option => option.id === nextId) &&
+          freshOptions.some(option => option.id === nextId) &&
+          historyStillCurrent()) {
+        nextSelection = chooseExplicitAdvisoryReference(
+          visitKey, indexedFile, snapshot, nextId, historyReadKey,
+        );
+      }
+    } catch {
+      // Malformed/revoked event, reference or snapshot input clears opt-in.
+    }
     onClearReview();
     onSelectionChange(nextSelection);
   }
@@ -130,11 +173,27 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
           : versionCheck.reason!);
       return;
     }
-    const selectedReference = uniqueRefs.find(
-      reference => reference.referenceId === selection!.referenceId,
-    );
+    // The option list and selection may have changed since render without a
+    // React state update. Recheck at the event boundary, not just disabled UI.
+    let selectedReference: OptionalReference | null = null;
+    try {
+      const latestOptions = distinctReferenceOptions(references);
+      if (historyStillCurrent() && selectionIsCurrent(
+        selection, visitKey, indexedFile, snapshot, historyReadKey,
+      )) {
+        selectedReference = latestOptions.find(
+          option => option.id === selection!.referenceId,
+        )?.reference ?? null;
+      }
+    } catch {
+      selectedReference = null;
+    }
+    if (!selectedReference) {
+      onUnavailable?.("reference-unavailable");
+      return;
+    }
     const checked = correlateOptionalExtractionWithDocumentHistory(
-      indexedFile, snapshot, history, selectedReference ?? null, rules, true,
+      indexedFile, snapshot, history, selectedReference, rules, true,
     );
     if (checked.status !== "correlated" || checked.preparation.status !== "ready") {
       onUnavailable?.(checked.status === "unavailable" ? checked.reason : "extraction-unavailable");
@@ -189,10 +248,10 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
         onChange: selectReference,
       },
         h("option", { value: "" }, "No reference selected"),
-        ...uniqueRefs.map(reference => h("option", {
-          value: reference.referenceId,
-          key: reference.referenceId,
-        }, reference.referenceId)),
+        ...uniqueRefs.map(option => h("option", {
+          value: option.id,
+          key: option.id,
+        }, option.id)),
       ),
     ),
     h("button", {
