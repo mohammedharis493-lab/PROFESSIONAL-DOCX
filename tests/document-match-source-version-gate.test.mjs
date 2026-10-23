@@ -295,3 +295,94 @@ test("existing native history DTO and SQLite query expose the same stored file i
   // No new Tauri command or native mutation is necessary to get instance identity.
   assert.doesNotMatch(native, /fn (?:inspect|run|request)_optional_document_match/);
 });
+
+function throwingField(name) {
+  return Object.defineProperty({}, name, {
+    enumerable: true,
+    get() { throw new Error("Malformed read-only metadata accessor"); },
+  });
+}
+
+test("throwing file identity and availability accessors never disrupt document use", () => {
+  for (const property of ["documentId", "fileInstanceId", "availabilityState"]) {
+    const malformedFile = {...file};
+    Object.defineProperty(malformedFile, property, {
+      enumerable: true, get() { throw new Error("malformed indexed file"); },
+    });
+    for (const requested of [false, true]) {
+      denied("comparison-input-invalid", {file: malformedFile, requested});
+    }
+  }
+});
+
+test("throwing extraction identity/version accessors fail closed before correlation", () => {
+  for (const property of [
+    "documentId", "fileInstanceId", "extractionSnapshotId",
+    "sourceContentVersionId", "sourceSha256Hex",
+  ]) {
+    const malformedSnapshot = {...snapshot};
+    Object.defineProperty(malformedSnapshot, property, {
+      enumerable: true, get() { throw new Error("malformed extraction claim"); },
+    });
+    for (const requested of [false, true]) {
+      denied("comparison-input-invalid", {snapshot: malformedSnapshot, requested});
+    }
+  }
+});
+
+test("throwing history request, entries, version and verification fields stay nonblocking", () => {
+  for (const property of ["requestedDocumentId", "entries"]) {
+    const malformedHistory = {...history};
+    Object.defineProperty(malformedHistory, property, {
+      enumerable: true, get() { throw new Error("history request unreadable"); },
+    });
+    denied("comparison-input-invalid", {history: malformedHistory, requested: true});
+  }
+  for (const property of [
+    "contentVersionId", "fileInstanceId", "sha256Hex",
+    "verificationState", "sourceStableDuringRead",
+  ]) {
+    const malformedRow = {...history.entries[0]};
+    Object.defineProperty(malformedRow, property, {
+      enumerable: true, get() { throw new Error("history row unreadable"); },
+    });
+    denied("comparison-input-invalid", {
+      history: {...history, entries: [malformedRow]}, requested: true,
+    });
+  }
+});
+
+test("revoked metadata proxies cannot throw through the detached source gate", () => {
+  const revokedFile = Proxy.revocable({}, {});
+  revokedFile.revoke();
+  denied("comparison-input-invalid", {file: revokedFile.proxy});
+  const revokedSnapshot = Proxy.revocable({}, {});
+  revokedSnapshot.revoke();
+  denied("comparison-input-invalid", {snapshot: revokedSnapshot.proxy});
+  const revokedHistory = Proxy.revocable({}, {});
+  revokedHistory.revoke();
+  denied("comparison-input-invalid", {history: revokedHistory.proxy});
+  const revokedEntry = Proxy.revocable({}, {});
+  revokedEntry.revoke();
+  denied("comparison-input-invalid", {
+    history: {...history, entries: [revokedEntry.proxy]},
+  });
+});
+
+test("erroring unrelated version rows never authorize a guessed fallback version", () => {
+  const badRow = throwingField("contentVersionId");
+  denied("comparison-input-invalid", {
+    history: {...history, entries: [badRow, history.entries[0]]},
+    requested: true,
+  });
+  const normal = check({requested: true});
+  assert.equal(normal.status, "correlated");
+  nonblocking(normal);
+});
+
+test("source gate protects complete metadata preflight and never touches native authority", () => {
+  const source = readFileSync("src/document-match-source-version-gate.ts", "utf8");
+  assert.match(source, /Even preflight history\/file\/snapshot getters and array operations can/);
+  assert.doesNotMatch(source,
+    /@tauri-apps|invoke\(|fetch\(|fs\.write|writeFile|localStorage|sessionStorage/);
+});
