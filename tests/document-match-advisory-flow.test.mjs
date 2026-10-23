@@ -862,3 +862,75 @@ test("field binding stays an unmounted local invalidation string, not provenance
   assert.doesNotMatch(source, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage/);
   assert.doesNotMatch(app, /document-match-opt-in-control|extractionFieldsKey/);
 });
+
+test("malformed snapshot identity getters cannot crash detached optional matching UI", () => {
+  for (const property of [
+    "documentId", "fileInstanceId", "extractionSnapshotId", "sourceContentVersionId",
+  ]) {
+    const malformed = {...snapshot};
+    Object.defineProperty(malformed, property, {
+      enumerable: true,
+      get() { throw new Error("broken optional extraction metadata"); },
+    });
+    const {html,tree,calls} = ui({snapshot: malformed, selection: selected(), review: request().review});
+    assert.match(html, /Your original document remains available/);
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    allNodes(tree, "button")[0].props.onClick();
+    assert.deepEqual(calls.reviews, []);
+    assert.deepEqual(calls.unavailable, ["comparison-input-invalid"]);
+  }
+});
+
+test("malformed selected file or history getters disable only optional UI", () => {
+  const badFile = {...file};
+  Object.defineProperty(badFile, "documentId", {
+    enumerable: true, get() { throw new Error("inaccessible file metadata"); },
+  });
+  const badHistory = {...history};
+  Object.defineProperty(badHistory, "entries", {
+    enumerable: true, get() { throw new Error("unreadable history"); },
+  });
+  for (const overrides of [{indexedFile: badFile}, {history: badHistory}]) {
+    const {html,tree,calls} = ui({
+      ...overrides, selection: selected(), review: request().review,
+    });
+    assert.match(html, /original document remains available/);
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    allNodes(tree, "button")[0].props.onClick();
+    assert.deepEqual(calls.reviews, []);
+    assert.deepEqual(calls.unavailable, ["comparison-input-invalid"]);
+  }
+});
+
+test("malformed history on stale handlers cannot create a new selection or annotation", () => {
+  const mutableHistory = {...history, entries: history.entries.map(row => ({...row}))};
+  const review = request().review;
+  const {tree,calls} = ui({history: mutableHistory, selection: selected(), review});
+  const selector = allNodes(tree, "select")[0];
+  const panel = allNodes(tree, DocumentMatchAdvisoryPanel)[0];
+  assert.ok(panel);
+  Object.defineProperty(mutableHistory.entries[0], "fileInstanceId", {
+    get() { throw new Error("history row failed after render"); },
+  });
+  assert.doesNotThrow(() => selector.props.onChange({currentTarget: {value: "book-1"}}));
+  assert.deepEqual(calls.selections, [null]);
+  const note = noteOptionalMatchFinding(review.observation, "number", "dismissed");
+  assert.doesNotThrow(() => panel.props.onLocalAnnotation(note));
+  assert.deepEqual(calls.annotations, []);
+  assert.deepEqual(calls.reviews, []);
+});
+
+test("malformed metadata is a presentation-only failure, not a permission or source edit", () => {
+  const gate = readFileSync("src/document-match-source-version-gate.ts", "utf8");
+  const control = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(gate, /Even preflight history\/file\/snapshot getters/);
+  assert.match(control, /snapshotAvailable = false;/);
+  assert.doesNotMatch(app, /document-match-opt-in-control/);
+  assert.doesNotMatch(gate + control,
+    /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
+});
