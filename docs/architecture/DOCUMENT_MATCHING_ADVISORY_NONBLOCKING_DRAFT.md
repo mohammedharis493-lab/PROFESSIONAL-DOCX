@@ -406,3 +406,39 @@ Tauri command, filesystem access, persistence, formal review/sign-off or
 `App.tsx` mount is introduced. Future trusted provider design and native
 authorization/denial tests remain prerequisites under Issues #129/#138,
 DEC-01–08 and the previously recorded acceptance hold points.
+
+
+## Untrusted reference option list / stale event safety (DRAFT, 2026-10-23)
+
+The detached control previously read `referenceId` properties repeatedly
+during render, explicit selection and Compare, and pure review helpers
+filtered reference lists outside their exception boundary. A read-only
+future host that supplied an invalid reference, throwing getter, revoked
+proxy or a list modified after UI render could therefore throw into the
+document viewer or leave stale optional consent usable.
+
+The still-UNMOUNTED `DocumentMatchOptInControl` now derives explicit
+reference options through a **read-only, whole-list fail-closed**
+`distinctReferenceOptions` check. Empty, non-string or duplicate IDs,
+malformed entries and throwing/revoked getters yield no selectable options;
+there is **no inferred candidate or automatic reference association**.
+Option IDs are read and normalized only for safe display; React still
+escapes them. Select and Compare recheck the current list at event time,
+not only the old render snapshot, and refuse a now-ambiguous, missing or
+unreadable option. A broken event clears only volatile opt-in, not the
+original indexed document. The pure selection/review/annotation guards
+and explicit optional comparison path now also catch throwing host
+metadata, returning a local unavailable status or false instead of
+propagating a viewer exception.
+
+The defensive checks neither authenticate the reference source nor prove
+it is a ledger record, prevent a malicious host from forging consistent
+input, establish extraction provenance, authorize a native file-history
+read, or constitute professional approval. The control remains detached
+from `App.tsx`; no Tauri API, file write, stored annotation, ledger
+reconciliation, mandatory matching, source modification or re-upload
+requirement was added. Frontend synthetic negative tests cover broken
+getters, revoked arrays/proxies, duplicate references added after render,
+stale selection/Compare clicks, pure comparison/annotation denial, and
+malformed event objects. The independent direct-Tauri and product/security
+decision gates remain open (DEC-01–08, Issues #129/#138, L1–L4).
