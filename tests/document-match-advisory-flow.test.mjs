@@ -934,3 +934,108 @@ test("malformed metadata is a presentation-only failure, not a permission or sou
   assert.doesNotMatch(gate + control,
     /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|fs\.write|writeFile/);
 });
+
+test("malformed reference getters never crash detached optional list or viewer", () => {
+  const bad = {...references[0]};
+  Object.defineProperty(bad, "referenceId", {
+    enumerable: true, get() { throw new Error("reference provider getter failed"); },
+  });
+  for (const supplied of [
+    [bad, references[1]],
+    [references[0], null],
+    [references[0], {referenceId: "", fields: {}}],
+    [references[0], {...references[0]}],
+  ]) {
+    const {tree,html,calls} = ui({
+      references: supplied, selection: selected(), review: request().review,
+    });
+    assert.match(html, /Your original document remains available/);
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+    assert.deepEqual(calls.reviews, []);
+  }
+});
+
+test("revoked reference proxies and arrays disable only optional matching", () => {
+  const ref = Proxy.revocable({...references[0]}, {});
+  ref.revoke();
+  const list = Proxy.revocable([...references], {});
+  list.revoke();
+  for (const supplied of [[ref.proxy], list.proxy]) {
+    const {tree,html} = ui({
+      references: supplied, selection: selected(), review: request().review,
+    });
+    assert.equal(allNodes(tree, "select")[0].props.disabled, true);
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.match(html, /original document remains available/);
+  }
+});
+
+test("pure optional compare and review guards reject throwing reference lists", () => {
+  const malformed = {...references[0]};
+  Object.defineProperty(malformed, "referenceId", {
+    enumerable: true, get() { throw new Error("reference read failed"); },
+  });
+  const supplied = [malformed];
+  const attempted = request({references: supplied});
+  assert.equal(attempted.status, "unavailable");
+  assert.equal(attempted.reason, "invalid-comparison-input");
+  assert.equal(attempted.blocksDocumentUse, false);
+  assert.equal(current(request().review, {references: supplied}), false);
+  const note = stampVolatileAdvisoryAnnotation(
+    request().review,
+    noteOptionalMatchFinding(request().review.observation, "number", "dismissed"),
+  );
+  assert.equal(annotationCurrent(note, request().review, {references: supplied}), false);
+});
+
+test("a duplicate added after rendering cannot authorize a cached Compare handler", () => {
+  const supplied = references.map(reference => ({...reference}));
+  const {tree,calls} = ui({references: supplied, selection: selected()});
+  assert.equal(allNodes(tree, "button")[0].props.disabled, false);
+  supplied.push({...supplied[0]});
+  assert.doesNotThrow(() => allNodes(tree, "button")[0].props.onClick());
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["reference-unavailable"]);
+});
+
+test("a reference getter becoming unreadable after render blocks Select and Compare", () => {
+  const supplied = references.map(reference => ({...reference}));
+  const {tree,calls} = ui({references: supplied, selection: selected()});
+  assert.equal(allNodes(tree, "button")[0].props.disabled, false);
+  Object.defineProperty(supplied[0], "referenceId", {
+    get() { throw new Error("reference revoked after render"); },
+  });
+  assert.doesNotThrow(() => allNodes(tree, "select")[0].props.onChange({
+    currentTarget: {value: "book-1"},
+  }));
+  assert.deepEqual(calls.selections, [null]);
+  assert.equal(calls.clears, 1);
+  assert.doesNotThrow(() => allNodes(tree, "button")[0].props.onClick());
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["reference-unavailable"]);
+});
+
+test("a malformed select event clears only local opt-in", () => {
+  const {tree,calls} = ui({selection: selected()});
+  const maliciousEvent = {
+    get currentTarget() {throw new Error("detached selector was destroyed");},
+  };
+  assert.doesNotThrow(() => allNodes(tree, "select")[0].props.onChange(maliciousEvent));
+  assert.deepEqual(calls.selections, [null]);
+  assert.equal(calls.clears, 1);
+  assert.deepEqual(calls.reviews, []);
+});
+
+test("reference option ID checks remain unmounted and independent of native authority", () => {
+  const control = readFileSync("src/document-match-opt-in-control.ts", "utf8");
+  const flow = readFileSync("src/document-match-advisory-flow.ts", "utf8");
+  const app = readFileSync("src/App.tsx", "utf8");
+  assert.match(control, /function distinctReferenceOptions\(/);
+  assert.match(control, /const latestOptions = distinctReferenceOptions\(references\)/);
+  assert.match(control, /const freshOptions = distinctReferenceOptions\(references\)/);
+  assert.doesNotMatch(app, /document-match-opt-in-control/);
+  assert.doesNotMatch(control + flow,
+    /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile|fs\.write|create_workpaper_signoff/);
+});
