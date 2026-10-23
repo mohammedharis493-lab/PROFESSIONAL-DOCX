@@ -48,7 +48,7 @@ const rules = Object.freeze([
 const visit = "viewer-open-1";
 const HISTORY_READ_KEY = "fresh-history-read-1";
 const selected = () => chooseExplicitAdvisoryReference(
-  visit, file, snapshot, "book-1", HISTORY_READ_KEY,
+  visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[0],
 );
 const request = (overrides = {}) => requestExplicitOptionalMatch(
   overrides.visit ?? visit, overrides.file ?? file, overrides.snapshot === undefined ? snapshot : overrides.snapshot,
@@ -167,7 +167,7 @@ test("changing the explicit reference requires a fresh comparison", () => {
   const first = request();
   assert.equal(first.status, "ready");
   const other = chooseExplicitAdvisoryReference(
-    visit, file, snapshot, "book-2", HISTORY_READ_KEY,
+    visit, file, snapshot, "book-2", HISTORY_READ_KEY, references[1],
   );
   assert.equal(current(first.review, {selection: other}), false);
   const second = request({selection: other});
@@ -223,7 +223,7 @@ test("changed incomplete fields require renewed opt-in and never block document 
   assert.equal(stale.reason, "stale-selection");
   assert.equal(stale.blocksDocumentUse, false);
   const selection = chooseExplicitAdvisoryReference(
-    visit, file, missingSnapshot, "book-1", HISTORY_READ_KEY,
+    visit, file, missingSnapshot, "book-1", HISTORY_READ_KEY, references[0],
   );
   assert.ok(selection);
   const missing = request({snapshot: missingSnapshot, selection});
@@ -271,7 +271,9 @@ test("invalid, mismatched or unselected references are not auto-associated", () 
   assert.equal(chooseExplicitAdvisoryReference(visit, file, snapshot, ""), null);
   assert.equal(chooseExplicitAdvisoryReference(visit, file, null, "book-1"), null);
   assert.equal(chooseExplicitAdvisoryReference(visit, file, {...snapshot, documentId: "other"}, "book-1"), null);
-  const picked = chooseExplicitAdvisoryReference(visit, file, snapshot, "book-1");
+  const picked = chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", undefined, references[0],
+  );
   assert.equal(picked.referenceId, "book-1");
   assert.equal(picked.scope, "volatile-optional-reference-selection");
 });
@@ -609,7 +611,7 @@ test("volatile annotation is hidden after visit, source, history or reference ch
     {historyReadKey: "fresh-read-next"},
     {references: [references[1]]},
     {selection: chooseExplicitAdvisoryReference(
-      visit, file, snapshot, "book-2", HISTORY_READ_KEY,
+      visit, file, snapshot, "book-2", HISTORY_READ_KEY, references[1],
     )},
     {rules: [{...rules[0], label: "Changed mapping"}, rules[1]]},
   ];
@@ -627,7 +629,7 @@ test("even same snapshot ID and rule IDs cannot transfer an annotation to change
     ...snapshot, fields: {...snapshot.fields, number: "INV-200"},
   };
   const renewedSelection = chooseExplicitAdvisoryReference(
-    visit, file, changedSnapshot, "book-1", HISTORY_READ_KEY,
+    visit, file, changedSnapshot, "book-1", HISTORY_READ_KEY, references[0],
   );
   const newer = request({snapshot: changedSnapshot, selection: renewedSelection}).review;
   assert.equal(newer.status, undefined);
@@ -793,7 +795,7 @@ test("extraction field edits under reused snapshot/version ID expire reference c
   assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
   assert.deepEqual(calls.reviews, []);
   const renewed = chooseExplicitAdvisoryReference(
-    visit, file, changed, "book-1", HISTORY_READ_KEY,
+    visit, file, changed, "book-1", HISTORY_READ_KEY, references[0],
   );
   assert.notEqual(renewed.extractionFieldsKey, priorSelection.extractionFieldsKey);
   assert.equal(selectionIsCurrent(renewed, visit, file, changed, HISTORY_READ_KEY), true);
@@ -829,7 +831,7 @@ test("malformed extraction fields invalidate consent instead of causing optional
   for (const fields of [null, [], {number: {nested: true}}, throwingFields]) {
     const invalidSnapshot = {...snapshot, fields};
     assert.equal(
-      chooseExplicitAdvisoryReference(visit, file, invalidSnapshot, "book-1", HISTORY_READ_KEY),
+      chooseExplicitAdvisoryReference(visit, file, invalidSnapshot, "book-1", HISTORY_READ_KEY, references[0]),
       null,
     );
     assert.equal(selectionIsCurrent(selected(), visit, file, invalidSnapshot, HISTORY_READ_KEY), false);
@@ -1040,4 +1042,106 @@ test("reference option ID checks remain unmounted and independent of native auth
   assert.doesNotMatch(app, /document-match-opt-in-control/);
   assert.doesNotMatch(control + flow,
     /@tauri-apps|invoke\(|fetch\(|localStorage|sessionStorage|writeFile|fs\.write|create_workpaper_signoff/);
+});
+
+test("same selected book ID with changed fields expires consent before Compare", () => {
+  const selectedBefore = selected();
+  const oldReview = request().review;
+  assert.equal(typeof selectedBefore.referenceFieldsKey, "string");
+  const changedReferences = [
+    {...references[0], fields: {...references[0].fields, number: "INV-NEW"}},
+    references[1],
+  ];
+  assert.equal(request({references: changedReferences}).status, "unavailable");
+  assert.equal(request({references: changedReferences}).reason, "stale-selection");
+  assert.equal(current(oldReview, {references: changedReferences}), false);
+  const {tree, html,calls} = ui({
+    references: changedReferences, selection: selectedBefore, review: oldReview,
+  });
+  assert.equal(allNodes(tree, "select")[0].props.disabled, false);
+  assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  assert.doesNotMatch(html, /Clear local comparison|Difference to review/);
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["no-explicit-selection"]);
+  const next = chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY, changedReferences[0],
+  );
+  assert.notEqual(next.referenceFieldsKey, selectedBefore.referenceFieldsKey);
+  assert.equal(request({references: changedReferences, selection: next}).status, "ready");
+  assert.equal(current(oldReview, {references: changedReferences, selection: next}), false);
+});
+
+test("existing compare handler refuses changed reference fields after UI render", () => {
+  const mutable = references.map(r => ({...r, fields: {...r.fields}}));
+  const {tree,calls} = ui({references: mutable, selection: selected()});
+  assert.equal(allNodes(tree, "button")[0].props.disabled, false);
+  mutable[0].fields.number = "INV-REVISED";
+  allNodes(tree, "button")[0].props.onClick();
+  assert.deepEqual(calls.reviews, []);
+  assert.deepEqual(calls.unavailable, ["stale-selection"]);
+});
+
+test("reference value binding ignores property order but detects type and membership changes", () => {
+  const before = selected();
+  const reorder = [{...references[0], fields: {
+    amountMinor: 12500, number: "INV-999",
+  }}, references[1]];
+  assert.equal(request({references: reorder}).status, "ready");
+  for (const fields of [
+    {number: "INV-999", amountMinor: "12500"},
+    {number: "INV-999", amountMinor: 12501},
+    {number: "INV-999"},
+    {number: "INV-999", amountMinor: 12500, newField: ""},
+  ]) {
+    assert.equal(request({references: [{...references[0], fields}, references[1]]}).reason, "stale-selection");
+  }
+  assert.equal(typeof before.referenceFieldsKey, "string");
+});
+
+test("new or malformed book values require renewed explicit choice without a ledger write", () => {
+  const selectedBefore = selected();
+  for (const fields of [
+    null, [], {number: {nested: true}}, {number: Symbol("invalid")},
+  ]) {
+    const ref = {...references[0], fields};
+    assert.equal(chooseExplicitAdvisoryReference(
+      visit, file, snapshot, "book-1", HISTORY_READ_KEY, ref,
+    ), null);
+    assert.equal(request({references: [ref, references[1]]}).reason, "stale-selection");
+    const {tree,html} = ui({references: [ref, references[1]], selection: selectedBefore});
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+    assert.match(html, /original document remains available/);
+  }
+});
+
+test("missing, mismatched or forged reference-content binding is never consent", () => {
+  const valid = selected();
+  assert.equal(chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY,
+  ), null);
+  assert.equal(chooseExplicitAdvisoryReference(
+    visit, file, snapshot, "book-1", HISTORY_READ_KEY, references[1],
+  ), null);
+  for (const selection of [
+    {...valid, referenceFieldsKey: ""},
+    {...valid, referenceFieldsKey: "invented-book-snapshot"},
+    {...valid, referenceFieldsKey: null},
+    (() => {const x={...valid}; delete x.referenceFieldsKey; return x;})(),
+  ]) {
+    assert.equal(request({selection}).reason, "stale-selection");
+    const {tree} = ui({selection, review: request().review});
+    assert.equal(allNodes(tree, "button")[0].props.disabled, true);
+  }
+});
+
+test("reference binding remains purely local and does not activate a native reader", () => {
+  const flow=readFileSync("src/document-match-advisory-flow.ts","utf8");
+  const control=readFileSync("src/document-match-opt-in-control.ts","utf8");
+  const app=readFileSync("src/App.tsx","utf8");
+  assert.match(flow, /referenceFieldsKey: referenceBinding/);
+  assert.match(flow, /optionalReferenceFieldsKey\(matching\[0\]\) !== selection\.referenceFieldsKey/);
+  assert.match(control, /optionalReferenceFieldsKey\(selectedReference\) !== selection!\.referenceFieldsKey/);
+  assert.doesNotMatch(app, /document-match-opt-in-control/);
+  assert.doesNotMatch(flow+control, /@tauri-apps|invoke\(|fetch\(|writeFile|localStorage|sessionStorage|create_workpaper_signoff/);
 });
