@@ -100,6 +100,10 @@ export function correlateOptionalExtractionWithDocumentHistory(
   rules: readonly AdvisoryComparisonRule[],
   requested = false,
 ): VersionCorrelationResult {
+  // Future read-only DTO inputs are not a trusted authority boundary. A
+  // malformed provider/object getter/proxy must disable this OPTIONAL gate,
+  // never propagate an exception into the normal document viewer.
+  try {
   if (!isObject(file) || !validId(file.documentId) ||
       !validId(file.fileInstanceId) || file.availabilityState !== "AVAILABLE") {
     return unavailable("source-unavailable");
@@ -162,6 +166,11 @@ export function correlateOptionalExtractionWithDocumentHistory(
     });
   } catch {
     // Malformed optional comparison data must not interrupt document usage.
+    return unavailable("comparison-input-invalid");
+  }
+  } catch {
+    // Even preflight history/file/snapshot getters and array operations can
+    // throw. The user can still preview and manage the original document.
     return unavailable("comparison-input-invalid");
   }
 }
