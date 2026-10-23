@@ -442,3 +442,45 @@ getters, revoked arrays/proxies, duplicate references added after render,
 stale selection/Compare clicks, pure comparison/annotation denial, and
 malformed event objects. The independent direct-Tauri and product/security
 decision gates remain open (DEC-01–08, Issues #129/#138, L1–L4).
+
+
+## Explicit reference-field revision consent (DRAFT continuation, 2026-10-23)
+
+The optional reference **ID is not an immutable book snapshot**. Previously, an
+explicit selection was bound to the extracted voucher fields, source-version
+metadata and visit/history epochs, but could be reused after the *selected
+reference's* fields changed under its existing ID. The old review would be
+hidden; nevertheless a subsequent Compare click could silently use the
+replacement book values without renewed reference selection.
+
+The pure `chooseExplicitAdvisoryReference` now requires an explicitly
+provided reference object whose ID matches the chosen ID. It binds
+`referenceFieldsKey`, a deterministic serialization of sorted field
+names, types and values, alongside the already required
+`extractionFieldsKey`. The lower-level explicit comparison and cached
+review guards reject changed/missing/malformed reference fields as stale;
+the **unmounted** controlled UI also hides stale selections and rejects
+a stale Compare event *before* attempting a document/reference observation.
+Field-name order alone does not expire a choice; added/removed fields or
+changes in type/value do. The selector passes the freshly chosen reference
+object, and the Compare handler rechecks the current reference's fields,
+including changes occurring after render. An unavailable or malformed
+reference still never prevents previewing or using the original document.
+
+This introduces an intentional type-level change to the **detached**
+`chooseExplicitAdvisoryReference` helper: callers must now provide the
+chosen reference object to obtain non-null opt-in; merely giving a
+`referenceId` fails closed. No live production caller was added.
+Both field keys are ordinary forgeable **UI invalidation strings**, NOT
+hashes, signed book receipts, verifiable provenance, accounting correctness,
+permission grants or auditor acceptance. A malicious provider could
+fabricate an apparently self-consistent reference and extraction. No
+automated matching, accounting ledger writes, original voucher edits,
+new Tauri commands, persistent annotations, re-upload requirement or
+`App.tsx` mount is introduced. Live native read authorization and
+denial testing, source-bound extractor provenance, DEC-01–08,
+Issues #129/#138, legacy L1–L4 and independent acceptance remain open.
+
+Regression tests cover same-ID changed values before/after render,
+type and field membership changes, canonical order, malformed book
+fields, forged/missing bindings, and the need for renewed explicit choice.
