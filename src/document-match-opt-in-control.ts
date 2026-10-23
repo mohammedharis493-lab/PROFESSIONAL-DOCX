@@ -125,7 +125,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
   let selectedId = "";
   try {
     validSelection = versionReady &&
-      selectionIsCurrent(selection, visitKey, indexedFile, snapshot, historyReadKey) &&
+      selectionIsCurrent(selection, visitKey, indexedFile, snapshot, historyReadKey, rules) &&
       uniqueRefs.some(option => option.id === selection!.referenceId &&
         optionalReferenceFieldsKey(option.reference) === selection!.referenceFieldsKey);
     selectedId = validSelection ? selection!.referenceId : "";
@@ -159,6 +159,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
         nextSelection = chooseExplicitAdvisoryReference(
           visitKey, indexedFile, snapshot, nextId, historyReadKey,
           freshOptions.find(option => option.id === nextId)?.reference,
+          rules,
         );
       }
     } catch {
@@ -182,7 +183,7 @@ export function DocumentMatchOptInControl(props: DocumentMatchOptInControlProps)
     try {
       const latestOptions = distinctReferenceOptions(references);
       if (historyStillCurrent() && selectionIsCurrent(
-        selection, visitKey, indexedFile, snapshot, historyReadKey,
+        selection, visitKey, indexedFile, snapshot, historyReadKey, rules,
       )) {
         selectedReference = latestOptions.find(
           option => option.id === selection!.referenceId,
