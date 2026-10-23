@@ -338,3 +338,39 @@ verify the original bytes, authenticated extraction or native authorization.
 All direct-Tauri, provenance, DEC-01–08, Issues #129/#138 and independent
 security acceptance hold points remain outstanding. Original files and books
 remain available and unchanged irrespective of matching status.
+
+
+## Exact extraction-field opt-in invalidation (DRAFT continuation, 2026-10-23)
+
+The detached explicit reference selection previously bound only the selected
+document/file instance, extraction snapshot ID, source-version/hash claims and
+viewer/history-read epochs. A future extraction provider could accidentally
+reuse those identifiers while replacing `snapshot.fields`. A cached report
+would be hidden by the comparison input key, but the old reference selection
+could still authorize a new comparison **without a renewed user choice**.
+
+`chooseExplicitAdvisoryReference` now captures a deterministic
+`extractionFieldsKey` from sorted own field names, value types and scalar
+values. `selectionIsCurrent` requires exact equality with the present
+snapshot's field key; changing extracted values, types, field availability or
+membership invalidates optional reference consent, even if the snapshot ID,
+claimed source version/hash and `historyReadKey` remain unchanged.
+Reordering fields without changing their values is not a change. Missing or
+malformed field objects, nested values and throwing field accessors make
+selection unavailable instead of enabling a Compare action. The user can
+choose a reference again after valid changes; incomplete fields still produce
+nonblocking `incomplete` observations after that explicit choice.
+
+The key is **ordinary local UI serialization**, not a cryptographic hash,
+a source receipt, a trusted timestamp, a revocation token, an extractor
+signature, native authorization or proof of accounting correctness. The
+host remains responsible for rotating the history-read epoch as previously
+documented. This new check cannot secure a malicious provider that
+forges all data consistently. No automatic reference association,
+source-file rewrite, audit voucher mutation, required re-upload, native
+command, durable annotation or App mount has been introduced. Human
+DEC-01–08, Issues #129/#138, L1–L4, source-bound extractor provenance,
+direct-Tauri permission/denial tests, and independent acceptance remain
+outstanding. Added regression coverage for reused snapshot IDs with changed
+fields, canonical reordering, type drift, malformed fields and renewed
+explicit opt-in.
