@@ -289,6 +289,7 @@ impl From<persistence::ControlledEvidenceVersionRecord> for ControlledEvidenceVe
 #[serde(rename_all = "camelCase")]
 struct DocumentVersionHistoryDto {
     content_version_id: String,
+    file_instance_id: String,
     observed_at_ms: i64,
     size_bytes: u64,
     last_write_time_ms: Option<i64>,
@@ -308,6 +309,7 @@ impl From<persistence::DocumentVersionHistoryRecord> for DocumentVersionHistoryD
     fn from(value: persistence::DocumentVersionHistoryRecord) -> Self {
         Self {
             content_version_id: value.content_version_id,
+            file_instance_id: value.file_instance_id,
             observed_at_ms: value.observed_at_ms,
             size_bytes: value.size_bytes,
             last_write_time_ms: value.last_write_time_ms,
