@@ -1239,7 +1239,14 @@ test("invalid mapping objects, duplicate IDs and unsupported modes never yield c
       visit,file,snapshot,"book-1",HISTORY_READ_KEY,references[0],changedRules,
     );
     assert.equal(chosen,null);
-    assert.equal(request({rules:changedRules}).reason,"stale-selection");
+    // Pass the malformed value directly; the fixture helper intentionally
+    // treats null as "use default rules" via nullish coalescing.
+    const denied = requestExplicitOptionalMatch(
+      visit, file, snapshot, references, changedRules, selected(), HISTORY_READ_KEY,
+    );
+    assert.equal(denied.status, "unavailable");
+    assert.equal(denied.reason, "stale-selection");
+    assert.equal(denied.blocksDocumentUse, false);
     const {tree,html}=ui({rules:changedRules,selection:selected(),review:request().review});
     assert.equal(allNodes(tree,"button")[0].props.disabled,true);
     assert.doesNotMatch(html,/Difference to review|Clear local comparison/);
