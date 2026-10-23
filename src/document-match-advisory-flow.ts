@@ -157,6 +157,7 @@ export function selectionIsCurrent(
   snapshot: ReadOnlyExtractionFieldSnapshot | null,
   historyReadKey?: string,
 ): boolean {
+  try {
   return !!selection && selection.scope === "volatile-optional-reference-selection" &&
     requiredId(visitKey) && selection.visitKey === visitKey &&
     selection.historyReadKey === historyReadKey &&
@@ -170,6 +171,9 @@ export function selectionIsCurrent(
     selection.sourceSha256Hex === versionClaims(snapshot).sourceSha256Hex &&
     snapshot.documentId === file.documentId &&
     snapshot.fileInstanceId === file.fileInstanceId;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -187,6 +191,7 @@ export function requestExplicitOptionalMatch(
   historyReadKey?: string,
 ): OptionalMatchAttempt {
   if (!selection) return unavailable("no-explicit-selection");
+  try {
   if (!selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey)) {
     return unavailable("stale-selection");
   }
@@ -215,6 +220,11 @@ export function requestExplicitOptionalMatch(
     return Object.freeze({ status: "ready" as const, reason: null, review, blocksDocumentUse: false as const });
   } catch {
     // Invalid detached comparison input must never become a viewer error.
+    return unavailable("invalid-comparison-input");
+  }
+  } catch {
+    // A revoked/throwing reference collection or selection getter must be
+    // just as nonblocking as malformed comparison field values.
     return unavailable("invalid-comparison-input");
   }
 }
@@ -266,6 +276,7 @@ export function reviewIsCurrent(
   selection: ExplicitAdvisorySelection | null,
   historyReadKey?: string,
 ): boolean {
+  try {
   if (!review || review.scope !== "volatile-optional-comparison-review" ||
       !selectionIsCurrent(selection, visitKey, file, snapshot, historyReadKey) ||
       review.historyReadKey !== historyReadKey ||
@@ -295,6 +306,10 @@ export function reviewIsCurrent(
     const fresh = inspectOptionalIndexedDocumentMatch(file, snapshot!, matching[0], rules, true);
     return fresh.status === "ready" && sameObservation(review.observation, fresh.observation);
   } catch {
+    return false;
+  }
+  } catch {
+    // Review input metadata can throw before the lower comparison try block.
     return false;
   }
 }
@@ -388,6 +403,7 @@ export function volatileAnnotationIsCurrent(
   selection: ExplicitAdvisorySelection | null,
   historyReadKey?: string,
 ): boolean {
+  try {
   if (!annotation || !review ||
       !reviewIsCurrent(review, visitKey, file, snapshot, references, rules, selection, historyReadKey) ||
       annotation.scope !== "volatile-optional-annotation-only" ||
@@ -404,4 +420,7 @@ export function volatileAnnotationIsCurrent(
   return review.observation.findings.some(finding =>
     finding && finding.ruleId === annotation.ruleId &&
     (finding.status === "difference" || finding.status === "not-compared"));
+  } catch {
+    return false;
+  }
 }
