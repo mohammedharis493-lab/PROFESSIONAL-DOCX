@@ -24,6 +24,8 @@ export type ExplicitAdvisorySelection = Readonly<{
   referenceId: string;
   /** Exact value binding for local opt-in, NOT a source hash or provenance. */
   extractionFieldsKey: string;
+  /** Current explicitly chosen reference fields; local opt-in only. */
+  referenceFieldsKey: string;
   /** Caller-rotated history-response epoch: UI invalidation ONLY, not proof. */
   historyReadKey?: string;
   /** UI-only binding to optional claimed version metadata, never trusted provenance. */
@@ -100,6 +102,22 @@ function extractionFieldsKey(snapshot: ReadOnlyExtractionFieldSnapshot): string 
   }
 }
 
+/** Not a ledger digest or authenticated reference receipt; local UI only. */
+export function optionalReferenceFieldsKey(reference: OptionalReference): string | null {
+  try {
+    if (!reference || typeof reference !== "object" || Array.isArray(reference) ||
+        !requiredId(reference.referenceId)) return null;
+    const fields = reference.fields;
+    if (!fields || typeof fields !== "object" || Array.isArray(fields) ||
+        Object.values(fields).some(value =>
+          value !== null && value !== undefined &&
+          typeof value !== "string" && typeof value !== "number")) return null;
+    return JSON.stringify(fieldsKey(fields));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Exact, ordinary serialization for local review invalidation. Deliberately
  * makes NO assertion about underlying bytes, provenance, authorization or
@@ -130,6 +148,7 @@ export function chooseExplicitAdvisoryReference(
   snapshot: ReadOnlyExtractionFieldSnapshot | null,
   referenceId: string,
   historyReadKey?: string,
+  reference?: OptionalReference,
 ): ExplicitAdvisorySelection | null {
   if (!requiredId(visitKey) || !requiredId(referenceId) ||
       (historyReadKey !== undefined && !requiredId(historyReadKey)) ||
@@ -138,13 +157,16 @@ export function chooseExplicitAdvisoryReference(
       snapshot.documentId !== file.documentId ||
       snapshot.fileInstanceId !== file.fileInstanceId) return null;
   const fieldsBinding = extractionFieldsKey(snapshot);
-  if (fieldsBinding === null) return null;
+  const referenceBinding = reference ? optionalReferenceFieldsKey(reference) : null;
+  if (fieldsBinding === null || referenceBinding === null ||
+      reference?.referenceId !== referenceId) return null;
 
   return Object.freeze({
     scope: "volatile-optional-reference-selection" as const,
     visitKey, documentId: file.documentId, fileInstanceId: file.fileInstanceId,
     extractionSnapshotId: snapshot.extractionSnapshotId, referenceId,
     extractionFieldsKey: fieldsBinding,
+    referenceFieldsKey: referenceBinding,
     ...(historyReadKey === undefined ? {} : {historyReadKey}),
     ...versionClaims(snapshot),
   });
@@ -167,6 +189,7 @@ export function selectionIsCurrent(
     !!snapshot && selection.extractionSnapshotId === snapshot.extractionSnapshotId &&
     selection.extractionFieldsKey !== null &&
     selection.extractionFieldsKey === extractionFieldsKey(snapshot) &&
+    requiredId(selection.referenceFieldsKey) &&
     selection.sourceContentVersionId === versionClaims(snapshot).sourceContentVersionId &&
     selection.sourceSha256Hex === versionClaims(snapshot).sourceSha256Hex &&
     snapshot.documentId === file.documentId &&
@@ -200,6 +223,9 @@ export function requestExplicitOptionalMatch(
     reference.referenceId === selection.referenceId);
   if (matching.length > 1) return unavailable("ambiguous-reference");
   if (matching.length !== 1) return unavailable("reference-unavailable");
+  if (optionalReferenceFieldsKey(matching[0]) !== selection.referenceFieldsKey) {
+    return unavailable("stale-selection");
+  }
   try {
     const reference = matching[0];
     const prepared = inspectOptionalIndexedDocumentMatch(file, snapshot, reference, rules, true);
@@ -297,6 +323,7 @@ export function reviewIsCurrent(
   const matching = references.filter(reference => reference &&
     reference.referenceId === selection!.referenceId);
   if (matching.length !== 1) return false;
+  if (optionalReferenceFieldsKey(matching[0]) !== selection!.referenceFieldsKey) return false;
   try {
     if (review.inputKey !== comparisonInputKey(file, snapshot!, matching[0], rules)) {
       return false;
