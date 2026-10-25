@@ -283,7 +283,7 @@ function doSearch(queryText){let value=String(queryText).trim();if(value&&!state
 function closePreview(){state.modal=null;render();const d=state.returnFocusId||state.lastPreview;state.returnFocusId=null;const previous=document.querySelector(`[data-open="${d}"]`);if(previous)previous.focus();else $('#global-search')?.focus();}
 function openPreview(id){if(!docs.some(d=>d.id===id))return;if(!state.modal)state.returnFocusId=id;state.modal=id;state.lastPreview=id;state.drawer=false;state.recent=state.recent.filter(x=>x!==id);state.recent.unshift(id);state.recent=state.recent.slice(0,10);render();$('#close-preview')?.focus();}
 function stepPreview(delta){if(!state.modal)return;let index=docs.findIndex(x=>x.id===state.modal);let next=docs[index+delta];if(next)openPreview(next.id);}
-function togglePin(id){const withinPreview=!!state.modal;if(state.pinned.has(id))state.pinned.delete(id);else state.pinned.add(id);render();if(withinPreview)document.querySelector('.dialog-footer [data-pin]')?.focus();else document.querySelector(`[data-pin="${id}"]`)?.focus();}
+function togglePin(id){if(state.pinned.has(id))state.pinned.delete(id);else state.pinned.add(id);render();}
 function connect(){
  document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.page)));
  document.querySelectorAll('[data-client]').forEach(b=>b.addEventListener('click',()=>navigate('clients',{client:b.dataset.client})));
